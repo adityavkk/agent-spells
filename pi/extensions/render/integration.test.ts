@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { complete, type Model } from "@mariozechner/pi-ai";
 import { loadModelProfilesConfig, mergeModelProfilesConfig } from "../model-profiles/config";
 import { resolveModelRole } from "../model-profiles/resolve";
+import { completeWithModelRoleFallback } from "../model-profiles/runtime";
 import { BlockType, EmbeddedContentType, PreferredView, QuestionType } from "./baml_client/types";
 import { buildBamlRenderContext, parseBamlRenderResult } from "./extract";
 import { buildRenderTestProfilesConfig, DEFAULT_RENDER_E2E_ROLE } from "./model-selection";
@@ -158,11 +159,22 @@ function assertNormalizedInvariants(parsed: ReturnType<typeof parseBamlRenderRes
 async function extractRenderedDoc(input: string, fallbackTitle: string) {
 	if (!piModel) throw new Error("No pi model resolved for render integration test");
 	const context = await buildBamlRenderContext(input);
-	const response = await complete(model, context, {
-		apiKey: piModel.auth.apiKey,
-		headers: piModel.auth.headers,
-		...(model.provider === "openai-codex" ? {} : { temperature: 0 }),
-	});
+	const response = piModel.resolved
+		? (await completeWithModelRoleFallback({
+			resolved: piModel.resolved,
+			modelRegistry: piModel.modelRegistry,
+			context,
+			buildOptions: (candidate, auth) => ({
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				...(candidate.model.provider === "openai-codex" ? {} : { temperature: 0 }),
+			}),
+		})).response
+		: await complete(model, context, {
+			apiKey: piModel.auth.apiKey,
+			headers: piModel.auth.headers,
+			...(model.provider === "openai-codex" ? {} : { temperature: 0 }),
+		});
 	return parseBamlRenderResult(getText(response), {
 		fallbackMarkdown: fallbackTitle,
 		defaultTitle: fallbackTitle,

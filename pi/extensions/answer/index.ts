@@ -4,22 +4,24 @@
  * multiple-choice questions.
  */
 
-import { complete, type Model, type Api } from "@mariozechner/pi-ai";
+import { type Model, type Api } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRegistry, Theme } from "@mariozechner/pi-coding-agent";
 import { BorderedLoader } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
 import { loadModelProfilesConfig } from "../model-profiles/config";
 import { resolveModelRole } from "../model-profiles/resolve";
+import { completeWithModelRoleFallback } from "../model-profiles/runtime";
+import type { ResolvedRoleResult } from "../model-profiles/types";
 import { buildBamlExtractionContext, parseBamlExtractionResult } from "./extraction";
 import { debugAnswer } from "./debug";
 import { type AnswerSubmission, type ExtractionResult, type ExtractionUiResult } from "./core";
 import { AnswerComponent } from "./ui";
 
-async function selectExtractionModel(
+async function resolveExtractionModelRole(
 	currentModel: Model<Api>,
 	modelRegistry: ModelRegistry,
 	cwd: string,
-): Promise<Model<Api>> {
+): Promise<ResolvedRoleResult | null> {
 	const loadedConfig = loadModelProfilesConfig(cwd);
 	const resolved = await resolveModelRole({
 		modelRegistry,
@@ -35,10 +37,11 @@ async function selectExtractionModel(
 			profile: resolved.profile,
 			role: resolved.role,
 			matchedRole: resolved.matchedRole,
+			candidates: resolved.candidates.map((candidate) => `${candidate.ref.provider}/${candidate.ref.model}`),
 			trace: resolved.trace,
 			configErrors: loadedConfig.errors,
 		});
-		return resolved.model as Model<Api>;
+		return resolved;
 	}
 
 	debugAnswer("select-model", {
@@ -46,7 +49,7 @@ async function selectExtractionModel(
 		reason: "resolver-returned-null",
 		configErrors: loadedConfig.errors,
 	});
-	return currentModel;
+	return null;
 }
 
 function extractLastAssistantText(ctx: ExtensionContext): string | null {
@@ -112,8 +115,12 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry, ctx.cwd);
-		const extractionModelLabel = `${extractionModel.provider}/${extractionModel.id}`;
+		const extractionResolved = await resolveExtractionModelRole(ctx.model, ctx.modelRegistry, ctx.cwd);
+		if (!extractionResolved) {
+			ctx.ui.notify("No extraction model available", "error");
+			return;
+		}
+		const extractionModelLabel = `${extractionResolved.ref.provider}/${extractionResolved.ref.model}`;
 		debugAnswer("extraction-start", {
 			model: extractionModelLabel,
 			assistantChars: lastAssistantText.length,
@@ -127,21 +134,25 @@ export default function (pi: ExtensionAPI) {
 			};
 
 			const doExtract = async () => {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(extractionModel);
-				if (!auth.ok) {
-					throw new Error(auth.error);
-				}
 				const extractionContext = await buildBamlExtractionContext(lastAssistantText);
 				debugAnswer("extraction-context-built", {
 					systemChars: extractionContext.systemPrompt.length,
 					messages: extractionContext.messages.length,
 				});
 
-				const response = await complete(
-					extractionModel,
-					extractionContext,
-					{ apiKey: auth.apiKey, headers: auth.headers, signal: loader.signal, temperature: 0 },
-				);
+				const completion = await completeWithModelRoleFallback({
+					resolved: extractionResolved,
+					modelRegistry: ctx.modelRegistry,
+					context: extractionContext,
+					buildOptions: (candidate, auth) => ({
+						apiKey: auth.apiKey,
+						headers: auth.headers,
+						signal: loader.signal,
+						...(candidate.model.provider === "openai-codex" ? {} : { temperature: 0 }),
+					}),
+				});
+				const response = completion.response;
+				const responseModelLabel = `${completion.candidate.ref.provider}/${completion.candidate.ref.model}`;
 
 				if (response.stopReason === "aborted") {
 					debugAnswer("extraction-aborted-by-model");
@@ -153,6 +164,12 @@ export default function (pi: ExtensionAPI) {
 					.map((c: { type: "text"; text: string }) => c.text)
 					.join("\n");
 				debugAnswer("extraction-response", {
+					model: responseModelLabel,
+					attempts: completion.attempts.map((attempt) => ({
+						candidate: `${attempt.candidate.ref.provider}/${attempt.candidate.ref.model}`,
+						status: attempt.status,
+						message: attempt.message,
+					})),
 					stopReason: response.stopReason,
 					chars: responseText.length,
 					preview: responseText,
@@ -163,13 +180,13 @@ export default function (pi: ExtensionAPI) {
 					parsed = parseBamlExtractionResult(responseText);
 				} catch (error) {
 					debugAnswer("extraction-parse-failed", {
-						model: extractionModelLabel,
+						model: responseModelLabel,
 						responsePreview: responseText,
 						error,
 					});
 					return {
 						status: "error",
-						message: `Model ${extractionModelLabel} returned invalid structured data for question extraction.`,
+						message: `Model ${responseModelLabel} returned invalid structured data for question extraction.`,
 					} satisfies ExtractionUiResult;
 				}
 
