@@ -1,12 +1,4 @@
-/**
- * Q&A extraction hook - extracts structured questions from assistant responses
- * and presents a richer answer UI with free-form, single-choice, and
- * multiple-choice questions.
- */
-
-import { complete, type Model, type Api, type UserMessage } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext, ModelRegistry, Theme } from "@mariozechner/pi-coding-agent";
-import { BorderedLoader } from "@mariozechner/pi-coding-agent";
+import type { Theme } from "@mariozechner/pi-coding-agent";
 import {
 	type Component,
 	Editor,
@@ -18,284 +10,9 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
-import { type Static, Type } from "@sinclair/typebox";
+import { buildAnswersMessage, formatAnswer, questionAnswered, type AnswerState, type ExtractedQuestion } from "./core";
 
-const QUESTION_TYPE_VALUES = ["text", "single_choice", "multiple_choice"] as const;
-type QuestionType = (typeof QUESTION_TYPE_VALUES)[number];
-
-const ExtractedOptionSchema = Type.Object({
-	label: Type.String(),
-	value: Type.Optional(Type.String()),
-	description: Type.Optional(Type.String()),
-}, { additionalProperties: false });
-type ExtractedOption = Static<typeof ExtractedOptionSchema>;
-
-const ExtractedQuestionSchema = Type.Object({
-	question: Type.String(),
-	context: Type.Optional(Type.String()),
-	type: Type.Union(QUESTION_TYPE_VALUES.map((value) => Type.Literal(value))),
-	options: Type.Array(ExtractedOptionSchema),
-	allowOther: Type.Boolean(),
-	otherLabel: Type.String(),
-}, { additionalProperties: false });
-type ExtractedQuestion = Static<typeof ExtractedQuestionSchema>;
-
-const ExtractionResultSchema = Type.Object({
-	questions: Type.Array(ExtractedQuestionSchema),
-}, { additionalProperties: false });
-type ExtractionResult = Static<typeof ExtractionResultSchema>;
-
-const RawOptionSchema = Type.Union([
-	Type.String(),
-	Type.Object({
-		label: Type.String(),
-		value: Type.Optional(Type.String()),
-		description: Type.Optional(Type.String()),
-	}, { additionalProperties: true }),
-]);
-type RawOption = Static<typeof RawOptionSchema>;
-
-const RawQuestionSchema = Type.Object({
-	question: Type.String(),
-	context: Type.Optional(Type.String()),
-	type: Type.Optional(Type.String()),
-	options: Type.Optional(Type.Array(RawOptionSchema)),
-	allowOther: Type.Optional(Type.Boolean()),
-	otherLabel: Type.Optional(Type.String()),
-	freeFormLabel: Type.Optional(Type.String()),
-}, { additionalProperties: true });
-type RawQuestion = Static<typeof RawQuestionSchema>;
-
-const RawExtractionResultSchema = Type.Object({
-	questions: Type.Array(RawQuestionSchema),
-}, { additionalProperties: true });
-type RawExtractionResult = Static<typeof RawExtractionResultSchema>;
-
-interface ExtractionUiResult {
-	status: "success" | "cancelled" | "error";
-	result?: ExtractionResult | null;
-	message?: string;
-}
-
-interface AnswerState {
-	text: string;
-	selectedOptionIndexes: number[];
-	otherSelected: boolean;
-	otherText: string;
-}
-
-const SYSTEM_PROMPT = `You are a questionnaire extractor. Given text from a conversation, extract every question that needs user input and return a single JSON object.
-
-Output JSON with exactly this shape:
-{
-  "questions": [
-    {
-      "question": "Question text",
-      "context": "Optional context that helps the user answer",
-      "type": "text | single_choice | multiple_choice",
-      "options": [
-        {
-          "label": "Option label",
-          "value": "stable_value",
-          "description": "Optional short helper text"
-        }
-      ],
-      "allowOther": true,
-      "otherLabel": "Other"
-    }
-  ]
-}
-
-Rules:
-- Extract all questions that require user input
-- Keep questions in the order they appeared
-- Use type "text" for open-ended questions or whenever options are unclear
-- Use type "single_choice" only when exactly one option should be chosen
-- Use type "multiple_choice" only when multiple selections are allowed, for example "select all that apply"
-- For choice questions, include options only when they are explicit or strongly implied by the text
-- Never invent options that are not present in the source text
-- If options are ambiguous, fall back to type "text"
-- Set allowOther to true only when a free-form answer should be allowed in addition to the listed options
-- Omit or leave options empty for text questions
-- Keep question and option labels concise
-- If no questions are found, return {"questions": []}
-
-Example output:
-{
-  "questions": [
-    {
-      "question": "Which database should we use?",
-      "context": "Only MySQL and PostgreSQL are implemented right now.",
-      "type": "single_choice",
-      "options": [
-        { "label": "PostgreSQL", "value": "postgres" },
-        { "label": "MySQL", "value": "mysql" }
-      ],
-      "allowOther": true,
-      "otherLabel": "Other"
-    },
-    {
-      "question": "Which surfaces should ship in v1?",
-      "type": "multiple_choice",
-      "options": [
-        { "label": "CLI", "value": "cli" },
-        { "label": "TUI", "value": "tui" },
-        { "label": "Web", "value": "web" }
-      ],
-      "allowOther": true,
-      "otherLabel": "Other"
-    },
-    {
-      "question": "Anything else we should consider?",
-      "type": "text",
-      "options": []
-    }
-  ]
-}`;
-
-const OLLAMA_PROVIDER = "ollama";
-const GEMMA_MODEL_ID = "gemma4:e4b";
-
-async function selectExtractionModel(
-	currentModel: Model<Api>,
-	modelRegistry: ModelRegistry,
-): Promise<Model<Api>> {
-	const gemmaModel = modelRegistry.find(OLLAMA_PROVIDER, GEMMA_MODEL_ID);
-	if (gemmaModel) {
-		const auth = await modelRegistry.getApiKeyAndHeaders(gemmaModel);
-		if (auth.ok) {
-			return gemmaModel;
-		}
-	}
-
-	return currentModel;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-function isRawOption(value: unknown): value is RawOption {
-	if (typeof value === "string") return true;
-	if (!isRecord(value)) return false;
-	if (typeof value.label !== "string") return false;
-	if (value.value !== undefined && typeof value.value !== "string") return false;
-	if (value.description !== undefined && typeof value.description !== "string") return false;
-	return true;
-}
-
-function isRawQuestion(value: unknown): value is RawQuestion {
-	if (!isRecord(value)) return false;
-	if (typeof value.question !== "string") return false;
-	if (value.context !== undefined && typeof value.context !== "string") return false;
-	if (value.type !== undefined && typeof value.type !== "string") return false;
-	if (value.allowOther !== undefined && typeof value.allowOther !== "boolean") return false;
-	if (value.otherLabel !== undefined && typeof value.otherLabel !== "string") return false;
-	if (value.freeFormLabel !== undefined && typeof value.freeFormLabel !== "string") return false;
-	if (value.options !== undefined) {
-		if (!Array.isArray(value.options)) return false;
-		if (!value.options.every((option) => isRawOption(option))) return false;
-	}
-	return true;
-}
-
-function isRawExtractionResult(value: unknown): value is RawExtractionResult {
-	if (!isRecord(value)) return false;
-	if (!Array.isArray(value.questions)) return false;
-	return value.questions.every((question) => isRawQuestion(question));
-}
-
-function normalizeQuestionType(value: unknown): QuestionType | undefined {
-	if (typeof value !== "string") return undefined;
-	const normalized = value.trim().toLowerCase();
-	if (["text", "freeform", "free_form", "free-form", "open", "open_ended"].includes(normalized)) {
-		return "text";
-	}
-	if (["single_choice", "single-choice", "single choice", "singlechoice", "single"].includes(normalized)) {
-		return "single_choice";
-	}
-	if (["multiple_choice", "multiple-choice", "multiple choice", "multiplechoice", "multiple", "multi", "multi_select", "multi-select"].includes(normalized)) {
-		return "multiple_choice";
-	}
-	return undefined;
-}
-
-function normalizeOption(value: RawOption): ExtractedOption | null {
-	if (typeof value === "string") {
-		const label = value.trim();
-		return label ? { label, value: label } : null;
-	}
-	if (!value || typeof value !== "object") return null;
-
-	const candidate = value as { label?: unknown; value?: unknown; description?: unknown };
-	const label = typeof candidate.label === "string" ? candidate.label.trim() : "";
-	if (!label) return null;
-
-	const option: ExtractedOption = {
-		label,
-		value: typeof candidate.value === "string" && candidate.value.trim() ? candidate.value.trim() : label,
-	};
-	if (typeof candidate.description === "string" && candidate.description.trim()) {
-		option.description = candidate.description.trim();
-	}
-	return option;
-}
-
-function normalizeQuestion(candidate: RawQuestion): ExtractedQuestion | null {
-	const question = candidate.question.trim();
-	if (!question) return null;
-
-	const options = Array.isArray(candidate.options)
-		? candidate.options.map(normalizeOption).filter((option): option is ExtractedOption => option !== null)
-		: [];
-
-	let type = normalizeQuestionType(candidate.type);
-	if (!type) {
-		type = options.length > 0 ? "single_choice" : "text";
-	}
-	if ((type === "single_choice" || type === "multiple_choice") && options.length === 0) {
-		type = "text";
-	}
-
-	const otherLabelSource = typeof candidate.otherLabel === "string"
-		? candidate.otherLabel
-		: typeof candidate.freeFormLabel === "string"
-			? candidate.freeFormLabel
-			: "Other";
-	const otherLabel = otherLabelSource.trim() || "Other";
-
-	return {
-		question,
-		context: typeof candidate.context === "string" && candidate.context.trim() ? candidate.context.trim() : undefined,
-		type,
-		options,
-		allowOther: type !== "text" && candidate.allowOther === true,
-		otherLabel,
-	};
-}
-
-function parseExtractionResult(text: string): ExtractionResult | null {
-	try {
-		let jsonStr = text;
-		const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-		if (jsonMatch) {
-			jsonStr = jsonMatch[1].trim();
-		}
-
-		const parsed: unknown = JSON.parse(jsonStr);
-		if (!isRawExtractionResult(parsed)) return null;
-
-		return {
-			questions: parsed.questions
-				.map(normalizeQuestion)
-				.filter((question): question is ExtractedQuestion => question !== null),
-		};
-	} catch {
-		return null;
-	}
-}
-
-class AnswerComponent implements Component {
+export class AnswerComponent implements Component {
 	private questions: ExtractedQuestion[];
 	private answers: AnswerState[];
 	private currentIndex = 0;
@@ -419,18 +136,7 @@ class AnswerComponent implements Component {
 	}
 
 	private questionAnswered(index: number): boolean {
-		const question = this.questions[index]!;
-		const answer = this.answers[index]!;
-		const otherFilled = answer.otherSelected && answer.otherText.trim().length > 0;
-
-		switch (question.type) {
-			case "text":
-				return answer.text.trim().length > 0;
-			case "single_choice":
-				return answer.selectedOptionIndexes.length > 0 || otherFilled;
-			case "multiple_choice":
-				return answer.selectedOptionIndexes.length > 0 || otherFilled;
-		}
+		return questionAnswered(this.questions[index]!, this.answers[index]!);
 	}
 
 	private unansweredCount(): number {
@@ -525,7 +231,6 @@ class AnswerComponent implements Component {
 
 		answer.selectedOptionIndexes = [index];
 		answer.otherSelected = false;
-		answer.otherText = answer.otherText;
 		this.editorTarget = null;
 		this.editor.setText("");
 		this.advanceOrConfirm();
@@ -544,45 +249,7 @@ class AnswerComponent implements Component {
 
 	private submit(): void {
 		this.saveCurrentEditorText();
-		const parts: string[] = [];
-
-		for (let i = 0; i < this.questions.length; i++) {
-			const question = this.questions[i]!;
-			parts.push(`Q: ${question.question}`);
-			if (question.context) {
-				parts.push(`> ${question.context}`);
-			}
-			parts.push(`A: ${this.formatAnswer(i)}`);
-			parts.push("");
-		}
-
-		this.onDone(parts.join("\n").trim());
-	}
-
-	private formatAnswer(index: number): string {
-		const question = this.questions[index]!;
-		const answer = this.answers[index]!;
-
-		if (!this.questionAnswered(index)) {
-			return "(no answer)";
-		}
-
-		if (question.type === "text") {
-			return answer.text.trim();
-		}
-
-		const selected = answer.selectedOptionIndexes
-			.map((optionIndex) => {
-				const option = question.options[optionIndex];
-				return option ? `${optionIndex + 1}. ${option.label}` : null;
-			})
-			.filter((value): value is string => value !== null);
-
-		if (answer.otherSelected && answer.otherText.trim()) {
-			selected.push(`${question.otherLabel}: ${answer.otherText.trim()}`);
-		}
-
-		return selected.length > 0 ? selected.join(", ") : "(no answer)";
+		this.onDone(buildAnswersMessage(this.questions, this.answers));
 	}
 
 	private cancel(): void {
@@ -609,7 +276,11 @@ class AnswerComponent implements Component {
 			: answer.selectedOptionIndexes.includes(optionIndex);
 		const unchecked = question.type === "single_choice" ? "○" : "☐";
 		const checked = question.type === "single_choice" ? "◉" : "☑";
-		const icon = isSelected ? this.theme.fg("success", checked) : isCurrent ? this.theme.fg("accent", unchecked) : this.theme.fg("dim", unchecked);
+		const icon = isSelected
+			? this.theme.fg("success", checked)
+			: isCurrent
+				? this.theme.fg("accent", unchecked)
+				: this.theme.fg("dim", unchecked);
 		const pointer = isCurrent ? this.theme.fg("accent", "›") : " ";
 		const labelBase = isSelected ? this.theme.bold(option.label) : option.label;
 		const label = isCurrent ? this.theme.fg("accent", labelBase) : this.theme.fg("text", labelBase);
@@ -626,8 +297,14 @@ class AnswerComponent implements Component {
 		}
 
 		if (isOther && answer.otherSelected && answer.otherText.trim() && this.editorTarget !== "other") {
+			const formatted = formatAnswer(question, answer);
+			const otherPrefix = `${question.otherLabel}: `;
+			const previewText = formatted.includes(otherPrefix)
+				? formatted.slice(formatted.indexOf(otherPrefix) + otherPrefix.length)
+				: answer.otherText.trim();
+			
 			const preview = wrapTextWithAnsi(
-				this.theme.fg("muted", `↳ ${answer.otherText.trim()}`),
+				this.theme.fg("muted", `↳ ${previewText}`),
 				Math.max(8, contentWidth - 4),
 			);
 			for (const line of preview) {
@@ -767,7 +444,6 @@ class AnswerComponent implements Component {
 		const boxWidth = Math.max(12, Math.min(width, 120));
 		const contentWidth = Math.max(8, boxWidth - 4);
 		const question = this.currentQuestion();
-		const answer = this.currentAnswer();
 		const unanswered = this.unansweredCount();
 
 		const horizontalLine = (count: number) => "─".repeat(Math.max(0, count));
@@ -873,143 +549,4 @@ class AnswerComponent implements Component {
 		this.cachedLines = lines;
 		return lines;
 	}
-}
-
-export default function (pi: ExtensionAPI) {
-	const answerHandler = async (ctx: ExtensionContext) => {
-		if (!ctx.hasUI) {
-			ctx.ui.notify("answer requires interactive mode", "error");
-			return;
-		}
-
-		if (!ctx.model) {
-			ctx.ui.notify("No model selected", "error");
-			return;
-		}
-
-		const branch = ctx.sessionManager.getBranch();
-		let lastAssistantText: string | undefined;
-
-		for (let i = branch.length - 1; i >= 0; i--) {
-			const entry = branch[i];
-			if (entry.type === "message") {
-				const msg = entry.message;
-				if ("role" in msg && msg.role === "assistant") {
-					if (msg.stopReason !== "stop") {
-						ctx.ui.notify(`Last assistant message incomplete (${msg.stopReason})`, "error");
-						return;
-					}
-					const textParts = msg.content
-						.filter((c: { type: string; text?: string }): c is { type: "text"; text: string } => c.type === "text")
-						.map((c: { type: "text"; text: string }) => c.text);
-					if (textParts.length > 0) {
-						lastAssistantText = textParts.join("\n");
-						break;
-					}
-				}
-			}
-		}
-
-		if (!lastAssistantText) {
-			ctx.ui.notify("No assistant messages found", "error");
-			return;
-		}
-
-		const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry);
-		const extractionModelLabel = `${extractionModel.provider}/${extractionModel.id}`;
-
-		const extraction = await ctx.ui.custom<ExtractionUiResult>((tui: TUI, theme: Theme, _kb: unknown, done: (result: ExtractionUiResult) => void) => {
-			const loader = new BorderedLoader(tui, theme, `Extracting questions using ${extractionModelLabel}...`);
-			loader.onAbort = () => done({ status: "cancelled" });
-
-			const doExtract = async () => {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(extractionModel);
-				if (!auth.ok) {
-					throw new Error(auth.error);
-				}
-				const userMessage: UserMessage = {
-					role: "user",
-					content: [{ type: "text", text: lastAssistantText! }],
-					timestamp: Date.now(),
-				};
-
-				const response = await complete(
-					extractionModel,
-					{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
-					{ apiKey: auth.apiKey, headers: auth.headers, signal: loader.signal, temperature: 0 },
-				);
-
-				if (response.stopReason === "aborted") {
-					return { status: "cancelled" } satisfies ExtractionUiResult;
-				}
-
-				const responseText = response.content
-					.filter((c: { type: string; text?: string }): c is { type: "text"; text: string } => c.type === "text")
-					.map((c: { type: "text"; text: string }) => c.text)
-					.join("\n");
-				const parsed = parseExtractionResult(responseText);
-				if (!parsed) {
-					return {
-						status: "error",
-						message: `Model ${extractionModelLabel} returned invalid JSON for question extraction.`,
-					} satisfies ExtractionUiResult;
-				}
-
-				return { status: "success", result: parsed } satisfies ExtractionUiResult;
-			};
-
-			doExtract()
-				.then(done)
-				.catch((error: unknown) => done({
-					status: "error",
-					message: error instanceof Error ? error.message : String(error),
-				}));
-
-			return loader;
-		});
-
-		if (extraction.status === "cancelled") {
-			ctx.ui.notify("Cancelled", "info");
-			return;
-		}
-
-		if (extraction.status === "error") {
-			ctx.ui.notify(extraction.message ?? "Question extraction failed", "error");
-			return;
-		}
-
-		const extractionResult = extraction.result!;
-		if (extractionResult.questions.length === 0) {
-			ctx.ui.notify("No questions found in the last message", "info");
-			return;
-		}
-
-		const answersResult = await ctx.ui.custom<string | null>((tui: TUI, theme: Theme, _kb: unknown, done: (result: string | null) => void) => {
-			return new AnswerComponent(extractionResult.questions, tui, theme, done);
-		});
-
-		if (answersResult === null) {
-			ctx.ui.notify("Cancelled", "info");
-			return;
-		}
-
-		pi.sendMessage(
-			{
-				customType: "answers",
-				content: "I answered your questions in the following way:\n\n" + answersResult,
-				display: true,
-			},
-			{ triggerTurn: true },
-		);
-	};
-
-	pi.registerCommand("answer", {
-		description: "Extract structured questions from last assistant message into interactive Q&A",
-		handler: (_args: string, ctx: ExtensionContext) => answerHandler(ctx),
-	});
-
-	pi.registerShortcut("ctrl+.", {
-		description: "Extract and answer questions",
-		handler: answerHandler,
-	});
 }

@@ -1,0 +1,22 @@
+{
+  "name": "agent-spells",
+  "description": "Pi extension experiments with BAML-backed structured extraction",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "baml-generate": "baml-cli generate",
+    "test": "bun run baml-generate && bun test",
+    "test:integration": "bun run baml-generate && bun test pi/extensions/answer/integration.test.ts",
+    "test:integration:skip": "PI_ANSWER_E2E=0 bun test pi/extensions/answer/integration.test.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@boundaryml/baml": "^0.220.0",
+    "@mariozechner/pi-ai": "^0.66.1"
+  }
+}
