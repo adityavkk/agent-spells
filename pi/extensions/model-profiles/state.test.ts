@@ -46,7 +46,7 @@ describe("formatModelProfilesStatus", () => {
 			state: { activeProfile: "work", activeRole: "small" },
 			resolved,
 			currentModel: makeModel("openai-codex", "gpt-5.4-mini"),
-		})).toBe("profile:work role:small");
+		})).toBe("work:small");
 	});
 
 	it("appends raw-override and unresolved suffixes", () => {
@@ -54,12 +54,12 @@ describe("formatModelProfilesStatus", () => {
 			state: { activeProfile: "work", activeRole: "small" },
 			resolved,
 			currentModel: makeModel("openai", "gpt-4.1"),
-		})).toBe("profile:work role:small raw-override");
+		})).toBe("work:small raw-override");
 
 		expect(formatModelProfilesStatus({
 			state: { activeProfile: "work", activeRole: "small" },
 			unresolved: true,
-		})).toBe("profile:work role:small unresolved");
+		})).toBe("work:small unresolved");
 	});
 });
 
@@ -69,6 +69,6 @@ describe("formatModelProfilesStateSummary", () => {
 			state: { activeProfile: "work", activeRole: "small" },
 			resolved,
 			currentModel: makeModel("openai-codex", "gpt-5.4-mini"),
-		})).toContain("profile:work role:small");
+		})).toContain("work:small");
 	});
 });

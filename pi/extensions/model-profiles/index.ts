@@ -6,6 +6,7 @@ import {
 } from "./config";
 import { readModelProfilesState, resolveModelRole } from "./resolve";
 import { formatModelProfilesStateSummary, formatModelProfilesStatus, formatResolvedRoleSummary } from "./state";
+import { createModelProfilesFooter } from "./ui";
 import {
 	MODEL_PROFILES_STATE_CUSTOM_TYPE,
 	type LoadedModelProfilesConfig,
@@ -38,6 +39,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	let lastResolved: ResolvedRoleResult | null = null;
 	let unresolved = false;
 	let currentModel: Model<any> | undefined;
+	let latestCtx: ExtensionContext | undefined;
 
 	function refreshConfig(cwd: string): void {
 		loadedConfig = loadModelProfilesConfig(cwd);
@@ -50,13 +52,18 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	function updateStatus(ctx: ExtensionContext): void {
-		ctx.ui.setStatus(STATUS_KEY, formatModelProfilesStatus({
+	function currentStatusText(ctx: ExtensionContext): string | undefined {
+		return formatModelProfilesStatus({
 			state: activeState,
 			resolved: lastResolved,
 			currentModel: currentModel ?? ctx.model,
 			unresolved,
-		}));
+		});
+	}
+
+	function updateStatus(ctx: ExtensionContext): void {
+		latestCtx = ctx;
+		ctx.ui.setStatus(STATUS_KEY, currentStatusText(ctx));
 	}
 
 	function notifyConfigErrors(ctx: ExtensionContext): void {
@@ -209,9 +216,16 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		latestCtx = ctx;
 		refreshConfig(ctx.cwd);
 		activeState = readModelProfilesState(ctx.sessionManager.getBranch());
 		currentModel = ctx.model;
+		ctx.ui.setFooter((_tui, theme, footerData) => createModelProfilesFooter(theme, footerData, () => ({
+			ctx: latestCtx,
+			model: currentModel ?? latestCtx?.model,
+			thinkingLevel: pi.getThinkingLevel(),
+			statusText: latestCtx ? currentStatusText(latestCtx) : undefined,
+		})));
 		if (loadedConfig.errors.length > 0 && ctx.hasUI) {
 			notifyConfigErrors(ctx);
 		}
@@ -229,6 +243,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("model_select", async (event, ctx) => {
+		latestCtx = ctx;
 		currentModel = event.model;
 		updateStatus(ctx);
 	});

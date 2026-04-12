@@ -19,13 +19,17 @@ export function isRawOverride(resolved: ResolvedRoleResult | null | undefined, c
 }
 
 export function formatModelProfilesStatus(input: ModelProfilesStatusInput): string | undefined {
-	const parts: string[] = [];
-	if (input.state.activeProfile) parts.push(`profile:${input.state.activeProfile}`);
-	if (input.state.activeRole) parts.push(`role:${input.state.activeRole}`);
-	if (parts.length === 0) return undefined;
-	if (input.unresolved) parts.push("unresolved");
-	else if (isRawOverride(input.resolved, input.currentModel)) parts.push("raw-override");
-	return parts.join(" ");
+	const base = input.state.activeProfile && input.state.activeRole
+		? `${input.state.activeProfile}:${input.state.activeRole}`
+		: input.state.activeProfile
+			? input.state.activeProfile
+			: input.state.activeRole
+				? input.state.activeRole
+				: undefined;
+	if (!base) return undefined;
+	if (input.unresolved) return `${base} unresolved`;
+	if (isRawOverride(input.resolved, input.currentModel)) return `${base} raw-override`;
+	return base;
 }
 
 export function formatResolvedRoleSummary(resolved: ResolvedRoleResult): string {
@@ -39,7 +43,7 @@ export function formatResolvedRoleSummary(resolved: ResolvedRoleResult): string 
 }
 
 export function formatModelProfilesStateSummary(input: ModelProfilesStatusInput): string {
-	const status = formatModelProfilesStatus(input) ?? "profile:none role:none";
+	const status = formatModelProfilesStatus(input) ?? "none";
 	const resolvedLabel = input.resolved ? formatResolvedRoleSummary(input.resolved) : "unresolved";
 	const currentLabel = modelLabel(input.currentModel) ?? "none";
 	return `${status} model:${currentLabel} resolved:${resolvedLabel}`;
