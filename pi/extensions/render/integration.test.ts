@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { complete, type Model } from "@mariozechner/pi-ai";
 import { loadModelProfilesConfig, mergeModelProfilesConfig } from "../model-profiles/config";
 import { resolveModelRole } from "../model-profiles/resolve";
-import type { ModelProfilesConfig } from "../model-profiles/types";
 import { BlockType, EmbeddedContentType, PreferredView, QuestionType } from "./baml_client/types";
 import { buildBamlRenderContext, parseBamlRenderResult } from "./extract";
+import { buildRenderTestProfilesConfig, DEFAULT_RENDER_E2E_ROLE } from "./model-selection";
 
 const piSdkModulePath = process.env.PI_SDK_MODULE
 	?? "/Users/auk000v/.bun/install/global/node_modules/@mariozechner/pi-coding-agent";
@@ -15,45 +15,6 @@ const requestedProvider = process.env.PI_RENDER_E2E_PROVIDER;
 const requestedModelId = process.env.PI_RENDER_E2E_MODEL;
 const requestedProfile = process.env.PI_RENDER_E2E_PROFILE;
 const requestedRole = process.env.PI_RENDER_E2E_ROLE;
-
-function buildRenderTestProfilesConfig(includeLocalRole: boolean): ModelProfilesConfig {
-	return {
-		activeProfile: "render-e2e",
-		profiles: {
-			"render-e2e": {
-				defaultRole: "small",
-				roles: {
-					small: {
-						provider: "openai-codex",
-						model: "gpt-5.4-mini",
-						thinkingLevel: "minimal",
-						fallback: includeLocalRole ? ["workhorse", "smart", "local"] : ["workhorse", "smart"],
-					},
-					workhorse: {
-						provider: "openai-codex",
-						model: "gpt-5.4",
-						thinkingLevel: "low",
-						fallback: ["smart"],
-					},
-					smart: {
-						provider: "openai",
-						model: "gpt-5.4",
-						thinkingLevel: "low",
-					},
-					...(includeLocalRole
-						? {
-							local: {
-								provider: "ollama",
-								model: "gemma4:e4b",
-								thinkingLevel: "low",
-							},
-						}
-						: {}),
-				},
-			},
-		},
-	};
-}
 
 async function isOllamaAvailable(): Promise<boolean> {
 	const base = ollamaBaseUrl;
@@ -90,7 +51,7 @@ async function resolvePiModel() {
 		modelRegistry,
 		config: mergedConfig,
 		profile: requestedProfile ? { value: requestedProfile, source: "env" } : undefined,
-		role: { value: requestedRole ?? "small", source: requestedRole ? "env" : "config" },
+		role: { value: requestedRole ?? DEFAULT_RENDER_E2E_ROLE, source: requestedRole ? "env" : "config" },
 	});
 	if (!resolved) return null;
 	if (resolved.model.provider === "ollama" && !ollamaAvailable) return null;
