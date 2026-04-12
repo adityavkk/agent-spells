@@ -12,24 +12,29 @@ Canonical small-model role name:
 - loads model profile config from:
   - `~/.pi/agent/model-profiles.json`
   - `<cwd>/.pi/model-profiles.json`
-- lets users activate:
-  - profiles via `/profile`
-  - roles via `/role`
+- lets users activate profiles and roles through one command:
+  - `/profile`
+  - `/profile personal`
+  - `/profile smart`
+  - `/profile personal:smart`
 - persists active selection in session custom entries
 - shows footer status like:
-  - `profile:work role:small`
-  - `profile:work role:small raw-override`
-  - `profile:work role:small unresolved`
+  - `personal:small`
+  - `personal:small raw-override`
+  - `personal:small unresolved`
 
 ## Commands
 
 - `/profile`
-- `/profile <name>`
-- `/role`
-- `/role <name>`
-- `/model-profiles`
-- `/model-profiles status`
-- `/model-profiles reload`
+  - interactive profile + role picker
+- `/profile <profile>`
+  - activate profile default role
+- `/profile <role>`
+  - switch role inside active profile
+- `/profile <profile>:<role>`
+  - activate explicit profile + role
+- `/profile status`
+- `/profile reload`
 
 ## Flags
 

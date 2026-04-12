@@ -1,5 +1,6 @@
 import type { Model } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { getProfileCommandCompletions, parseProfileCommand } from "./commands";
 import {
 	loadModelProfilesConfig,
 	normalizeModelProfilesState,
@@ -144,7 +145,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		if (!resolved) {
 			updateStatus(ctx);
 			if (options.notify !== false) {
-				ctx.ui.notify("No model could be resolved for current profile/role state", "warning");
+				ctx.ui.notify("No model could be resolved for current profile state", "warning");
 			}
 			return false;
 		}
@@ -167,15 +168,15 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		currentModel = resolved.model;
 		updateStatus(ctx);
 		if (options.notify !== false) {
+			const activeTarget = currentStatusText(ctx) ?? resolved.role ?? resolved.profile ?? "profile";
 			if (unresolved) {
 				ctx.ui.notify(
-					`Role "${activeState.activeRole}" unavailable; using ${resolved.ref.provider}/${resolved.ref.model}`,
+					`Profile "${activeTarget}" unavailable; using ${resolved.ref.provider}/${resolved.ref.model}`,
 					"warning",
 				);
-			} else if (selections.profile?.value && !selections.role?.value) {
-				ctx.ui.notify(`Profile "${activeState.activeProfile}" activated`, "info");
+			} else {
+				ctx.ui.notify(`Profile "${activeTarget}" -> ${formatResolvedRoleSummary(resolved)}`, "info");
 			}
-			ctx.ui.notify(`Role "${activeState.activeRole ?? resolved.role ?? "(none)"}" -> ${formatResolvedRoleSummary(resolved)}`, "info");
 		}
 		return true;
 	}
@@ -193,17 +194,42 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		return ctx.ui.select("Select profile", profileNames);
 	}
 
-	async function selectRole(ctx: ExtensionCommandContext, profileName: string): Promise<string | undefined> {
+	async function selectRoleTarget(
+		ctx: ExtensionCommandContext,
+		profileName: string,
+	): Promise<{ kind: "default" } | { kind: "role"; role: string } | undefined> {
+		const profile = loadedConfig.mergedConfig.profiles[profileName];
+		if (!profile) return undefined;
 		const roleNames = getRoleNames(profileName);
 		if (roleNames.length === 0) {
-			ctx.ui.notify(`Profile "${profileName}" has no roles`, "warning");
+			await applySelection(ctx, buildProfileCommandSelection(profileName));
 			return undefined;
 		}
 		if (!ctx.hasUI) {
-			ctx.ui.notify("/role requires an argument outside interactive mode", "warning");
+			ctx.ui.notify("/profile requires an argument outside interactive mode", "warning");
 			return undefined;
 		}
-		return ctx.ui.select(`Select role for ${profileName}`, roleNames);
+
+		const defaultOption = profile.defaultRole ? `(default: ${profile.defaultRole})` : undefined;
+		const options = defaultOption ? [defaultOption, ...roleNames] : roleNames;
+		const selected = await ctx.ui.select(`Select role for ${profileName}`, options);
+		if (!selected) return undefined;
+		if (defaultOption && selected === defaultOption) return { kind: "default" };
+		return { kind: "role", role: selected };
+	}
+
+	async function handleInteractiveProfileCommand(ctx: ExtensionCommandContext): Promise<void> {
+		const requestedProfile = await selectProfile(ctx);
+		if (!requestedProfile) return;
+		const target = await selectRoleTarget(ctx, requestedProfile);
+		if (!target || target.kind === "default") {
+			await applySelection(ctx, buildProfileCommandSelection(requestedProfile));
+			return;
+		}
+		await applySelection(ctx, {
+			profile: { value: requestedProfile, source: "session" },
+			role: { value: target.role, source: "session" },
+		});
 	}
 
 	pi.registerFlag("profile", {
@@ -249,79 +275,87 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("profile", {
-		description: "Select or activate a model profile",
+		description: "Inspect, reload, or switch model profiles and roles",
+		getArgumentCompletions: (prefix) => getProfileCommandCompletions({
+			prefix,
+			profileNames: getProfileNames(),
+			activeProfile: getEffectiveProfileName(),
+			activeProfileRoles: getRoleNames(getEffectiveProfileName()),
+		}),
 		handler: async (args, ctx) => {
 			refreshConfig(ctx.cwd);
-			const requestedProfile = args.trim() || await selectProfile(ctx);
-			if (!requestedProfile) return;
-			if (!loadedConfig.mergedConfig.profiles[requestedProfile]) {
-				ctx.ui.notify(`Unknown profile "${requestedProfile}"`, "warning");
-				return;
-			}
-			await applySelection(ctx, buildProfileCommandSelection(requestedProfile));
-		},
-	});
-
-	pi.registerCommand("role", {
-		description: "Select or activate a model role",
-		handler: async (args, ctx) => {
-			refreshConfig(ctx.cwd);
-			const profileName = getEffectiveProfileName();
-			if (!profileName) {
-				ctx.ui.notify("No active profile. Use /profile first or set activeProfile in config", "warning");
-				return;
-			}
-			const requestedRole = args.trim() || await selectRole(ctx, profileName);
-			if (!requestedRole) return;
-			if (!loadedConfig.mergedConfig.profiles[profileName]?.roles[requestedRole]) {
-				ctx.ui.notify(`Unknown role "${requestedRole}" in profile "${profileName}"`, "warning");
-				return;
-			}
-			await applySelection(ctx, {
-				profile: { value: profileName, source: "session" },
-				role: { value: requestedRole, source: "session" },
+			const action = parseProfileCommand({
+				args,
+				profileNames: getProfileNames(),
+				activeProfile: getEffectiveProfileName(),
+				activeProfileRoles: getRoleNames(getEffectiveProfileName()),
 			});
-		},
-	});
 
-	pi.registerCommand("model-profiles", {
-		description: "Inspect, reload, or interactively select model profiles",
-		handler: async (args, ctx) => {
-			const subcommand = args.trim();
-			refreshConfig(ctx.cwd);
-			if (subcommand === "reload") {
-				refreshConfig(ctx.cwd);
-				if (loadedConfig.errors.length > 0) notifyConfigErrors(ctx);
-				updateStatus(ctx);
-				ctx.ui.notify("Model profiles reloaded", "info");
-				return;
+			switch (action.kind) {
+				case "interactive": {
+					await handleInteractiveProfileCommand(ctx);
+					return;
+				}
+				case "status": {
+					ctx.ui.notify(formatModelProfilesStateSummary({
+						state: activeState,
+						resolved: lastResolved,
+						currentModel: currentModel ?? ctx.model,
+						unresolved,
+					}), "info");
+					return;
+				}
+				case "reload": {
+					refreshConfig(ctx.cwd);
+					if (loadedConfig.errors.length > 0) notifyConfigErrors(ctx);
+					updateStatus(ctx);
+					ctx.ui.notify("Model profiles reloaded", "info");
+					return;
+				}
+				case "profile": {
+					if (!loadedConfig.mergedConfig.profiles[action.profile]) {
+						ctx.ui.notify(`Unknown profile "${action.profile}"`, "warning");
+						return;
+					}
+					await applySelection(ctx, buildProfileCommandSelection(action.profile));
+					return;
+				}
+				case "role": {
+					const profileName = getEffectiveProfileName();
+					if (!profileName) {
+						ctx.ui.notify("No active profile. Use /profile <name> first or set activeProfile in config", "warning");
+						return;
+					}
+					if (!loadedConfig.mergedConfig.profiles[profileName]?.roles[action.role]) {
+						ctx.ui.notify(`Unknown role "${action.role}" in profile "${profileName}"`, "warning");
+						return;
+					}
+					await applySelection(ctx, {
+						profile: { value: profileName, source: "session" },
+						role: { value: action.role, source: "session" },
+					});
+					return;
+				}
+				case "profile-role": {
+					if (!loadedConfig.mergedConfig.profiles[action.profile]) {
+						ctx.ui.notify(`Unknown profile "${action.profile}"`, "warning");
+						return;
+					}
+					if (!loadedConfig.mergedConfig.profiles[action.profile]?.roles[action.role]) {
+						ctx.ui.notify(`Unknown role "${action.role}" in profile "${action.profile}"`, "warning");
+						return;
+					}
+					await applySelection(ctx, {
+						profile: { value: action.profile, source: "session" },
+						role: { value: action.role, source: "session" },
+					});
+					return;
+				}
+				case "invalid": {
+					ctx.ui.notify(action.message, "warning");
+					return;
+				}
 			}
-			if (subcommand === "status") {
-				ctx.ui.notify(formatModelProfilesStateSummary({
-					state: activeState,
-					resolved: lastResolved,
-					currentModel: currentModel ?? ctx.model,
-					unresolved,
-				}), "info");
-				return;
-			}
-
-			const requestedProfile = await selectProfile(ctx);
-			if (!requestedProfile) return;
-			const selection = buildProfileCommandSelection(requestedProfile);
-			if (selection.clearRole) {
-				await applySelection(ctx, selection);
-				return;
-			}
-			const requestedRole = await selectRole(ctx, requestedProfile);
-			if (!requestedRole) {
-				await applySelection(ctx, selection);
-				return;
-			}
-			await applySelection(ctx, {
-				profile: { value: requestedProfile, source: "session" },
-				role: { value: requestedRole, source: "session" },
-			});
 		},
 	});
 }
