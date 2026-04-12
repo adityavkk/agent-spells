@@ -8,6 +8,8 @@ Interactive answer flow for agent-generated questions.
 - `extraction.ts` - structured extraction bridge
 - `core.ts` - normalized types and answer formatting
 - `ui.ts` - interactive terminal UI
+- `baml_src/` - answer-specific BAML source types and prompts
+- `baml_client/` - generated answer-specific TypeScript client
 - `debug.ts` - gated debug logging
 - `*.test.ts` - unit/integration coverage
 

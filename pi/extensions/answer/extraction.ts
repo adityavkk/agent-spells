@@ -1,5 +1,5 @@
 import type { Context } from "@mariozechner/pi-ai";
-import { b } from "../../../baml_client";
+import { b } from "./baml_client";
 import { normalizeQuestion, type ExtractionResult, type RawQuestion } from "./core";
 
 function contentToString(content: unknown): string {

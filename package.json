@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "baml-generate": "baml-cli generate",
+    "baml-generate": "cd pi/extensions/answer && baml-cli generate",
     "test": "bun run baml-generate && bun test",
     "test:integration": "bun run baml-generate && bun test pi/extensions/answer/integration.test.ts",
     "test:integration:skip": "PI_ANSWER_E2E=0 bun test pi/extensions/answer/integration.test.ts"
