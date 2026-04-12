@@ -4,6 +4,14 @@
 
 Make universal profile fallback observable without polluting normal chat UX.
 
+Current runtime policy:
+
+- sticky round-robin cursor per `profile:role`
+- each turn starts at current cursor
+- fallback wraps through remaining targets
+- winning target becomes next turn's cursor
+- `/profile reset` clears cursor back to first configured target
+
 Need answers to:
 
 - which concrete target actually ran?
@@ -212,17 +220,18 @@ In `index.ts`:
 - include in `/profile status`
 - maybe clear on `/profile reload` or model change if desired
 
-## Suggested first pass
+## Current implementation
 
-Smallest good implementation:
+Implemented now:
 
-1. in-memory `lastRuntimeDiagnostics`
+1. sticky cursor stored per `profile:role`
 2. callbacks from `streamWithModelRoleFallback`
 3. `/profile status` prints:
+   - cursor
    - winner
    - attempts
-   - retry/fallback count
-4. notification only when fallback actually happened
+4. footer model display shows last concrete winner
+5. notification only when fallback actually happened
 
 That gives strong operator visibility with minimal schema churn.
 

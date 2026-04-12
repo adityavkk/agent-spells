@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Model } from "@mariozechner/pi-ai";
-import { buildSyntheticProfileModelId, buildSyntheticProfileProviderModels, isSyntheticProfileModel, parseSyntheticProfileModelId } from "./provider";
-import type { ModelProfilesConfig, ModelRegistryLike } from "./types";
+import { buildSyntheticProfileModelId, buildSyntheticProfileProviderModels, isSyntheticProfileModel, parseSyntheticProfileModelId, rotateResolvedRoleCandidates } from "./provider";
+import type { ModelProfilesConfig, ModelRegistryLike, ResolvedRoleResult } from "./types";
 
 function makeModel(provider: string, id: string, overrides: Partial<Model<any>> = {}): Model<any> {
 	return {
@@ -42,6 +42,29 @@ describe("synthetic profile model ids", () => {
 		expect(parseSyntheticProfileModelId("missing-separator")).toBeNull();
 		expect(isSyntheticProfileModel({ provider: "profiles", id })).toBeTrue();
 		expect(isSyntheticProfileModel({ provider: "openai", id })).toBeFalse();
+	});
+});
+
+describe("rotateResolvedRoleCandidates", () => {
+	it("starts from the sticky cursor and wraps around", () => {
+		const first = makeModel("a", "one");
+		const second = makeModel("b", "two");
+		const third = makeModel("c", "three");
+		const resolved: ResolvedRoleResult = {
+			model: first,
+			ref: { provider: "a", model: "one" },
+			profile: "personal",
+			role: "smart",
+			source: "config",
+			trace: [],
+			candidates: [
+				{ model: first, ref: { provider: "a", model: "one" } },
+				{ model: second, ref: { provider: "b", model: "two" } },
+				{ model: third, ref: { provider: "c", model: "three" } },
+			],
+		};
+
+		expect(rotateResolvedRoleCandidates(resolved, 1).candidates.map((candidate) => candidate.ref.model)).toEqual(["two", "three", "one"]);
 	});
 });
 

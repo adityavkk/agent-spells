@@ -155,12 +155,18 @@ export function streamWithModelRoleFallback<TApi extends Api = Api>(
 	(async () => {
 		let lastErrorMessage = "No model candidates available for role fallback";
 		let lastErrorModel: Model<any> | undefined;
+		const attempts: CompleteWithModelRoleFallbackResult["attempts"] = [];
 
 		for (const candidate of input.resolved.candidates) {
 			const auth = await input.modelRegistry.getApiKeyAndHeaders(candidate.model);
 			if (!auth.ok) {
 				lastErrorMessage = auth.error;
 				lastErrorModel = candidate.model;
+				attempts.push({
+					candidate,
+					status: "auth-unavailable",
+					message: auth.error,
+				});
 				continue;
 			}
 
@@ -183,6 +189,8 @@ export function streamWithModelRoleFallback<TApi extends Api = Api>(
 					if (!committed) {
 						if (event.type === "done") {
 							for (const bufferedEvent of bufferedEvents) outer.push(bufferedEvent);
+							attempts.push({ candidate, status: "success" });
+							input.onFinish?.({ status: "success", candidate, attempts });
 							outer.push(event);
 							outer.end();
 							return;
@@ -191,10 +199,21 @@ export function streamWithModelRoleFallback<TApi extends Api = Api>(
 							lastErrorMessage = event.error.errorMessage ?? "Unknown provider error";
 							lastErrorModel = candidate.model;
 							if (isRetryableFailure({ response: event.error })) {
+								attempts.push({
+									candidate,
+									status: "retryable-response-error",
+									message: lastErrorMessage,
+								});
 								bufferedEvents.length = 0;
 								break;
 							}
 							for (const bufferedEvent of bufferedEvents) outer.push(bufferedEvent);
+							attempts.push({
+								candidate,
+								status: "non-retryable-response-error",
+								message: lastErrorMessage,
+							});
+							input.onFinish?.({ status: "error", attempts, message: lastErrorMessage });
 							outer.push(event);
 							outer.end();
 							return;
@@ -204,7 +223,20 @@ export function streamWithModelRoleFallback<TApi extends Api = Api>(
 					}
 
 					outer.push(event);
-					if (event.type === "done" || event.type === "error") {
+					if (event.type === "done") {
+						attempts.push({ candidate, status: "success" });
+						input.onFinish?.({ status: "success", candidate, attempts });
+						outer.end();
+						return;
+					}
+					if (event.type === "error") {
+						lastErrorMessage = event.error.errorMessage ?? "Unknown provider error";
+						attempts.push({
+							candidate,
+							status: "non-retryable-response-error",
+							message: lastErrorMessage,
+						});
+						input.onFinish?.({ status: "error", attempts, message: lastErrorMessage });
 						outer.end();
 						return;
 					}
@@ -213,6 +245,12 @@ export function streamWithModelRoleFallback<TApi extends Api = Api>(
 				lastErrorMessage = error instanceof Error ? error.message : String(error);
 				lastErrorModel = candidate.model;
 				if (committed || !isRetryableFailure({ error })) {
+					attempts.push({
+						candidate,
+						status: "non-retryable-throw",
+						message: lastErrorMessage,
+					});
+					input.onFinish?.({ status: "error", attempts, message: lastErrorMessage });
 					outer.push({
 						type: "error",
 						reason: "error",
@@ -221,9 +259,15 @@ export function streamWithModelRoleFallback<TApi extends Api = Api>(
 					outer.end();
 					return;
 				}
+				attempts.push({
+					candidate,
+					status: "retryable-throw",
+					message: lastErrorMessage,
+				});
 			}
 		}
 
+		input.onFinish?.({ status: "error", attempts, message: lastErrorMessage });
 		outer.push({
 			type: "error",
 			reason: "error",
@@ -231,6 +275,11 @@ export function streamWithModelRoleFallback<TApi extends Api = Api>(
 		});
 		outer.end();
 	})().catch((error) => {
+		input.onFinish?.({
+			status: "error",
+			attempts: [],
+			message: error instanceof Error ? error.message : String(error),
+		});
 		outer.push({
 			type: "error",
 			reason: "error",

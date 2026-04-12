@@ -4,6 +4,7 @@ export type ProfileCommandAction =
 	| { kind: "interactive" }
 	| { kind: "status" }
 	| { kind: "reload" }
+	| { kind: "reset" }
 	| { kind: "profile"; profile: string }
 	| { kind: "role"; role: string }
 	| { kind: "profile-role"; profile: string; role: string }
@@ -25,6 +26,7 @@ export function parseProfileCommand(input: ParseProfileCommandInput): ProfileCom
 	if (args.length === 0) return { kind: "interactive" };
 	if (args === "status") return { kind: "status" };
 	if (args === "reload") return { kind: "reload" };
+	if (args === "reset") return { kind: "reset" };
 
 	const colonIndex = args.indexOf(":");
 	if (colonIndex >= 0) {
@@ -57,6 +59,7 @@ export function getProfileCommandCompletions(input: {
 	const values = new Map<string, string>();
 	values.set("status", "Show active model profile state");
 	values.set("reload", "Reload model profile config from disk");
+	values.set("reset", "Reset sticky fallback cursor for active profile role");
 
 	for (const profileName of input.profileNames) {
 		values.set(profileName, `Activate profile ${profileName}`);

@@ -2,6 +2,7 @@ import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model
 
 export const MODEL_PROFILES_FILENAME = "model-profiles.json";
 export const MODEL_PROFILES_STATE_CUSTOM_TYPE = "model-profiles-state";
+export const MODEL_PROFILES_RUNTIME_STATE_CUSTOM_TYPE = "model-profiles-runtime-state";
 export const MODEL_PROFILES_PROVIDER = "profiles";
 export const MODEL_PROFILES_PROVIDER_API = "model-profiles-fallback";
 export const MODEL_PROFILES_PROVIDER_BASE_URL = "https://profiles.invalid/v1";
@@ -45,6 +46,35 @@ export interface ModelProfilesConfig {
 export interface ModelProfilesState {
 	activeProfile?: ModelProfileName;
 	activeRole?: ModelRoleName;
+}
+
+export interface ModelProfilesRuntimeAttempt {
+	provider: string;
+	model: string;
+	status: "success" | "retryable-response-error" | "retryable-throw" | "non-retryable-response-error" | "non-retryable-throw" | "auth-unavailable";
+	message?: string;
+}
+
+export interface ModelProfilesRuntimeSelectionState {
+	cursor?: number;
+	lastWinner?: ResolvedModelRef;
+	lastAttempts?: ModelProfilesRuntimeAttempt[];
+	updatedAt?: number;
+}
+
+export interface ModelProfilesRuntimeState {
+	selections: Record<string, ModelProfilesRuntimeSelectionState>;
+}
+
+export interface ModelProfilesRuntimeDiagnostics {
+	profile: string;
+	role: string;
+	selectionKey: string;
+	startedCursor: number;
+	nextCursor: number;
+	winner?: ResolvedModelRef;
+	attempts: ModelProfilesRuntimeAttempt[];
+	finishedAt: number;
 }
 
 export interface ModelProfilesConfigError {
@@ -146,6 +176,13 @@ export interface CompleteWithModelRoleFallbackResult {
 	attempts: CompleteWithModelRoleFallbackAttempt[];
 }
 
+export interface ModelRoleFallbackExecutionResult {
+	status: "success" | "error";
+	candidate?: ResolvedRoleCandidate;
+	attempts: CompleteWithModelRoleFallbackAttempt[];
+	message?: string;
+}
+
 export interface StreamWithModelRoleFallbackInput<TApi extends Api = Api> {
 	resolved: ResolvedRoleResult;
 	modelRegistry: ModelRegistryLike;
@@ -154,4 +191,5 @@ export interface StreamWithModelRoleFallbackInput<TApi extends Api = Api> {
 	buildOptions?: (candidate: ResolvedRoleCandidate, auth: ModelRegistryAuthResult) => SimpleStreamOptions | Promise<SimpleStreamOptions>;
 	streamFn?: (model: Model<TApi>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	isRetryableFailure?: (input: RetryableModelFailureDecisionInput) => boolean;
+	onFinish?: (result: ModelRoleFallbackExecutionResult) => void;
 }

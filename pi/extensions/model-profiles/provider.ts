@@ -2,13 +2,17 @@ import { createAssistantMessageEventStream, streamSimple, type Context, type Mod
 import type { ProviderModelConfig } from "@mariozechner/pi-coding-agent";
 import { expandRoleCandidates, getRoleTargets, resolveModelRole } from "./resolve";
 import { streamWithModelRoleFallback } from "./runtime";
+import type { CompleteWithModelRoleFallbackAttempt } from "./types";
 import {
 	MODEL_PROFILES_PROVIDER,
 	MODEL_PROFILES_PROVIDER_API,
 	type ModelProfileConfig,
 	type ModelProfilesConfig,
+	type ModelProfilesRuntimeDiagnostics,
 	type ModelRegistryLike,
 	type ModelRoleConfigTarget,
+	type ResolvedRoleCandidate,
+	type ResolvedRoleResult,
 } from "./types";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -110,6 +114,37 @@ function buildSyntheticRoleModel(
 	};
 }
 
+function findCandidateIndex(candidates: ResolvedRoleCandidate[], candidate: ResolvedRoleCandidate | undefined): number {
+	if (!candidate) return -1;
+	return candidates.findIndex((entry) => entry.ref.provider === candidate.ref.provider && entry.ref.model === candidate.ref.model);
+}
+
+function toRuntimeAttempts(attempts: CompleteWithModelRoleFallbackAttempt[]) {
+	return attempts.map((attempt) => ({
+		provider: attempt.candidate.ref.provider,
+		model: attempt.candidate.ref.model,
+		status: attempt.status,
+		message: attempt.message,
+	}));
+}
+
+export function rotateResolvedRoleCandidates(resolved: ResolvedRoleResult, startIndex: number): ResolvedRoleResult {
+	if (resolved.candidates.length <= 1) return resolved;
+	const normalizedStartIndex = Math.max(0, startIndex % resolved.candidates.length);
+	if (normalizedStartIndex === 0) return resolved;
+	return {
+		...resolved,
+		model: resolved.candidates[normalizedStartIndex]!.model,
+		ref: resolved.candidates[normalizedStartIndex]!.ref,
+		thinkingLevel: resolved.candidates[normalizedStartIndex]!.ref.thinkingLevel,
+		matchedRole: resolved.candidates[normalizedStartIndex]!.matchedRole,
+		candidates: [
+			...resolved.candidates.slice(normalizedStartIndex),
+			...resolved.candidates.slice(0, normalizedStartIndex),
+		],
+	};
+}
+
 export function buildSyntheticProfileModelId(profile: string, role: string): string {
 	return `${profile}:${role}`;
 }
@@ -148,6 +183,8 @@ export function buildSyntheticProfileProviderModels(
 export function createModelProfilesProviderStream(getState: () => {
 	config: ModelProfilesConfig;
 	modelRegistry?: ModelRegistryLike;
+	getCursor?: (profile: string, role: string, candidateCount: number) => number;
+	onRuntimeDiagnostics?: (diagnostics: ModelProfilesRuntimeDiagnostics) => void;
 }) {
 	return (model: Model<any>, context: Context, options?: SimpleStreamOptions) => {
 		const outer = createAssistantMessageEventStream();
@@ -173,8 +210,10 @@ export function createModelProfilesProviderStream(getState: () => {
 				throw new Error(`No configured model targets resolved for ${selection.profile}:${selection.role}`);
 			}
 
+			const startedCursor = state.getCursor?.(selection.profile, selection.role, resolved.candidates.length) ?? 0;
+			const rotatedResolved = rotateResolvedRoleCandidates(resolved, startedCursor);
 			const realStream = streamWithModelRoleFallback({
-				resolved,
+				resolved: rotatedResolved,
 				modelRegistry: state.modelRegistry,
 				context,
 				options,
@@ -196,6 +235,19 @@ export function createModelProfilesProviderStream(getState: () => {
 						delete candidateOptions.temperature;
 					}
 					return candidateOptions;
+				},
+				onFinish: (result) => {
+					const winnerIndex = findCandidateIndex(resolved.candidates, result.candidate);
+					state.onRuntimeDiagnostics?.({
+						profile: selection.profile,
+						role: selection.role,
+						selectionKey: buildSyntheticProfileModelId(selection.profile, selection.role),
+						startedCursor,
+						nextCursor: winnerIndex >= 0 ? winnerIndex : startedCursor,
+						winner: result.candidate?.ref,
+						attempts: toRuntimeAttempts(result.attempts),
+						finishedAt: Date.now(),
+					});
 				},
 				streamFn: streamSimple,
 			});

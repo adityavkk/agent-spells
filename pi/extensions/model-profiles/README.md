@@ -33,6 +33,7 @@ Examples:
   - `/profile personal:smart`
   - `/profile status`
   - `/profile reload`
+  - `/profile reset`
 - persists active selection in session custom entries
 - shows footer status like:
   - `personal:small`
@@ -56,6 +57,8 @@ Examples:
   - show active profile, role, resolved model, source, and summary
 - `/profile reload`
   - reload config from disk
+- `/profile reset`
+  - reset sticky round-robin cursor for active profile role back to first configured target
 
 ## Flags
 
@@ -154,6 +157,15 @@ At request time that synthetic provider:
 
 This makes profile roles feel like normal Pi model selections rather than answer/render-specific glue.
 
+Sticky runtime policy:
+
+- each profile role keeps a sticky round-robin cursor
+- each new turn starts from the current cursor
+- retries wrap around the remaining targets in round-robin order
+- on success, cursor sticks to the winning concrete target
+- `/profile reset` clears the sticky cursor so the next turn starts from the first configured target again
+- footer model display shows the last concrete winner, while the logical status line still shows `profile:role`
+
 ## Runtime fallback behavior
 
 Retryable failures:
@@ -192,14 +204,14 @@ So universal fallback is strongest for:
 
 ## Current diagnostics state
 
-Today `/profile status` shows logical selection + resolved summary.
-It does not yet show a per-turn fallback trace like:
+`/profile status` now shows:
 
-- attempted targets
-- winning concrete target
-- why earlier targets failed
+- logical selection
+- synthetic active session model
+- sticky cursor position
+- last winning concrete target
+- attempt trace for the latest profile-backed turn
 
-That is the next operator UX layer to add.
 See `./docs/runtime-diagnostics.md`.
 
 ## Notes

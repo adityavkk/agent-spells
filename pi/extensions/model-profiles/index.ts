@@ -12,15 +12,27 @@ import {
 	parseSyntheticProfileModelId,
 } from "./provider";
 import { readModelProfilesState, resolveModelRole } from "./resolve";
-import { formatModelProfilesStateSummary, formatModelProfilesStatus, formatResolvedRoleSummary, getAppliedThinkingLevel } from "./state";
+import {
+	formatModelProfilesStateSummary,
+	formatModelProfilesStatus,
+	formatResolvedRoleSummary,
+	getAppliedThinkingLevel,
+	getModelProfilesSelectionKey,
+	readModelProfilesRuntimeState,
+	type ModelProfilesStatusInput,
+} from "./state";
 import { createModelProfilesFooter } from "./ui";
 import {
 	MODEL_PROFILES_PROVIDER,
 	MODEL_PROFILES_PROVIDER_API,
 	MODEL_PROFILES_PROVIDER_API_KEY,
 	MODEL_PROFILES_PROVIDER_BASE_URL,
+	MODEL_PROFILES_RUNTIME_STATE_CUSTOM_TYPE,
 	MODEL_PROFILES_STATE_CUSTOM_TYPE,
 	type LoadedModelProfilesConfig,
+	type ModelProfilesRuntimeDiagnostics,
+	type ModelProfilesRuntimeSelectionState,
+	type ModelProfilesRuntimeState,
 	type ModelProfilesSelection,
 	type ModelProfilesState,
 	type ModelRegistryLike,
@@ -48,14 +60,98 @@ function uniqueSorted(values: string[]): string[] {
 export default function modelProfilesExtension(pi: ExtensionAPI) {
 	let loadedConfig: LoadedModelProfilesConfig = loadModelProfilesConfig(process.cwd());
 	let activeState: ModelProfilesState = {};
+	let runtimeState: ModelProfilesRuntimeState = { selections: {} };
 	let lastResolved: ResolvedRoleResult | null = null;
+	let lastRuntimeDiagnostics: ModelProfilesRuntimeDiagnostics | null = null;
 	let unresolved = false;
-	let currentModel: Model<any> | undefined;
+	let displayModel: Model<any> | undefined;
 	let latestCtx: ExtensionContext | undefined;
 	let latestModelRegistry: ModelRegistryLike | undefined;
 
 	function refreshConfig(cwd: string): void {
 		loadedConfig = loadModelProfilesConfig(cwd);
+	}
+
+	function getRuntimeSelectionState(profile: string | undefined, role: string | undefined): ModelProfilesRuntimeSelectionState | undefined {
+		const key = getModelProfilesSelectionKey(profile, role);
+		return key ? runtimeState.selections[key] : undefined;
+	}
+
+	function getDisplayModel(ctx: ExtensionContext): Model<any> | undefined {
+		if (ctx.model?.provider !== MODEL_PROFILES_PROVIDER) return ctx.model;
+		const runtimeSelection = getRuntimeSelectionState(activeState.activeProfile, activeState.activeRole);
+		const winner = runtimeSelection?.lastWinner;
+		if (winner) {
+			const winnerModel = ctx.modelRegistry.find(winner.provider, winner.model);
+			if (winnerModel) return winnerModel;
+		}
+		if (lastResolved) {
+			const candidate = typeof runtimeSelection?.cursor === "number"
+				? lastResolved.candidates[runtimeSelection.cursor] ?? lastResolved.candidates[0]
+				: lastResolved.candidates[0];
+			if (candidate) return candidate.model;
+		}
+		return ctx.model;
+	}
+
+	function getStoredRuntimeDiagnostics(profile: string | undefined, role: string | undefined): ModelProfilesRuntimeDiagnostics | null {
+		const key = getModelProfilesSelectionKey(profile, role);
+		const selectionState = getRuntimeSelectionState(profile, role);
+		if (!key || !selectionState) return null;
+		return {
+			profile: profile ?? "",
+			role: role ?? "",
+			selectionKey: key,
+			startedCursor: selectionState.cursor ?? 0,
+			nextCursor: selectionState.cursor ?? 0,
+			winner: selectionState.lastWinner,
+			attempts: selectionState.lastAttempts ?? [],
+			finishedAt: selectionState.updatedAt ?? 0,
+		};
+	}
+
+	function setRuntimeState(nextRuntimeState: ModelProfilesRuntimeState, persist = true): void {
+		runtimeState = nextRuntimeState;
+		if (persist) {
+			pi.appendEntry(MODEL_PROFILES_RUNTIME_STATE_CUSTOM_TYPE, runtimeState);
+		}
+	}
+
+	function applyRuntimeDiagnostics(diagnostics: ModelProfilesRuntimeDiagnostics, persist = true): void {
+		setRuntimeState({
+			selections: {
+				...runtimeState.selections,
+				[diagnostics.selectionKey]: {
+					cursor: diagnostics.nextCursor,
+					lastWinner: diagnostics.winner,
+					lastAttempts: diagnostics.attempts,
+					updatedAt: diagnostics.finishedAt,
+				},
+			},
+		}, persist);
+		lastRuntimeDiagnostics = diagnostics;
+		if (latestCtx) {
+			displayModel = getDisplayModel(latestCtx);
+			updateStatus(latestCtx);
+			const fallbackCount = diagnostics.attempts.filter((attempt) => attempt.status !== "success").length;
+			if (fallbackCount > 0 && diagnostics.winner) {
+				latestCtx.ui.notify(
+					`Profile fallback: ${diagnostics.profile}:${diagnostics.role} -> ${diagnostics.winner.provider}/${diagnostics.winner.model}`,
+					"info",
+				);
+			}
+		}
+	}
+
+	function resetRuntimeSelection(profile: string | undefined, role: string | undefined, persist = true): boolean {
+		const key = getModelProfilesSelectionKey(profile, role);
+		if (!key) return false;
+		if (!runtimeState.selections[key]) return false;
+		const nextSelections = { ...runtimeState.selections };
+		delete nextSelections[key];
+		setRuntimeState({ selections: nextSelections }, persist);
+		if (lastRuntimeDiagnostics?.selectionKey === key) lastRuntimeDiagnostics = null;
+		return true;
 	}
 
 	function refreshSyntheticProvider(): void {
@@ -73,6 +169,11 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			streamSimple: createModelProfilesProviderStream(() => ({
 				config: loadedConfig.mergedConfig,
 				modelRegistry: latestModelRegistry,
+				getCursor: (profile, role, candidateCount) => {
+					const cursor = getRuntimeSelectionState(profile, role)?.cursor ?? 0;
+					return candidateCount > 0 ? cursor % candidateCount : 0;
+				},
+				onRuntimeDiagnostics: applyRuntimeDiagnostics,
 			})),
 		});
 	}
@@ -84,13 +185,18 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	function currentStatusText(ctx: ExtensionContext): string | undefined {
-		return formatModelProfilesStatus({
+	function currentStatusInput(ctx: ExtensionContext): ModelProfilesStatusInput {
+		return {
 			state: activeState,
 			resolved: lastResolved,
-			currentModel: currentModel ?? ctx.model,
+			currentModel: ctx.model,
 			unresolved,
-		});
+			runtimeDiagnostics: lastRuntimeDiagnostics,
+		};
+	}
+
+	function currentStatusText(ctx: ExtensionContext): string | undefined {
+		return formatModelProfilesStatus(currentStatusInput(ctx));
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -161,7 +267,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		refreshConfig(ctx.cwd);
 		latestModelRegistry = ctx.modelRegistry;
 		refreshSyntheticProvider();
-		currentModel = ctx.model;
+		displayModel = getDisplayModel(ctx);
 
 		const nextState: ModelProfilesState = {
 			activeProfile: selections.profile?.value ?? activeState.activeProfile,
@@ -171,7 +277,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			modelRegistry: ctx.modelRegistry,
 			config: loadedConfig.mergedConfig,
 			state: nextState,
-			currentModel: currentModel ?? ctx.model,
+			currentModel: ctx.model,
 			profile: selections.profile,
 			role: selections.role,
 		});
@@ -181,6 +287,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			activeRole: nextState.activeRole ?? resolved?.role,
 		}, options.persist ?? true);
 		lastResolved = resolved;
+		lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
 		unresolved = !!activeState.activeRole && (!resolved || resolved.source === "current-model" || resolved.source === "first-available");
 
 		if (loadedConfig.errors.length > 0 && options.notify !== false) {
@@ -208,7 +315,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			}
 		}
 		pi.setThinkingLevel(getAppliedThinkingLevel(resolved));
-		currentModel = managedModel;
+		displayModel = getDisplayModel(ctx) ?? managedModel;
 		updateStatus(ctx);
 		if (options.notify !== false) {
 			const activeTarget = currentStatusText(ctx) ?? resolved.role ?? resolved.profile ?? "profile";
@@ -290,6 +397,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		refreshConfig(ctx.cwd);
 		refreshSyntheticProvider();
 		activeState = readModelProfilesState(ctx.sessionManager.getBranch());
+		runtimeState = readModelProfilesRuntimeState(ctx.sessionManager.getBranch());
 		const syntheticSelection = parseSyntheticProfileModelId(ctx.model?.provider === MODEL_PROFILES_PROVIDER ? ctx.model.id : "");
 		if (syntheticSelection && (!activeState.activeProfile || !activeState.activeRole)) {
 			activeState = normalizeModelProfilesState({
@@ -297,10 +405,11 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 				activeRole: syntheticSelection.role,
 			});
 		}
-		currentModel = ctx.model;
+		lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
+		displayModel = getDisplayModel(ctx);
 		ctx.ui.setFooter((_tui, theme, footerData) => createModelProfilesFooter(theme, footerData, () => ({
 			ctx: latestCtx,
-			model: currentModel ?? latestCtx?.model,
+			model: displayModel ?? latestCtx?.model,
 			thinkingLevel: pi.getThinkingLevel(),
 			statusText: latestCtx ? currentStatusText(latestCtx) : undefined,
 		})));
@@ -323,7 +432,6 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	pi.on("model_select", async (event, ctx) => {
 		latestCtx = ctx;
 		latestModelRegistry = ctx.modelRegistry;
-		currentModel = event.model;
 		const syntheticSelection = parseSyntheticProfileModelId(event.model.provider === MODEL_PROFILES_PROVIDER ? event.model.id : "");
 		if (syntheticSelection) {
 			activeState = normalizeModelProfilesState({
@@ -338,8 +446,12 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 				role: { value: syntheticSelection.role, source: "session" },
 				allowModelFallbacks: false,
 			});
+			lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
 			unresolved = !lastResolved;
+		} else {
+			lastRuntimeDiagnostics = null;
 		}
+		displayModel = getDisplayModel(ctx);
 		updateStatus(ctx);
 	});
 
@@ -366,21 +478,35 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 					return;
 				}
 				case "status": {
-					ctx.ui.notify(formatModelProfilesStateSummary({
-						state: activeState,
-						resolved: lastResolved,
-						currentModel: currentModel ?? ctx.model,
-						unresolved,
-					}), "info");
+					ctx.ui.notify(formatModelProfilesStateSummary(currentStatusInput(ctx)), "info");
 					return;
 				}
 				case "reload": {
 					refreshConfig(ctx.cwd);
 					latestModelRegistry = ctx.modelRegistry;
 					refreshSyntheticProvider();
+					lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
+					displayModel = getDisplayModel(ctx);
 					if (loadedConfig.errors.length > 0) notifyConfigErrors(ctx);
 					updateStatus(ctx);
 					ctx.ui.notify("Model profiles reloaded", "info");
+					return;
+				}
+				case "reset": {
+					if (!activeState.activeProfile || !activeState.activeRole) {
+						ctx.ui.notify("No active profile role to reset", "warning");
+						return;
+					}
+					const didReset = resetRuntimeSelection(activeState.activeProfile, activeState.activeRole);
+					lastRuntimeDiagnostics = null;
+					displayModel = getDisplayModel(ctx);
+					updateStatus(ctx);
+					ctx.ui.notify(
+						didReset
+							? `Reset ${activeState.activeProfile}:${activeState.activeRole} fallback cursor`
+							: `No sticky fallback state for ${activeState.activeProfile}:${activeState.activeRole}`,
+						"info",
+					);
 					return;
 				}
 				case "profile": {

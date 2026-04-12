@@ -15,9 +15,10 @@ describe("parseProfileCommand", () => {
 		})).toEqual({ kind: "interactive" });
 	});
 
-	it("parses status and reload subcommands", () => {
+	it("parses status, reload, and reset subcommands", () => {
 		expect(parseProfileCommand({ args: "status", profileNames, activeProfile, activeProfileRoles })).toEqual({ kind: "status" });
 		expect(parseProfileCommand({ args: "reload", profileNames, activeProfile, activeProfileRoles })).toEqual({ kind: "reload" });
+		expect(parseProfileCommand({ args: "reset", profileNames, activeProfile, activeProfileRoles })).toEqual({ kind: "reset" });
 	});
 
 	it("parses profile, role, and profile:role targets", () => {
