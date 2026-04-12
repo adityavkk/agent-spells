@@ -93,6 +93,10 @@ describe("isRetryableModelFailure", () => {
 	it("classifies throttling and server errors as retryable", () => {
 		expect(isRetryableModelFailure({ response: makeResponse(makeModel("a", "b"), "error", "429 Too Many Requests") })).toBeTrue();
 		expect(isRetryableModelFailure({ error: new Error("503 overloaded") })).toBeTrue();
+		expect(isRetryableModelFailure({ error: new Error("stream terminated by upstream") })).toBeTrue();
+		expect(isRetryableModelFailure({ error: new Error("socket hang up") })).toBeTrue();
+		expect(isRetryableModelFailure({ error: new Error("unexpected eof") })).toBeTrue();
+		expect(isRetryableModelFailure({ error: new Error("broken pipe") })).toBeTrue();
 		expect(isRetryableModelFailure({ error: new Error("Unsupported parameter") })).toBeFalse();
 	});
 });
@@ -161,6 +165,7 @@ describe("streamWithModelRoleFallback", () => {
 	it("retries the next candidate when the first stream errors before output", async () => {
 		const primary = makeModel("code-puppy", "gpt-5.4");
 		const secondary = makeModel("wibey-anthropic", "claude-opus-4-6");
+		const started: string[] = [];
 		const registry = makeRegistry([primary, secondary], ["code-puppy/gpt-5.4", "wibey-anthropic/claude-opus-4-6"]);
 		const stream = streamWithModelRoleFallback({
 			resolved: makeResolvedRoleResult([
@@ -169,6 +174,7 @@ describe("streamWithModelRoleFallback", () => {
 			]),
 			modelRegistry: registry,
 			context,
+			onAttemptStart: (candidate) => started.push(`${candidate.ref.provider}/${candidate.ref.model}`),
 			streamFn: (model) => model.id === primary.id
 				? makeStream([
 					{ type: "start", partial: makeResponse(model, "error", "429 Too Many Requests") },
@@ -184,6 +190,7 @@ describe("streamWithModelRoleFallback", () => {
 		});
 
 		const events = await collectStreamEvents(stream);
+		expect(started).toEqual(["code-puppy/gpt-5.4", "wibey-anthropic/claude-opus-4-6"]);
 		expect(events.filter((event) => event.type === "text_delta").map((event) => event.type === "text_delta" ? event.delta : "")).toEqual(["ok"]);
 		expect(events.at(-1)?.type).toBe("done");
 	});

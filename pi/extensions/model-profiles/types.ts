@@ -162,6 +162,7 @@ export interface CompleteWithModelRoleFallbackInput<TApi extends Api = Api> {
 	buildOptions?: (candidate: ResolvedRoleCandidate, auth: ModelRegistryAuthResult) => ProviderStreamOptions | Promise<ProviderStreamOptions>;
 	completeFn?: (model: Model<TApi>, context: Context, options?: ProviderStreamOptions) => Promise<AssistantMessage>;
 	isRetryableFailure?: (input: RetryableModelFailureDecisionInput) => boolean;
+	onAttemptStart?: (candidate: ResolvedRoleCandidate) => void;
 }
 
 export interface CompleteWithModelRoleFallbackAttempt {
@@ -191,5 +192,6 @@ export interface StreamWithModelRoleFallbackInput<TApi extends Api = Api> {
 	buildOptions?: (candidate: ResolvedRoleCandidate, auth: ModelRegistryAuthResult) => SimpleStreamOptions | Promise<SimpleStreamOptions>;
 	streamFn?: (model: Model<TApi>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	isRetryableFailure?: (input: RetryableModelFailureDecisionInput) => boolean;
+	onAttemptStart?: (candidate: ResolvedRoleCandidate) => void;
 	onFinish?: (result: ModelRoleFallbackExecutionResult) => void;
 }

@@ -64,6 +64,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	let lastResolved: ResolvedRoleResult | null = null;
 	let lastRuntimeDiagnostics: ModelProfilesRuntimeDiagnostics | null = null;
 	let unresolved = false;
+	let inFlightAttemptModel: Model<any> | undefined;
 	let displayModel: Model<any> | undefined;
 	let latestCtx: ExtensionContext | undefined;
 	let latestModelRegistry: ModelRegistryLike | undefined;
@@ -79,6 +80,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 
 	function getDisplayModel(ctx: ExtensionContext): Model<any> | undefined {
 		if (ctx.model?.provider !== MODEL_PROFILES_PROVIDER) return ctx.model;
+		if (inFlightAttemptModel) return inFlightAttemptModel;
 		const runtimeSelection = getRuntimeSelectionState(activeState.activeProfile, activeState.activeRole);
 		const winner = runtimeSelection?.lastWinner;
 		if (winner) {
@@ -117,7 +119,17 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		}
 	}
 
+	function applyRuntimeAttemptStart(profile: string, role: string, model: Model<any>): void {
+		if (activeState.activeProfile !== profile || activeState.activeRole !== role) return;
+		inFlightAttemptModel = model;
+		if (latestCtx) {
+			displayModel = getDisplayModel(latestCtx);
+			updateStatus(latestCtx);
+		}
+	}
+
 	function applyRuntimeDiagnostics(diagnostics: ModelProfilesRuntimeDiagnostics, persist = true): void {
+		inFlightAttemptModel = undefined;
 		setRuntimeState({
 			selections: {
 				...runtimeState.selections,
@@ -144,6 +156,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	}
 
 	function resetRuntimeSelection(profile: string | undefined, role: string | undefined, persist = true): boolean {
+		inFlightAttemptModel = undefined;
 		const key = getModelProfilesSelectionKey(profile, role);
 		if (!key) return false;
 		if (!runtimeState.selections[key]) return false;
@@ -173,6 +186,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 					const cursor = getRuntimeSelectionState(profile, role)?.cursor ?? 0;
 					return candidateCount > 0 ? cursor % candidateCount : 0;
 				},
+				onAttemptStart: (profile, role, candidate) => applyRuntimeAttemptStart(profile, role, candidate.model),
 				onRuntimeDiagnostics: applyRuntimeDiagnostics,
 			})),
 		});
@@ -267,6 +281,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		refreshConfig(ctx.cwd);
 		latestModelRegistry = ctx.modelRegistry;
 		refreshSyntheticProvider();
+		inFlightAttemptModel = undefined;
 		displayModel = getDisplayModel(ctx);
 
 		const nextState: ModelProfilesState = {
@@ -398,6 +413,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		refreshSyntheticProvider();
 		activeState = readModelProfilesState(ctx.sessionManager.getBranch());
 		runtimeState = readModelProfilesRuntimeState(ctx.sessionManager.getBranch());
+		inFlightAttemptModel = undefined;
 		const syntheticSelection = parseSyntheticProfileModelId(ctx.model?.provider === MODEL_PROFILES_PROVIDER ? ctx.model.id : "");
 		if (syntheticSelection && (!activeState.activeProfile || !activeState.activeRole)) {
 			activeState = normalizeModelProfilesState({
@@ -432,6 +448,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	pi.on("model_select", async (event, ctx) => {
 		latestCtx = ctx;
 		latestModelRegistry = ctx.modelRegistry;
+		inFlightAttemptModel = undefined;
 		const syntheticSelection = parseSyntheticProfileModelId(event.model.provider === MODEL_PROFILES_PROVIDER ? event.model.id : "");
 		if (syntheticSelection) {
 			activeState = normalizeModelProfilesState({

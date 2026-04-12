@@ -55,6 +55,15 @@ function shouldCommitBufferedEvent(event: AssistantMessageEvent): boolean {
 	].includes(event.type);
 }
 
+function invokeAttemptStart(callback: ((candidate: any) => void) | undefined, candidate: any): void {
+	if (!callback) return;
+	try {
+		callback(candidate);
+	} catch {
+		// UI/debug hooks must not break inference fallback.
+	}
+}
+
 export function isRetryableModelFailure(input: RetryableModelFailureDecisionInput): boolean {
 	const message = getFailureText(input).toLowerCase();
 	return [
@@ -69,6 +78,15 @@ export function isRetryableModelFailure(input: RetryableModelFailureDecisionInpu
 		"timeout",
 		"connection reset",
 		"econnreset",
+		"terminated",
+		"stream terminated",
+		"connection terminated",
+		"socket hang up",
+		"eof",
+		"unexpected eof",
+		"network error",
+		"upstream closed",
+		"broken pipe",
 		"502",
 		"503",
 		"504",
@@ -102,6 +120,7 @@ export async function completeWithModelRoleFallback<TApi extends Api = Api>(
 			? await input.buildOptions(candidate, auth as ModelRegistryAuthResult)
 			: { apiKey: auth.apiKey, headers: auth.headers } satisfies ProviderStreamOptions;
 
+		invokeAttemptStart(input.onAttemptStart, candidate);
 		try {
 			const response = await completeFn(candidate.model, input.context, options);
 			lastResponse = response;
@@ -174,6 +193,7 @@ export function streamWithModelRoleFallback<TApi extends Api = Api>(
 				? await input.buildOptions(candidate, auth as ModelRegistryAuthResult)
 				: { ...(input.options ?? {}), apiKey: auth.apiKey, headers: auth.headers } satisfies SimpleStreamOptions;
 
+			invokeAttemptStart(input.onAttemptStart, candidate);
 			const bufferedEvents: AssistantMessageEvent[] = [];
 			let committed = false;
 

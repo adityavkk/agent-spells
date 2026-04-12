@@ -184,6 +184,7 @@ export function createModelProfilesProviderStream(getState: () => {
 	config: ModelProfilesConfig;
 	modelRegistry?: ModelRegistryLike;
 	getCursor?: (profile: string, role: string, candidateCount: number) => number;
+	onAttemptStart?: (profile: string, role: string, candidate: ResolvedRoleCandidate) => void;
 	onRuntimeDiagnostics?: (diagnostics: ModelProfilesRuntimeDiagnostics) => void;
 }) {
 	return (model: Model<any>, context: Context, options?: SimpleStreamOptions) => {
@@ -217,6 +218,7 @@ export function createModelProfilesProviderStream(getState: () => {
 				modelRegistry: state.modelRegistry,
 				context,
 				options,
+				onAttemptStart: (candidate) => state.onAttemptStart?.(selection.profile, selection.role, candidate),
 				buildOptions: async (candidate, auth) => {
 					const candidateOptions: SimpleStreamOptions = {
 						...(options ?? {}),
