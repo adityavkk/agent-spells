@@ -8,38 +8,43 @@ import { complete, type Model, type Api } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRegistry, Theme } from "@mariozechner/pi-coding-agent";
 import { BorderedLoader } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
+import { loadModelProfilesConfig } from "../model-profiles/config";
+import { resolveModelRole } from "../model-profiles/resolve";
 import { buildBamlExtractionContext, parseBamlExtractionResult } from "./extraction";
 import { debugAnswer } from "./debug";
 import { type AnswerSubmission, type ExtractionResult, type ExtractionUiResult } from "./core";
 import { AnswerComponent } from "./ui";
 
-const OLLAMA_PROVIDER = "ollama";
-const GEMMA_MODEL_ID = "gemma4:e4b";
-
 async function selectExtractionModel(
 	currentModel: Model<Api>,
 	modelRegistry: ModelRegistry,
+	cwd: string,
 ): Promise<Model<Api>> {
-	const gemmaModel = modelRegistry.find(OLLAMA_PROVIDER, GEMMA_MODEL_ID);
-	if (gemmaModel) {
-		const auth = await modelRegistry.getApiKeyAndHeaders(gemmaModel);
-		if (auth.ok) {
-			debugAnswer("select-model", {
-				selected: `${gemmaModel.provider}/${gemmaModel.id}`,
-				reason: "preferred-model-available",
-			});
-			return gemmaModel;
-		}
+	const loadedConfig = loadModelProfilesConfig(cwd);
+	const resolved = await resolveModelRole({
+		modelRegistry,
+		config: loadedConfig.mergedConfig,
+		currentModel,
+		role: { value: "fast", source: "config" },
+	});
+
+	if (resolved) {
 		debugAnswer("select-model", {
-			candidate: `${gemmaModel.provider}/${gemmaModel.id}`,
-			reason: "preferred-model-auth-unavailable",
-			error: auth.error,
+			selected: `${resolved.model.provider}/${resolved.model.id}`,
+			reason: resolved.source,
+			profile: resolved.profile,
+			role: resolved.role,
+			matchedRole: resolved.matchedRole,
+			trace: resolved.trace,
+			configErrors: loadedConfig.errors,
 		});
+		return resolved.model as Model<Api>;
 	}
 
 	debugAnswer("select-model", {
 		selected: `${currentModel.provider}/${currentModel.id}`,
-		reason: "fallback-current-model",
+		reason: "resolver-returned-null",
+		configErrors: loadedConfig.errors,
 	});
 	return currentModel;
 }
@@ -107,7 +112,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry);
+		const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry, ctx.cwd);
 		const extractionModelLabel = `${extractionModel.provider}/${extractionModel.id}`;
 		debugAnswer("extraction-start", {
 			model: extractionModelLabel,
