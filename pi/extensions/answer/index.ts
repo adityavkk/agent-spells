@@ -25,7 +25,7 @@ async function selectExtractionModel(
 		modelRegistry,
 		config: loadedConfig.mergedConfig,
 		currentModel,
-		role: { value: "fast", source: "config" },
+		role: { value: "small", source: "config" },
 	});
 
 	if (resolved) {

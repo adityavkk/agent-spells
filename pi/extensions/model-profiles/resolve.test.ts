@@ -44,7 +44,7 @@ const config: ModelProfilesConfig = {
 		work: {
 			defaultRole: "workhorse",
 			roles: {
-				fast: {
+				small: {
 					provider: "openai-codex",
 					model: "gpt-5.4-mini",
 					thinkingLevel: "minimal",
@@ -63,9 +63,9 @@ const config: ModelProfilesConfig = {
 			},
 		},
 		personal: {
-			defaultRole: "fast",
+			defaultRole: "small",
 			roles: {
-				fast: {
+				small: {
 					provider: "ollama",
 					model: "gemma4:e4b",
 					thinkingLevel: "low",
@@ -79,11 +79,11 @@ describe("readModelProfilesState", () => {
 	it("returns the latest model-profiles custom entry", () => {
 		expect(readModelProfilesState([
 			{ type: "custom", customType: "other", data: { activeProfile: "nope" } },
-			{ type: "custom", customType: "model-profiles-state", data: { activeProfile: "work", activeRole: "fast" } },
-			{ type: "custom", customType: "model-profiles-state", data: { activeProfile: "personal", activeRole: "fast" } },
+			{ type: "custom", customType: "model-profiles-state", data: { activeProfile: "work", activeRole: "small" } },
+			{ type: "custom", customType: "model-profiles-state", data: { activeProfile: "personal", activeRole: "small" } },
 		])).toEqual({
 			activeProfile: "personal",
-			activeRole: "fast",
+			activeRole: "small",
 		});
 	});
 });
@@ -105,8 +105,8 @@ describe("resolveModelRole", () => {
 		const resolved = await resolveModelRole({
 			modelRegistry: registry,
 			config,
-			state: { activeProfile: "personal", activeRole: "fast" },
-			env: { PI_MODEL_PROFILE: "personal", PI_MODEL_ROLE: "fast" },
+			state: { activeProfile: "personal", activeRole: "small" },
+			env: { PI_MODEL_PROFILE: "personal", PI_MODEL_ROLE: "small" },
 			profile: { value: "work", source: "flag" },
 			role: { value: "smart", source: "flag" },
 		});
@@ -131,11 +131,11 @@ describe("resolveModelRole", () => {
 		const resolved = await resolveModelRole({
 			modelRegistry: registry,
 			config,
-			role: { value: "fast", source: "flag" },
+			role: { value: "small", source: "flag" },
 		});
 
 		expect(resolved?.model.id).toBe("gpt-5.4");
-		expect(resolved?.role).toBe("fast");
+		expect(resolved?.role).toBe("small");
 		expect(resolved?.matchedRole).toBe("workhorse");
 		expect(resolved?.thinkingLevel).toBe("medium");
 		expect(resolved?.trace.some((line) => line.includes("auth unavailable"))).toBeTrue();
@@ -170,7 +170,7 @@ describe("resolveModelRole", () => {
 			modelRegistry: registry,
 			config,
 			profile: { value: "missing", source: "flag" },
-			role: { value: "fast", source: "flag" },
+			role: { value: "small", source: "flag" },
 			currentModel,
 		});
 
@@ -192,7 +192,7 @@ describe("resolveModelRole", () => {
 			modelRegistry: registry,
 			config,
 			profile: { value: "missing", source: "flag" },
-			role: { value: "fast", source: "flag" },
+			role: { value: "small", source: "flag" },
 			currentModel,
 		});
 

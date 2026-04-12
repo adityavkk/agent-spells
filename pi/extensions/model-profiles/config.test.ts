@@ -18,7 +18,7 @@ describe("normalizeModelProfilesConfig", () => {
 				" work ": {
 					defaultRole: " workhorse ",
 					roles: {
-						" fast ": {
+						" small ": {
 							provider: " openai-codex ",
 							model: " gpt-5.4-mini ",
 							thinkingLevel: "MINIMAL",
@@ -33,7 +33,7 @@ describe("normalizeModelProfilesConfig", () => {
 				work: {
 					defaultRole: "workhorse",
 					roles: {
-						fast: {
+						small: {
 							provider: "openai-codex",
 							model: "gpt-5.4-mini",
 							thinkingLevel: "minimal",
@@ -54,7 +54,7 @@ describe("mergeModelProfilesConfig", () => {
 				work: {
 					defaultRole: "workhorse",
 					roles: {
-						fast: {
+						small: {
 							provider: "openai-codex",
 							model: "gpt-5.4-mini",
 						},
@@ -65,7 +65,7 @@ describe("mergeModelProfilesConfig", () => {
 			profiles: {
 				work: {
 					roles: {
-						fast: {
+						small: {
 							thinkingLevel: "minimal",
 						},
 						smart: {
@@ -82,7 +82,7 @@ describe("mergeModelProfilesConfig", () => {
 				work: {
 					defaultRole: "workhorse",
 					roles: {
-						fast: {
+						small: {
 							provider: "openai-codex",
 							model: "gpt-5.4-mini",
 							thinkingLevel: "minimal",
@@ -115,7 +115,7 @@ describe("loadModelProfilesConfig", () => {
 				work: {
 					defaultRole: "workhorse",
 					roles: {
-						fast: {
+						small: {
 							provider: "openai-codex",
 							model: "gpt-5.4-mini",
 						},
@@ -138,11 +138,11 @@ describe("normalizeModelProfilesState", () => {
 	it("keeps only trimmed active profile + role strings", () => {
 		expect(normalizeModelProfilesState({
 			activeProfile: " work ",
-			activeRole: " fast ",
+			activeRole: " small ",
 			noise: true,
 		})).toEqual({
 			activeProfile: "work",
-			activeRole: "fast",
+			activeRole: "small",
 		});
 	});
 });

@@ -123,9 +123,11 @@ Desired user abstraction:
 - profile = environment / policy set
   - examples: `work`, `personal`, `openai`, `local`
 - role = purpose / latency-cost-quality bucket
-  - examples: `default`, `fast`, `workhorse`, `smart`
+  - examples: `default`, `small`, `workhorse`, `smart`
+  - canonical small-model role name: `small`
+  - inspired by oh-my-pi `smol`
 - callers should ask for role, not concrete model
-  - example: render extraction says `fast`
+  - example: render extraction says `small`
   - user can swap underlying model per profile later without code changes
 
 ## Pure-extension design options
@@ -267,11 +269,11 @@ Do **not** mix in tools/system prompt yet. Presets already cover that broader co
 - name: `model-profiles` vs `model-roles` vs both?
   - gut: extension name `model-profiles`; core nouns inside are `profiles` + `roles`
 - default built-in role set?
-  - `default`, `fast`, `workhorse`, `smart` only
+  - `default`, `small`, `workhorse`, `smart` only
   - or also `plan`, `commit`
 - should role values support one fallback target or ordered candidate list?
 - should active profile be persisted globally, per project, or only per session?
-- should render extraction always use configured `fast`, or allow per-feature override map later?
+- should render extraction always use configured `small`, or allow per-feature override map later?
 - do you want explicit compatibility target with oh-my-pi naming (`smol`, `slow`) or your preferred naming only?
 
 ## Recommendation for plan phase
@@ -282,6 +284,6 @@ Plan around extension-only v1 in this repo:
 - `pi/extensions/model-profiles/config.ts`
 - `pi/extensions/model-profiles/index.ts`
 - tests for config merge + resolver behavior
-- then wire `render` integration harness to ask for `fast`
+- then wire `render` integration harness to ask for `small`
 
 If you want exact `/model` + `settings.json` integration later, treat that as Pi core follow-up, not this extension.

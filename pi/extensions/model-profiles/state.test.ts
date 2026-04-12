@@ -27,8 +27,8 @@ const resolved: ResolvedRoleResult = {
 	},
 	thinkingLevel: "minimal",
 	profile: "work",
-	role: "fast",
-	matchedRole: "fast",
+	role: "small",
+	matchedRole: "small",
 	source: "config",
 	trace: [],
 };
@@ -43,32 +43,32 @@ describe("isRawOverride", () => {
 describe("formatModelProfilesStatus", () => {
 	it("formats active profile + role status", () => {
 		expect(formatModelProfilesStatus({
-			state: { activeProfile: "work", activeRole: "fast" },
+			state: { activeProfile: "work", activeRole: "small" },
 			resolved,
 			currentModel: makeModel("openai-codex", "gpt-5.4-mini"),
-		})).toBe("profile:work role:fast");
+		})).toBe("profile:work role:small");
 	});
 
 	it("appends raw-override and unresolved suffixes", () => {
 		expect(formatModelProfilesStatus({
-			state: { activeProfile: "work", activeRole: "fast" },
+			state: { activeProfile: "work", activeRole: "small" },
 			resolved,
 			currentModel: makeModel("openai", "gpt-4.1"),
-		})).toBe("profile:work role:fast raw-override");
+		})).toBe("profile:work role:small raw-override");
 
 		expect(formatModelProfilesStatus({
-			state: { activeProfile: "work", activeRole: "fast" },
+			state: { activeProfile: "work", activeRole: "small" },
 			unresolved: true,
-		})).toBe("profile:work role:fast unresolved");
+		})).toBe("profile:work role:small unresolved");
 	});
 });
 
 describe("formatModelProfilesStateSummary", () => {
 	it("includes status, current model, and resolved model summary", () => {
 		expect(formatModelProfilesStateSummary({
-			state: { activeProfile: "work", activeRole: "fast" },
+			state: { activeProfile: "work", activeRole: "small" },
 			resolved,
 			currentModel: makeModel("openai-codex", "gpt-5.4-mini"),
-		})).toContain("profile:work role:fast");
+		})).toContain("profile:work role:small");
 	});
 });

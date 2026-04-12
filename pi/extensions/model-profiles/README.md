@@ -2,6 +2,11 @@
 
 Pure Pi extension for profile + role based model selection.
 
+Canonical small-model role name:
+
+- `small`
+- inspired by oh-my-pi `smol`
+
 ## What it does
 
 - loads model profile config from:
@@ -12,9 +17,9 @@ Pure Pi extension for profile + role based model selection.
   - roles via `/role`
 - persists active selection in session custom entries
 - shows footer status like:
-  - `profile:work role:fast`
-  - `profile:work role:fast raw-override`
-  - `profile:work role:fast unresolved`
+  - `profile:work role:small`
+  - `profile:work role:small raw-override`
+  - `profile:work role:small unresolved`
 
 ## Commands
 
@@ -42,7 +47,7 @@ Example:
     "work": {
       "defaultRole": "workhorse",
       "roles": {
-        "fast": {
+        "small": {
           "provider": "openai-codex",
           "model": "gpt-5.4-mini",
           "thinkingLevel": "minimal",

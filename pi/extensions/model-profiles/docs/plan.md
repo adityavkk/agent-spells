@@ -2,7 +2,7 @@
 
 ## Summary
 
-Pure Pi extension. No fork. Add profile+role based model selection under `pi/extensions/model-profiles/`. Source of truth: `model-profiles.json` files, not Pi core settings schema. Other code asks for a role like `fast`; resolver maps that to provider/model/thinking using current active profile, env/flag overrides, session state, and auth-aware fallback.
+Pure Pi extension. No fork. Add profile+role based model selection under `pi/extensions/model-profiles/`. Source of truth: `model-profiles.json` files, not Pi core settings schema. Other code asks for a role like `small`; resolver maps that to provider/model/thinking using current active profile, env/flag overrides, session state, and auth-aware fallback.
 
 This document is implementation-ready and should be readable without the surrounding chat thread. It includes the intended UX, domain model, slice plan, constraints, and source references.
 
@@ -86,7 +86,9 @@ Design decisions:
 - role = intent/latency-cost-quality bucket
 - v1 controls only model + thinking selection
 - v1 does not include tools/system prompt/preset behavior
-- v1 consumers ask for roles like `fast`, not raw provider/model ids
+- v1 consumers ask for roles like `small`, not raw provider/model ids
+- canonical cheap/small-model role name: `small`
+  - inspired by oh-my-pi `smol`
 
 ## User Experience
 
@@ -96,10 +98,10 @@ Design decisions:
   - profile = environment/policy set
     - `work`, `personal`, `openai`, `local`
   - role = intent bucket inside that profile
-    - `default`, `fast`, `workhorse`, `smart`
+    - `default`, `small`, `workhorse`, `smart`
 - user should rarely need to remember concrete model ids
-- extensions/tests ask for role names like `fast`
-- profile decides what `fast` means right now
+- extensions/tests ask for role names like `small`
+- profile decides what `small` means right now
 
 ### Config UX
 
@@ -119,7 +121,7 @@ Example:
     "work": {
       "defaultRole": "workhorse",
       "roles": {
-        "fast": {
+        "small": {
           "provider": "openai-codex",
           "model": "gpt-5.4-mini",
           "thinkingLevel": "minimal"
@@ -151,7 +153,7 @@ Exact commands:
   - with arg: `/profile work`
 - `/role`
   - no args: open role selector for active profile
-  - with arg: `/role fast`
+  - with arg: `/role small`
 - `/model-profiles`
   - open combined selector / inspector
 - `/model-profiles status`
@@ -165,7 +167,7 @@ Command behavior:
   - sets active profile for current session
   - if profile has `defaultRole`, immediately resolves + applies it
   - if no `defaultRole`, keep current role if valid under new profile, else keep current model and warn
-- `/role fast`
+- `/role small`
   - resolves role inside active profile
   - applies model + thinking immediately
 - `/model-profiles`
@@ -181,13 +183,13 @@ Suggested command aliases in help text only, not extra registrations unless triv
 Exact flags:
 
 - `pi --profile work`
-- `pi --role fast`
+- `pi --role small`
 - `pi --profile work --role smart`
 
 Exact env:
 
 - `PI_MODEL_PROFILE=work`
-- `PI_MODEL_ROLE=fast`
+- `PI_MODEL_ROLE=small`
 
 Precedence:
 
@@ -212,11 +214,11 @@ Footer/status:
 
 - always show concise active state when extension loaded
 - base format:
-  - `profile:work role:fast`
+  - `profile:work role:small`
 - degraded format when raw model no longer matches active role mapping:
-  - `profile:work role:fast raw-override`
+  - `profile:work role:small raw-override`
 - warning format when active role cannot currently resolve:
-  - `profile:work role:fast unresolved`
+  - `profile:work role:small unresolved`
 
 Combined selector layout for `/model-profiles`:
 
@@ -256,13 +258,13 @@ Optional shortcut:
 Success copy:
 
 - `Profile "work" activated`
-- `Role "fast" -> openai-codex/gpt-5.4-mini`
+- `Role "small" -> openai-codex/gpt-5.4-mini`
 - `Role "smart" -> anthropic/claude-opus-4-1 (thinking: high)`
 
 Fallback copy:
 
-- `Role "fast" target unavailable; using current model openai-codex/gpt-5.4`
-- `Role "fast" target unavailable; using first available model anthropic/claude-sonnet-4-5`
+- `Role "small" target unavailable; using current model openai-codex/gpt-5.4`
+- `Role "small" target unavailable; using first available model anthropic/claude-sonnet-4-5`
 
 Config copy:
 
@@ -271,7 +273,7 @@ Config copy:
 - unknown profile:
   - `Unknown profile "work2". Available: work, personal, local`
 - unknown role:
-  - `Unknown role "ultra" in profile "work". Available: default, fast, workhorse, smart`
+  - `Unknown role "ultra" in profile "work". Available: default, small, workhorse, smart`
 
 #### Failure scenarios
 
@@ -295,7 +297,7 @@ Config copy:
 - user manually uses built-in `/model`
   - do not overwrite their choice immediately
   - footer shows `raw-override`
-  - `/role fast` reasserts managed selection
+  - `/role small` reasserts managed selection
 - project config overrides global profile partially
   - merged result visible in inspector
   - no surprise hidden replacement of unrelated profiles
@@ -310,7 +312,7 @@ Config copy:
   - visible in session history
   - not pretending to be temporary
 - explicit user journey for restore:
-  - open old session -> extension restores `profile:work role:fast` -> if valid, role mapping reapplied -> footer updates
+  - open old session -> extension restores `profile:work role:small` -> if valid, role mapping reapplied -> footer updates
 
 ### Consumer UX
 
@@ -318,7 +320,7 @@ For other extensions/tests:
 
 - ask for a role, not a concrete model
 - examples:
-  - render extraction requests `fast`
+  - render extraction requests `small`
   - future planner could request `smart`
 - consumer gets `ResolvedRoleResult`
   - includes resolved model, thinking, source, trace
@@ -342,18 +344,18 @@ For other extensions/tests:
 #### Journey 2 - quick interactive switch
 
 1. user is in a work session
-2. runs `/role fast`
-3. extension resolves `work.fast`
+2. runs `/role small`
+3. extension resolves `work.small`
 4. model switches immediately
-5. footer shows `profile:work role:fast`
-6. render extension later asks for `fast` and gets same mapped model family
+5. footer shows `profile:work role:small`
+6. render extension later asks for `small` and gets same mapped model family
 
 #### Journey 3 - project override
 
-1. global config defines `work.fast -> gpt-5.4-mini`
-2. project `.pi/model-profiles.json` overrides `work.fast -> local qwen`
+1. global config defines `work.small -> gpt-5.4-mini`
+2. project `.pi/model-profiles.json` overrides `work.small -> local qwen`
 3. user enters project session
-4. `/role fast` uses project-specific mapping
+4. `/role small` uses project-specific mapping
 5. inspector shows merged source and resolved target
 
 #### Journey 4 - fallback under failure
@@ -369,15 +371,15 @@ For other extensions/tests:
 1. user uses built-in `/model`
 2. Pi switches to arbitrary concrete model
 3. extension notices model changed via `model_select`
-4. footer changes to `profile:work role:fast raw-override`
-5. user can return to managed selection with `/role fast`
+4. footer changes to `profile:work role:small raw-override`
+5. user can return to managed selection with `/role small`
 
 ### Non-goals UX
 
 - built-in `/model` remains unchanged
 - this extension does not hide or replace raw model selection
 - user can still use `/model` manually
-- this extension does not promise role aliases like `pi/fast` across all Pi internals
+- this extension does not promise role aliases like `pi/smol` across all Pi internals
 - if user manually overrides with `/model`, extension should reflect drift, not lie about it
 
 ## Implementer checklist
@@ -454,7 +456,7 @@ Implementation is complete when all of these are true:
 - footer/status shows active profile/role and drift state (`raw-override` / `unresolved`)
 - session restore rehydrates active profile/role when possible
 - resolver exposes enough metadata for consumers/tests (`source`, `trace`)
-- render integration can request role `fast` without hardcoding a concrete provider/model
+- render integration can request role `small` without hardcoding a concrete provider/model
 - invalid config and missing auth degrade gracefully with explicit user-visible errors/warnings
 - unit tests cover config merge and resolution fallbacks
 - README explains config, commands, precedence, failure cases, and manual verification
@@ -512,7 +514,7 @@ Changes
   - read session custom entries
   - apply `--profile` / `--role` if present
 - persist state with `pi.appendEntry("model-profiles-state", ...)`
-- show footer status like `profile:work role:fast`
+- show footer status like `profile:work role:small`
 
 Verify
 - command-level tests where possible
@@ -539,7 +541,7 @@ Verify
 
 ### Slice 4: Render consumer integration
 
-End-to-end: render integration harness asks for `fast` instead of hardcoded provider/model.
+End-to-end: render integration harness asks for `small` instead of hardcoded provider/model.
 
 Files
 - `pi/extensions/render/integration.test.ts`
@@ -547,7 +549,7 @@ Files
 
 Changes
 - import resolver from `model-profiles`
-- default test role = `fast`
+- default test role = `small`
 - allow env override for explicit provider/model to preserve escape hatch
 - keep existing Pi registry auth path
 
@@ -565,7 +567,7 @@ Files
 
 Changes
 - replace `selectExtractionModel()` hardcode with role-aware resolution
-- likely role name `fast` or `extract`
+- likely role name `small` or `extract`
 
 Verify
 - answer integration tests if available
@@ -581,7 +583,7 @@ Verify
 
 ## Open Questions
 
-- [ ] default role set: `default|fast|workhorse|smart` only?
+- [ ] default role set: `default|small|workhorse|smart` only?
 - [ ] support alias roles like `smol|slow|plan|commit` in v1, or later?
 - [ ] should fallback be `string[]` role refs only, or allow explicit `provider/model` refs too?
 - [ ] make Slice 5 in scope now, or after render proves design?
