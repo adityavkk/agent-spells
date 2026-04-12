@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { Model } from "@mariozechner/pi-ai";
+import { buildSyntheticProfileModelId } from "./provider";
 import { formatModelProfilesStateSummary, formatModelProfilesStatus, getAppliedThinkingLevel, isRawOverride } from "./state";
-import type { ResolvedRoleResult } from "./types";
+import { MODEL_PROFILES_PROVIDER, type ResolvedRoleResult } from "./types";
 
 function makeModel(provider: string, id: string): Model<any> {
 	return {
@@ -46,6 +47,7 @@ describe("isRawOverride", () => {
 	it("detects when current model drifts from resolved role target", () => {
 		expect(isRawOverride(resolved, makeModel("openai", "gpt-4.1"))).toBeTrue();
 		expect(isRawOverride(resolved, makeModel("openai-codex", "gpt-5.4-mini"))).toBeFalse();
+		expect(isRawOverride(resolved, makeModel(MODEL_PROFILES_PROVIDER, buildSyntheticProfileModelId("work", "small")))).toBeFalse();
 	});
 });
 

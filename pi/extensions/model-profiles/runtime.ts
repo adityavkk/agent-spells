@@ -1,10 +1,58 @@
-import { complete, type Api, type AssistantMessage, type ProviderStreamOptions } from "@mariozechner/pi-ai";
-import type { CompleteWithModelRoleFallbackInput, CompleteWithModelRoleFallbackResult, ModelRegistryAuthResult, RetryableModelFailureDecisionInput } from "./types";
+import {
+	complete,
+	createAssistantMessageEventStream,
+	streamSimple,
+	type Api,
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	type Model,
+	type ProviderStreamOptions,
+	type SimpleStreamOptions,
+} from "@mariozechner/pi-ai";
+import type {
+	CompleteWithModelRoleFallbackInput,
+	CompleteWithModelRoleFallbackResult,
+	ModelRegistryAuthResult,
+	RetryableModelFailureDecisionInput,
+	StreamWithModelRoleFallbackInput,
+} from "./types";
 
 function getFailureText(input: RetryableModelFailureDecisionInput): string {
 	if (input.response?.errorMessage) return input.response.errorMessage;
 	if (input.error instanceof Error) return input.error.message;
 	return String(input.error ?? "");
+}
+
+function createErrorResponse(model: Model<any>, message: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		errorMessage: message,
+		timestamp: Date.now(),
+	};
+}
+
+function shouldCommitBufferedEvent(event: AssistantMessageEvent): boolean {
+	return [
+		"text_delta",
+		"text_end",
+		"thinking_delta",
+		"thinking_end",
+		"toolcall_delta",
+		"toolcall_end",
+	].includes(event.type);
 }
 
 export function isRetryableModelFailure(input: RetryableModelFailureDecisionInput): boolean {
@@ -95,4 +143,104 @@ export async function completeWithModelRoleFallback<TApi extends Api = Api>(
 		return { response: lastResponse, candidate: lastCandidate, attempts };
 	}
 	throw lastError instanceof Error ? lastError : new Error("No model candidates available for role fallback");
+}
+
+export function streamWithModelRoleFallback<TApi extends Api = Api>(
+	input: StreamWithModelRoleFallbackInput<TApi>,
+) {
+	const outer = createAssistantMessageEventStream();
+	const streamFn = input.streamFn ?? streamSimple<TApi>;
+	const isRetryableFailure = input.isRetryableFailure ?? isRetryableModelFailure;
+
+	(async () => {
+		let lastErrorMessage = "No model candidates available for role fallback";
+		let lastErrorModel: Model<any> | undefined;
+
+		for (const candidate of input.resolved.candidates) {
+			const auth = await input.modelRegistry.getApiKeyAndHeaders(candidate.model);
+			if (!auth.ok) {
+				lastErrorMessage = auth.error;
+				lastErrorModel = candidate.model;
+				continue;
+			}
+
+			const options = input.buildOptions
+				? await input.buildOptions(candidate, auth as ModelRegistryAuthResult)
+				: { ...(input.options ?? {}), apiKey: auth.apiKey, headers: auth.headers } satisfies SimpleStreamOptions;
+
+			const bufferedEvents: AssistantMessageEvent[] = [];
+			let committed = false;
+
+			try {
+				const inner = streamFn(candidate.model, input.context, options);
+				for await (const event of inner) {
+					if (!committed && shouldCommitBufferedEvent(event)) {
+						committed = true;
+						for (const bufferedEvent of bufferedEvents) outer.push(bufferedEvent);
+						bufferedEvents.length = 0;
+					}
+
+					if (!committed) {
+						if (event.type === "done") {
+							for (const bufferedEvent of bufferedEvents) outer.push(bufferedEvent);
+							outer.push(event);
+							outer.end();
+							return;
+						}
+						if (event.type === "error") {
+							lastErrorMessage = event.error.errorMessage ?? "Unknown provider error";
+							lastErrorModel = candidate.model;
+							if (isRetryableFailure({ response: event.error })) {
+								bufferedEvents.length = 0;
+								break;
+							}
+							for (const bufferedEvent of bufferedEvents) outer.push(bufferedEvent);
+							outer.push(event);
+							outer.end();
+							return;
+						}
+						bufferedEvents.push(event);
+						continue;
+					}
+
+					outer.push(event);
+					if (event.type === "done" || event.type === "error") {
+						outer.end();
+						return;
+					}
+				}
+			} catch (error) {
+				lastErrorMessage = error instanceof Error ? error.message : String(error);
+				lastErrorModel = candidate.model;
+				if (committed || !isRetryableFailure({ error })) {
+					outer.push({
+						type: "error",
+						reason: "error",
+						error: createErrorResponse(candidate.model, lastErrorMessage),
+					});
+					outer.end();
+					return;
+				}
+			}
+		}
+
+		outer.push({
+			type: "error",
+			reason: "error",
+			error: createErrorResponse(lastErrorModel ?? input.resolved.model, lastErrorMessage),
+		});
+		outer.end();
+	})().catch((error) => {
+		outer.push({
+			type: "error",
+			reason: "error",
+			error: createErrorResponse(
+				input.resolved.model,
+				error instanceof Error ? error.message : String(error),
+			),
+		});
+		outer.end();
+	});
+
+	return outer;
 }

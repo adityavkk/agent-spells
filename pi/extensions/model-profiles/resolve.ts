@@ -48,7 +48,7 @@ function appendUnique(values: string[], value: string | undefined): void {
 	values.push(value);
 }
 
-function expandRoleCandidates(profile: ModelProfileConfig, roleName: string, trace: string[]): string[] {
+export function expandRoleCandidates(profile: ModelProfileConfig, roleName: string, trace: string[]): string[] {
 	const ordered: string[] = [];
 	const visiting = new Set<string>();
 	const visited = new Set<string>();
@@ -76,7 +76,7 @@ function expandRoleCandidates(profile: ModelProfileConfig, roleName: string, tra
 	return ordered;
 }
 
-function getRoleTargets(roleConfig: ModelRoleConfig | undefined): ResolvedModelRef[] {
+export function getRoleTargets(roleConfig: ModelRoleConfig | undefined): ResolvedModelRef[] {
 	if (!roleConfig) return [];
 	if (roleConfig.targets && roleConfig.targets.length > 0) {
 		return roleConfig.targets
@@ -218,6 +218,10 @@ export async function resolveModelRole(input: ResolveModelRoleInput): Promise<Re
 				candidates,
 			};
 		}
+	}
+
+	if (input.allowModelFallbacks === false) {
+		return null;
 	}
 
 	const currentModel = await resolveCurrentModel(input.currentModel, input, trace);

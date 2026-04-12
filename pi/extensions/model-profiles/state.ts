@@ -1,5 +1,6 @@
 import type { Model } from "@mariozechner/pi-ai";
-import type { ModelProfilesState, ModelProfilesThinkingLevel, ResolvedRoleResult } from "./types";
+import { buildSyntheticProfileModelId } from "./provider";
+import { MODEL_PROFILES_PROVIDER, type ModelProfilesState, type ModelProfilesThinkingLevel, type ResolvedRoleResult } from "./types";
 
 function modelLabel(model: Model<any> | undefined): string | undefined {
 	if (!model) return undefined;
@@ -15,6 +16,14 @@ export interface ModelProfilesStatusInput {
 
 export function isRawOverride(resolved: ResolvedRoleResult | null | undefined, currentModel: Model<any> | undefined): boolean {
 	if (!resolved || !currentModel) return false;
+	if (
+		resolved.profile
+		&& resolved.role
+		&& currentModel.provider === MODEL_PROFILES_PROVIDER
+		&& currentModel.id === buildSyntheticProfileModelId(resolved.profile, resolved.role)
+	) {
+		return false;
+	}
 	return resolved.ref.provider !== currentModel.provider || resolved.ref.model !== currentModel.id;
 }
 

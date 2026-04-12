@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { AssistantMessage, Context, Model } from "@mariozechner/pi-ai";
-import { completeWithModelRoleFallback, isRetryableModelFailure } from "./runtime";
+import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent, type Context, type Model } from "@mariozechner/pi-ai";
+import { completeWithModelRoleFallback, isRetryableModelFailure, streamWithModelRoleFallback } from "./runtime";
 import type { ModelRegistryLike, ResolvedRoleResult } from "./types";
 
 function makeModel(provider: string, id: string): Model<any> {
@@ -70,6 +70,23 @@ function makeResolvedRoleResult(candidates: ResolvedRoleResult["candidates"]): R
 	};
 }
 
+async function collectStreamEvents(stream: AsyncIterable<AssistantMessageEvent>): Promise<AssistantMessageEvent[]> {
+	const events: AssistantMessageEvent[] = [];
+	for await (const event of stream) {
+		events.push(event);
+	}
+	return events;
+}
+
+function makeStream(events: AssistantMessageEvent[]) {
+	const stream = createAssistantMessageEventStream();
+	queueMicrotask(() => {
+		for (const event of events) stream.push(event);
+		stream.end();
+	});
+	return stream;
+}
+
 const context: Context = { messages: [] };
 
 describe("isRetryableModelFailure", () => {
@@ -137,5 +154,68 @@ describe("completeWithModelRoleFallback", () => {
 		expect(result.candidate.model.id).toBe("gpt-5.4");
 		expect(result.response.stopReason).toBe("error");
 		expect(result.attempts).toHaveLength(1);
+	});
+});
+
+describe("streamWithModelRoleFallback", () => {
+	it("retries the next candidate when the first stream errors before output", async () => {
+		const primary = makeModel("code-puppy", "gpt-5.4");
+		const secondary = makeModel("wibey-anthropic", "claude-opus-4-6");
+		const registry = makeRegistry([primary, secondary], ["code-puppy/gpt-5.4", "wibey-anthropic/claude-opus-4-6"]);
+		const stream = streamWithModelRoleFallback({
+			resolved: makeResolvedRoleResult([
+				{ model: primary, ref: { provider: primary.provider, model: primary.id }, matchedRole: "smart" },
+				{ model: secondary, ref: { provider: secondary.provider, model: secondary.id }, matchedRole: "smart" },
+			]),
+			modelRegistry: registry,
+			context,
+			streamFn: (model) => model.id === primary.id
+				? makeStream([
+					{ type: "start", partial: makeResponse(model, "error", "429 Too Many Requests") },
+					{ type: "error", reason: "error", error: makeResponse(model, "error", "429 Too Many Requests") },
+				])
+				: makeStream([
+					{ type: "start", partial: makeResponse(model, "stop") },
+					{ type: "text_start", contentIndex: 0, partial: makeResponse(model, "stop") },
+					{ type: "text_delta", contentIndex: 0, delta: "ok", partial: makeResponse(model, "stop") },
+					{ type: "text_end", contentIndex: 0, content: "ok", partial: makeResponse(model, "stop") },
+					{ type: "done", reason: "stop", message: makeResponse(model, "stop") },
+				]),
+		});
+
+		const events = await collectStreamEvents(stream);
+		expect(events.filter((event) => event.type === "text_delta").map((event) => event.type === "text_delta" ? event.delta : "")).toEqual(["ok"]);
+		expect(events.at(-1)?.type).toBe("done");
+	});
+
+	it("does not retry after visible output has already been emitted", async () => {
+		const primary = makeModel("code-puppy", "gpt-5.4");
+		const secondary = makeModel("wibey-anthropic", "claude-opus-4-6");
+		const registry = makeRegistry([primary, secondary], ["code-puppy/gpt-5.4", "wibey-anthropic/claude-opus-4-6"]);
+		const stream = streamWithModelRoleFallback({
+			resolved: makeResolvedRoleResult([
+				{ model: primary, ref: { provider: primary.provider, model: primary.id }, matchedRole: "smart" },
+				{ model: secondary, ref: { provider: secondary.provider, model: secondary.id }, matchedRole: "smart" },
+			]),
+			modelRegistry: registry,
+			context,
+			streamFn: (model) => model.id === primary.id
+				? makeStream([
+					{ type: "start", partial: makeResponse(model, "error", "503 upstream unavailable") },
+					{ type: "text_start", contentIndex: 0, partial: makeResponse(model, "error", "503 upstream unavailable") },
+					{ type: "text_delta", contentIndex: 0, delta: "partial", partial: makeResponse(model, "error", "503 upstream unavailable") },
+					{ type: "error", reason: "error", error: makeResponse(model, "error", "503 upstream unavailable") },
+				])
+				: makeStream([
+					{ type: "start", partial: makeResponse(model, "stop") },
+					{ type: "text_start", contentIndex: 0, partial: makeResponse(model, "stop") },
+					{ type: "text_delta", contentIndex: 0, delta: "should-not-run", partial: makeResponse(model, "stop") },
+					{ type: "done", reason: "stop", message: makeResponse(model, "stop") },
+				]),
+		});
+
+		const events = await collectStreamEvents(stream);
+		expect(events.filter((event) => event.type === "text_delta").map((event) => event.type === "text_delta" ? event.delta : "")).toEqual(["partial"]);
+		expect(events.at(-1)?.type).toBe("error");
 	});
 });

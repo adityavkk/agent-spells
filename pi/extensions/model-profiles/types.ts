@@ -1,7 +1,11 @@
-import type { Api, AssistantMessage, Context, Model, ProviderStreamOptions } from "@mariozechner/pi-ai";
+import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, ProviderStreamOptions, SimpleStreamOptions } from "@mariozechner/pi-ai";
 
 export const MODEL_PROFILES_FILENAME = "model-profiles.json";
 export const MODEL_PROFILES_STATE_CUSTOM_TYPE = "model-profiles-state";
+export const MODEL_PROFILES_PROVIDER = "profiles";
+export const MODEL_PROFILES_PROVIDER_API = "model-profiles-fallback";
+export const MODEL_PROFILES_PROVIDER_BASE_URL = "https://profiles.invalid/v1";
+export const MODEL_PROFILES_PROVIDER_API_KEY = "model-profiles";
 
 export type ModelProfilesThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type ModelProfileName = string;
@@ -95,6 +99,7 @@ export interface ResolveModelRoleInput {
 	profile?: ModelProfilesSelection;
 	role?: ModelProfilesSelection;
 	env?: Record<string, string | undefined>;
+	allowModelFallbacks?: boolean;
 }
 
 export interface ResolvedRoleCandidate {
@@ -139,4 +144,14 @@ export interface CompleteWithModelRoleFallbackResult {
 	response: AssistantMessage;
 	candidate: ResolvedRoleCandidate;
 	attempts: CompleteWithModelRoleFallbackAttempt[];
+}
+
+export interface StreamWithModelRoleFallbackInput<TApi extends Api = Api> {
+	resolved: ResolvedRoleResult;
+	modelRegistry: ModelRegistryLike;
+	context: Context;
+	options?: SimpleStreamOptions;
+	buildOptions?: (candidate: ResolvedRoleCandidate, auth: ModelRegistryAuthResult) => SimpleStreamOptions | Promise<SimpleStreamOptions>;
+	streamFn?: (model: Model<TApi>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
+	isRetryableFailure?: (input: RetryableModelFailureDecisionInput) => boolean;
 }

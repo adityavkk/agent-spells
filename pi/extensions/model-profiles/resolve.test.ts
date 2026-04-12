@@ -180,6 +180,26 @@ describe("resolveModelRole", () => {
 		expect(resolved?.source).toBe("current-model");
 	});
 
+	it("can disable fallback to current or first available models", async () => {
+		const currentModel = makeModel("openai", "gpt-4.1");
+		const registry = makeRegistry([
+			currentModel,
+		], [
+			"openai/gpt-4.1",
+		]);
+
+		const resolved = await resolveModelRole({
+			modelRegistry: registry,
+			config,
+			profile: { value: "missing", source: "flag" },
+			role: { value: "small", source: "flag" },
+			currentModel,
+			allowModelFallbacks: false,
+		});
+
+		expect(resolved).toBeNull();
+	});
+
 	it("falls back to first available model when current model also lacks auth", async () => {
 		const currentModel = makeModel("openai", "gpt-4.1");
 		const firstAvailable = makeModel("anthropic", "claude-sonnet-4-5");

@@ -5,14 +5,25 @@ import {
 	loadModelProfilesConfig,
 	normalizeModelProfilesState,
 } from "./config";
+import {
+	buildSyntheticProfileModelId,
+	buildSyntheticProfileProviderModels,
+	createModelProfilesProviderStream,
+	parseSyntheticProfileModelId,
+} from "./provider";
 import { readModelProfilesState, resolveModelRole } from "./resolve";
 import { formatModelProfilesStateSummary, formatModelProfilesStatus, formatResolvedRoleSummary, getAppliedThinkingLevel } from "./state";
 import { createModelProfilesFooter } from "./ui";
 import {
+	MODEL_PROFILES_PROVIDER,
+	MODEL_PROFILES_PROVIDER_API,
+	MODEL_PROFILES_PROVIDER_API_KEY,
+	MODEL_PROFILES_PROVIDER_BASE_URL,
 	MODEL_PROFILES_STATE_CUSTOM_TYPE,
 	type LoadedModelProfilesConfig,
 	type ModelProfilesSelection,
 	type ModelProfilesState,
+	type ModelRegistryLike,
 	type ResolvedRoleResult,
 } from "./types";
 
@@ -41,9 +52,29 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	let unresolved = false;
 	let currentModel: Model<any> | undefined;
 	let latestCtx: ExtensionContext | undefined;
+	let latestModelRegistry: ModelRegistryLike | undefined;
 
 	function refreshConfig(cwd: string): void {
 		loadedConfig = loadModelProfilesConfig(cwd);
+	}
+
+	function refreshSyntheticProvider(): void {
+		if (!latestModelRegistry) return;
+		const models = buildSyntheticProfileProviderModels(loadedConfig.mergedConfig, latestModelRegistry);
+		if (models.length === 0) {
+			pi.unregisterProvider(MODEL_PROFILES_PROVIDER);
+			return;
+		}
+		pi.registerProvider(MODEL_PROFILES_PROVIDER, {
+			baseUrl: MODEL_PROFILES_PROVIDER_BASE_URL,
+			apiKey: MODEL_PROFILES_PROVIDER_API_KEY,
+			api: MODEL_PROFILES_PROVIDER_API,
+			models,
+			streamSimple: createModelProfilesProviderStream(() => ({
+				config: loadedConfig.mergedConfig,
+				modelRegistry: latestModelRegistry,
+			})),
+		});
 	}
 
 	function setActiveState(nextState: ModelProfilesState, persist = true): void {
@@ -65,6 +96,18 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	function updateStatus(ctx: ExtensionContext): void {
 		latestCtx = ctx;
 		ctx.ui.setStatus(STATUS_KEY, currentStatusText(ctx));
+	}
+
+	function getManagedModel(resolved: ResolvedRoleResult, ctx: ExtensionContext): Model<any> {
+		if (
+			resolved.profile
+			&& resolved.role
+			&& resolved.source !== "current-model"
+			&& resolved.source !== "first-available"
+		) {
+			return ctx.modelRegistry.find(MODEL_PROFILES_PROVIDER, buildSyntheticProfileModelId(resolved.profile, resolved.role)) ?? resolved.model;
+		}
+		return resolved.model;
 	}
 
 	function notifyConfigErrors(ctx: ExtensionContext): void {
@@ -116,6 +159,8 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		options: { notify?: boolean; persist?: boolean } = {},
 	): Promise<boolean> {
 		refreshConfig(ctx.cwd);
+		latestModelRegistry = ctx.modelRegistry;
+		refreshSyntheticProvider();
 		currentModel = ctx.model;
 
 		const nextState: ModelProfilesState = {
@@ -150,20 +195,20 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			return false;
 		}
 
-		const changedModel = modelLabel(ctx.model) !== modelLabel(resolved.model);
+		const managedModel = getManagedModel(resolved, ctx);
+		const changedModel = modelLabel(ctx.model) !== modelLabel(managedModel);
 		if (changedModel) {
-			const success = await pi.setModel(resolved.model);
+			const success = await pi.setModel(managedModel);
 			if (!success) {
 				updateStatus(ctx);
 				if (options.notify !== false) {
-					ctx.ui.notify(`No auth for ${resolved.ref.provider}/${resolved.ref.model}`, "warning");
+					ctx.ui.notify(`No auth for ${managedModel.provider}/${managedModel.id}`, "warning");
 				}
 				return false;
 			}
 		}
 		pi.setThinkingLevel(getAppliedThinkingLevel(resolved));
-
-		currentModel = resolved.model;
+		currentModel = managedModel;
 		updateStatus(ctx);
 		if (options.notify !== false) {
 			const activeTarget = currentStatusText(ctx) ?? resolved.role ?? resolved.profile ?? "profile";
@@ -241,8 +286,17 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		latestCtx = ctx;
+		latestModelRegistry = ctx.modelRegistry;
 		refreshConfig(ctx.cwd);
+		refreshSyntheticProvider();
 		activeState = readModelProfilesState(ctx.sessionManager.getBranch());
+		const syntheticSelection = parseSyntheticProfileModelId(ctx.model?.provider === MODEL_PROFILES_PROVIDER ? ctx.model.id : "");
+		if (syntheticSelection && (!activeState.activeProfile || !activeState.activeRole)) {
+			activeState = normalizeModelProfilesState({
+				activeProfile: syntheticSelection.profile,
+				activeRole: syntheticSelection.role,
+			});
+		}
 		currentModel = ctx.model;
 		ctx.ui.setFooter((_tui, theme, footerData) => createModelProfilesFooter(theme, footerData, () => ({
 			ctx: latestCtx,
@@ -268,7 +322,24 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 
 	pi.on("model_select", async (event, ctx) => {
 		latestCtx = ctx;
+		latestModelRegistry = ctx.modelRegistry;
 		currentModel = event.model;
+		const syntheticSelection = parseSyntheticProfileModelId(event.model.provider === MODEL_PROFILES_PROVIDER ? event.model.id : "");
+		if (syntheticSelection) {
+			activeState = normalizeModelProfilesState({
+				activeProfile: syntheticSelection.profile,
+				activeRole: syntheticSelection.role,
+			});
+			lastResolved = await resolveModelRole({
+				modelRegistry: ctx.modelRegistry,
+				config: loadedConfig.mergedConfig,
+				state: activeState,
+				profile: { value: syntheticSelection.profile, source: "session" },
+				role: { value: syntheticSelection.role, source: "session" },
+				allowModelFallbacks: false,
+			});
+			unresolved = !lastResolved;
+		}
 		updateStatus(ctx);
 	});
 
@@ -305,6 +376,8 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 				}
 				case "reload": {
 					refreshConfig(ctx.cwd);
+					latestModelRegistry = ctx.modelRegistry;
+					refreshSyntheticProvider();
 					if (loadedConfig.errors.length > 0) notifyConfigErrors(ctx);
 					updateStatus(ctx);
 					ctx.ui.notify("Model profiles reloaded", "info");
