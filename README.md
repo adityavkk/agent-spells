@@ -1,26 +1,31 @@
 # agent-spells
 
-Personal repo for agent-facing helpers, structured workflows, and small automations.
+A small grimoire for the way I like to enchant my agent.
 
-Not a framework. Just the stuff I use and iterate on.
+Not a framework. Not a platform. Just spells: sharp little workflows, structured prompts, BAML schemas, and terminal rituals that make the agent a bit more useful, a bit less annoying, and occasionally almost civilized.
 
-## Current contents
-
-- interactive answer workflow under `pi/extensions/answer/`
-- shared structured-extraction definitions under `baml_src/`
-- generated client code under `baml_client/`
-
-## Repo shape
+## What lives here
 
 - `pi/extensions/answer/`
-  - interactive answer flow
-  - extraction bridge
-  - normalization logic
-  - tests
+  - interactive answer flow for agent-generated questions
+  - free-form, single-choice, multiple-choice, and ranking support
+  - declarative constraints carried through extraction and UI
+  - tests for normalization, extraction, and live integration
 - `baml_src/`
-  - source schemas/prompts for structured extraction
+  - source BAML types and prompts for structured extraction
 - `baml_client/`
   - generated TypeScript client checked in for stable local/runtime use
+
+## Philosophy
+
+I like my agent the same way I like my tools:
+- composable
+- inspectable
+- easy to swap out
+- slightly magical
+- never more complicated than necessary
+
+So this repo is where I keep the enchantments.
 
 ## Install
 
@@ -52,6 +57,6 @@ If local Ollama is available on `http://127.0.0.1:11434`, the live integration t
 
 ## Notes
 
-This repo can be consumed from my local agent setup directly. For example, the current home-manager config links the answer workflow from:
+This repo is consumed directly from my local agent setup. Example:
 
 - `~/dev/agent-spells/pi/extensions/answer/index.ts`
