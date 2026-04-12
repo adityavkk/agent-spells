@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Model } from "@mariozechner/pi-ai";
-import { formatModelProfilesStateSummary, formatModelProfilesStatus, isRawOverride } from "./state";
+import { formatModelProfilesStateSummary, formatModelProfilesStatus, getAppliedThinkingLevel, isRawOverride } from "./state";
 import type { ResolvedRoleResult } from "./types";
 
 function makeModel(provider: string, id: string): Model<any> {
@@ -60,6 +60,20 @@ describe("formatModelProfilesStatus", () => {
 			state: { activeProfile: "work", activeRole: "small" },
 			unresolved: true,
 		})).toBe("work:small unresolved");
+	});
+});
+
+describe("getAppliedThinkingLevel", () => {
+	it("defaults missing thinking level to off", () => {
+		expect(getAppliedThinkingLevel(resolved)).toBe("minimal");
+		expect(getAppliedThinkingLevel({
+			...resolved,
+			thinkingLevel: undefined,
+			ref: {
+				provider: resolved.ref.provider,
+				model: resolved.ref.model,
+			},
+		})).toBe("off");
 	});
 });
 

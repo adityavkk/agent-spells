@@ -80,6 +80,7 @@ Example:
 - manual `/model` changes show as `raw-override`
 - role resolution is auth-aware
 - unresolved role mappings fall back to current model, then first available model
+- roles without `thinkingLevel` explicitly reset thinking to `off`
 
 ## Docs
 

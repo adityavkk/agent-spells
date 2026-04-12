@@ -6,7 +6,7 @@ import {
 	normalizeModelProfilesState,
 } from "./config";
 import { readModelProfilesState, resolveModelRole } from "./resolve";
-import { formatModelProfilesStateSummary, formatModelProfilesStatus, formatResolvedRoleSummary } from "./state";
+import { formatModelProfilesStateSummary, formatModelProfilesStatus, formatResolvedRoleSummary, getAppliedThinkingLevel } from "./state";
 import { createModelProfilesFooter } from "./ui";
 import {
 	MODEL_PROFILES_STATE_CUSTOM_TYPE,
@@ -161,9 +161,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 				return false;
 			}
 		}
-		if (resolved.thinkingLevel) {
-			pi.setThinkingLevel(resolved.thinkingLevel);
-		}
+		pi.setThinkingLevel(getAppliedThinkingLevel(resolved));
 
 		currentModel = resolved.model;
 		updateStatus(ctx);

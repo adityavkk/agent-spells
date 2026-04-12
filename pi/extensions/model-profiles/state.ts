@@ -1,5 +1,5 @@
 import type { Model } from "@mariozechner/pi-ai";
-import type { ModelProfilesState, ResolvedRoleResult } from "./types";
+import type { ModelProfilesState, ModelProfilesThinkingLevel, ResolvedRoleResult } from "./types";
 
 function modelLabel(model: Model<any> | undefined): string | undefined {
 	if (!model) return undefined;
@@ -32,9 +32,13 @@ export function formatModelProfilesStatus(input: ModelProfilesStatusInput): stri
 	return base;
 }
 
+export function getAppliedThinkingLevel(resolved: ResolvedRoleResult): ModelProfilesThinkingLevel {
+	return resolved.thinkingLevel ?? "off";
+}
+
 export function formatResolvedRoleSummary(resolved: ResolvedRoleResult): string {
 	const parts = [`${resolved.ref.provider}/${resolved.ref.model}`];
-	if (resolved.thinkingLevel) parts.push(`thinking:${resolved.thinkingLevel}`);
+	parts.push(`thinking:${getAppliedThinkingLevel(resolved)}`);
 	if (resolved.matchedRole && resolved.role && resolved.matchedRole !== resolved.role) {
 		parts.push(`matched:${resolved.matchedRole}`);
 	}
