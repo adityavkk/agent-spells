@@ -2,10 +2,15 @@
 
 Pure Pi extension for profile + role based model selection.
 
-Canonical small-model role name:
+Role names are user-defined.
+
+Examples:
 
 - `small`
-- inspired by oh-my-pi `smol`
+- `smol`
+- `workhorse`
+- `smart`
+- `writer`
 
 ## What it does
 
@@ -16,7 +21,8 @@ Canonical small-model role name:
   - profile
   - role
   - Pi model registry auth availability
-  - fallback chain
+  - ordered fallback targets per role
+  - fallback to current model / first available model when nothing resolves
 - lets users activate profiles and roles through one command:
   - `/profile`
   - `/profile personal`
@@ -68,29 +74,63 @@ Example:
 
 ```json
 {
-  "activeProfile": "personal",
+  "activeProfile": "work",
   "profiles": {
-    "personal": {
-      "defaultRole": "small",
+    "work": {
+      "defaultRole": "workhorse",
       "roles": {
-        "small": {
-          "provider": "openai-codex",
-          "model": "gpt-5.4-mini",
-          "thinkingLevel": "minimal",
-          "fallback": ["workhorse", "smart"]
+        "smol": {
+          "targets": [
+            {
+              "provider": "code-puppy",
+              "model": "claude-haiku-4-5-20251001"
+            },
+            {
+              "provider": "wibey-anthropic",
+              "model": "claude-haiku-4-5-20251001"
+            }
+          ]
         },
         "workhorse": {
-          "provider": "openai-codex",
-          "model": "gpt-5.4",
-          "fallback": ["smart"]
+          "targets": [
+            {
+              "provider": "code-puppy",
+              "model": "gpt-5.4",
+              "thinkingLevel": "high"
+            }
+          ]
         },
         "smart": {
-          "provider": "openai-codex",
-          "model": "gpt-5.4",
-          "thinkingLevel": "high"
+          "targets": [
+            {
+              "provider": "code-puppy",
+              "model": "gpt-5.4",
+              "thinkingLevel": "high"
+            },
+            {
+              "provider": "wibey-anthropic",
+              "model": "claude-opus-4-6"
+            },
+            {
+              "provider": "code-puppy",
+              "model": "claude-opus-4-6"
+            }
+          ]
         }
       }
     }
+  }
+}
+```
+
+Legacy single-target role config still works:
+
+```json
+{
+  "small": {
+    "provider": "openai-codex",
+    "model": "gpt-5.4-mini",
+    "thinkingLevel": "minimal"
   }
 }
 ```
@@ -100,6 +140,10 @@ Example:
 - built-in `/model` stays unchanged
 - manual `/model` changes show as `raw-override`
 - role resolution is auth-aware
+- ordered target lists are tried in order during preflight resolution
+- runtime fallback retries the next configured target on retryable failures such as:
+  - 429 / rate limit
+  - 5xx / overloaded / timeout style errors
 - unresolved role mappings fall back to current model, then first available model
 - roles without `thinkingLevel` explicitly reset thinking to `off`
 - this is a proper Pi extension:
