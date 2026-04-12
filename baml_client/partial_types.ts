@@ -20,7 +20,7 @@ $ pnpm add @boundaryml/baml
 
 import type { Image, Audio, Pdf, Video } from "@boundaryml/baml"
 import type { Checked, Check } from "./types"
-import type {  ExtractionResult,  Option,  Question,  QuestionType } from "./types"
+import type {  AnswerConstraints,  ExtractionResult,  Option,  Question,  QuestionType } from "./types"
 import type * as types from "./types"
 
 /******************************************************************************
@@ -36,6 +36,12 @@ export interface StreamState<T> {
 }
 
 export namespace partial_types {
+    export interface AnswerConstraints {
+      minSelections?: number | null
+      maxSelections?: number | null
+      minSentences?: number | null
+      maxSentences?: number | null
+    }
     export interface ExtractionResult {
       questions: Question[]
     }
@@ -51,5 +57,7 @@ export namespace partial_types {
       options: Option[]
       allowOther?: boolean | null
       otherLabel?: string | null
+      answerInstructions?: string | null
+      constraints?: AnswerConstraints | null
     }
 }

@@ -51,6 +51,15 @@ export enum QuestionType {
   TEXT = "TEXT",
   SINGLE_CHOICE = "SINGLE_CHOICE",
   MULTIPLE_CHOICE = "MULTIPLE_CHOICE",
+  RANKING = "RANKING",
+}
+
+export interface AnswerConstraints {
+  minSelections?: number | null
+  maxSelections?: number | null
+  minSentences?: number | null
+  maxSentences?: number | null
+  
 }
 
 export interface ExtractionResult {
@@ -72,5 +81,7 @@ export interface Question {
   options: Option[]
   allowOther: boolean
   otherLabel?: string | null
+  answerInstructions?: string | null
+  constraints?: AnswerConstraints | null
   
 }

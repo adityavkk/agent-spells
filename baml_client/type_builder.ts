@@ -27,26 +27,32 @@ export { FieldType, EnumBuilder, ClassBuilder }
 export default class TypeBuilder {
     private tb: _TypeBuilder;
     
+    AnswerConstraints: ClassViewer<'AnswerConstraints', "minSelections" | "maxSelections" | "minSentences" | "maxSentences">;
+    
     ExtractionResult: ClassViewer<'ExtractionResult', "questions">;
     
     Option: ClassViewer<'Option', "label" | "value" | "description">;
     
-    Question: ClassViewer<'Question', "question" | "context" | "type" | "options" | "allowOther" | "otherLabel">;
+    Question: ClassViewer<'Question', "question" | "context" | "type" | "options" | "allowOther" | "otherLabel" | "answerInstructions" | "constraints">;
     
     
-    QuestionType: EnumViewer<'QuestionType', "TEXT" | "SINGLE_CHOICE" | "MULTIPLE_CHOICE">;
+    QuestionType: EnumViewer<'QuestionType', "TEXT" | "SINGLE_CHOICE" | "MULTIPLE_CHOICE" | "RANKING">;
     
 
     constructor() {
         this.tb = new _TypeBuilder({
           classes: new Set([
-            "ExtractionResult","Option","Question",
+            "AnswerConstraints","ExtractionResult","Option","Question",
           ]),
           enums: new Set([
             "QuestionType",
           ]),
           runtime: DO_NOT_USE_DIRECTLY_UNLESS_YOU_KNOW_WHAT_YOURE_DOING_RUNTIME
         });
+        
+        this.AnswerConstraints = this.tb.classViewer("AnswerConstraints", [
+          "minSelections","maxSelections","minSentences","maxSentences",
+        ]);
         
         this.ExtractionResult = this.tb.classViewer("ExtractionResult", [
           "questions",
@@ -57,12 +63,12 @@ export default class TypeBuilder {
         ]);
         
         this.Question = this.tb.classViewer("Question", [
-          "question","context","type","options","allowOther","otherLabel",
+          "question","context","type","options","allowOther","otherLabel","answerInstructions","constraints",
         ]);
         
         
         this.QuestionType = this.tb.enumViewer("QuestionType", [
-          "TEXT","SINGLE_CHOICE","MULTIPLE_CHOICE",
+          "TEXT","SINGLE_CHOICE","MULTIPLE_CHOICE","RANKING",
         ]);
         
     }

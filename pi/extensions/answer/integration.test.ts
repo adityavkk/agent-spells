@@ -42,25 +42,25 @@ function getText(response: Awaited<ReturnType<typeof complete>>): string {
 }
 
 suite("answer extension llm integration", () => {
-	it("extracts text, single-choice, and multiple-choice questions through baml request+parse with pi transport", { timeout: 240_000 }, async () => {
+	it("extracts text, single-choice, multiple-choice, and ranking questions through baml request+parse with pi transport", { timeout: 240_000 }, async () => {
 		const context = await buildBamlExtractionContext([
 			"Ask the user these food questions in order:",
-			"1. What's your ideal spice level?",
+			"1. What's your ideal spice level? Keep it to 1-3 sentences.",
 			"2. Pick one base for your bowl: Rice, Salad, Wrap, or Noodles.",
-			"3. Select all toppings you want: Chicken, Tofu, Beans, Cheese. You can also add your own topping.",
+			"3. Select up to 2 toppings: Chicken, Tofu, Beans, Cheese. You can also add your own topping.",
+			"4. Rank these priorities from 1-3: Taste, Price, Speed.",
 		].join("\n"));
 
 		const response = await complete(model, context, { apiKey: "ollama", temperature: 0 });
 		const parsed = parseBamlExtractionResult(getText(response));
-		expect(parsed.questions).toHaveLength(3);
+		expect(parsed.questions).toHaveLength(4);
 
-		expect(parsed.questions[0]).toEqual({
+		expect(parsed.questions[0]).toEqual(expect.objectContaining({
 			question: "What's your ideal spice level?",
 			type: "text",
-			options: [],
 			allowOther: false,
 			otherLabel: "Other",
-		});
+		}));
 
 		expect(parsed.questions[1]).toEqual(expect.objectContaining({
 			question: "Pick one base for your bowl:",
@@ -71,10 +71,17 @@ suite("answer extension llm integration", () => {
 		expect(parsed.questions[1]!.options.map((option) => option.label)).toEqual(["Rice", "Salad", "Wrap", "Noodles"]);
 
 		expect(parsed.questions[2]).toEqual(expect.objectContaining({
-			question: "Select all toppings you want:",
+			question: "Select up to 2 toppings:",
 			type: "multiple_choice",
 			allowOther: true,
 		}));
 		expect(parsed.questions[2]!.options.map((option) => option.label)).toEqual(["Chicken", "Tofu", "Beans", "Cheese"]);
+
+		expect(parsed.questions[3]).toEqual(expect.objectContaining({
+			question: "Rank these priorities from 1-3:",
+			type: "ranking",
+			allowOther: false,
+		}));
+		expect(parsed.questions[3]!.options.map((option) => option.label)).toEqual(["Taste", "Price", "Speed"]);
 	});
 });

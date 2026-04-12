@@ -60,6 +60,15 @@ export function parseBamlExtractionResult(text: string): ExtractionResult {
 				})),
 				allowOther: question.allowOther,
 				otherLabel: question.otherLabel,
+				answerInstructions: question.answerInstructions,
+				constraints: question.constraints
+					? {
+						minSelections: question.constraints.minSelections,
+						maxSelections: question.constraints.maxSelections,
+						minSentences: question.constraints.minSentences,
+						maxSentences: question.constraints.maxSentences,
+					}
+					: undefined,
 			}))
 			.map(normalizeQuestion)
 			.filter((question): question is NonNullable<ReturnType<typeof normalizeQuestion>> => question !== null),

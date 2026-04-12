@@ -10,7 +10,16 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
-import { buildAnswersMessage, formatAnswer, questionAnswered, type AnswerState, type ExtractedQuestion } from "./core";
+import {
+	buildAnswerSubmission,
+	describeQuestionConstraints,
+	formatAnswer,
+	getAnswerValidationMessage,
+	questionAnswered,
+	type AnswerState,
+	type AnswerSubmission,
+	type ExtractedQuestion,
+} from "./core";
 
 export class AnswerComponent implements Component {
 	private questions: ExtractedQuestion[];
@@ -21,8 +30,9 @@ export class AnswerComponent implements Component {
 	private editor: Editor;
 	private tui: TUI;
 	private theme: Theme;
-	private onDone: (result: string | null) => void;
+	private onDone: (result: AnswerSubmission | null) => void;
 	private showingConfirmation = false;
+	private validationMessage?: string;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
@@ -30,7 +40,7 @@ export class AnswerComponent implements Component {
 		questions: ExtractedQuestion[],
 		tui: TUI,
 		theme: Theme,
-		onDone: (result: string | null) => void,
+		onDone: (result: AnswerSubmission | null) => void,
 	) {
 		this.questions = questions;
 		this.answers = questions.map(() => ({
@@ -55,6 +65,7 @@ export class AnswerComponent implements Component {
 		this.editor = new Editor(tui, editorTheme);
 		this.editor.disableSubmit = true;
 		this.editor.onChange = () => {
+			this.validationMessage = undefined;
 			this.invalidate();
 			this.tui.requestRender();
 		};
@@ -90,6 +101,8 @@ export class AnswerComponent implements Component {
 				return "Pick one";
 			case "multiple_choice":
 				return "Pick any";
+			case "ranking":
+				return "Rank all";
 			default:
 				return "Free form";
 		}
@@ -99,6 +112,7 @@ export class AnswerComponent implements Component {
 		const question = this.currentQuestion();
 		const answer = this.currentAnswer();
 		this.showingConfirmation = false;
+		this.validationMessage = undefined;
 
 		if (question.type === "text") {
 			this.editorTarget = "question";
@@ -148,6 +162,11 @@ export class AnswerComponent implements Component {
 		return count;
 	}
 
+	private currentValidationMessage(): string | undefined {
+		this.saveCurrentEditorText();
+		return getAnswerValidationMessage(this.currentQuestion(), this.currentAnswer());
+	}
+
 	private navigateTo(index: number): void {
 		if (index < 0 || index >= this.questions.length) return;
 		this.saveCurrentEditorText();
@@ -193,6 +212,7 @@ export class AnswerComponent implements Component {
 		const answer = this.currentAnswer();
 		if (question.type !== "multiple_choice") return;
 
+		this.validationMessage = undefined;
 		if (question.allowOther && index === this.otherIndex(question)) {
 			answer.otherSelected = !answer.otherSelected;
 			if (answer.otherSelected) {
@@ -212,8 +232,32 @@ export class AnswerComponent implements Component {
 		if (existingIndex >= 0) {
 			answer.selectedOptionIndexes.splice(existingIndex, 1);
 		} else {
+			const otherCount = question.allowOther && answer.otherSelected ? 1 : 0;
+			const nextCount = answer.selectedOptionIndexes.length + otherCount + 1;
+			if (question.constraints.maxSelections !== undefined && nextCount > question.constraints.maxSelections) {
+				this.validationMessage = `Choose no more than ${question.constraints.maxSelections}`;
+				this.invalidate();
+				this.tui.requestRender();
+				return;
+			}
 			answer.selectedOptionIndexes.push(index);
 			answer.selectedOptionIndexes.sort((a, b) => a - b);
+		}
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	private toggleRankingChoice(index: number): void {
+		const question = this.currentQuestion();
+		const answer = this.currentAnswer();
+		if (question.type !== "ranking") return;
+
+		this.validationMessage = undefined;
+		const existingIndex = answer.selectedOptionIndexes.indexOf(index);
+		if (existingIndex >= 0) {
+			answer.selectedOptionIndexes.splice(existingIndex, 1);
+		} else {
+			answer.selectedOptionIndexes.push(index);
 		}
 		this.invalidate();
 		this.tui.requestRender();
@@ -224,6 +268,7 @@ export class AnswerComponent implements Component {
 		const answer = this.currentAnswer();
 		if (question.type !== "single_choice") return;
 
+		this.validationMessage = undefined;
 		if (question.allowOther && index === this.otherIndex(question)) {
 			this.openOtherEditor();
 			return;
@@ -238,10 +283,18 @@ export class AnswerComponent implements Component {
 
 	private advanceOrConfirm(): void {
 		this.saveCurrentEditorText();
+		const validationMessage = this.currentValidationMessage();
+		if (validationMessage) {
+			this.validationMessage = validationMessage;
+			this.invalidate();
+			this.tui.requestRender();
+			return;
+		}
 		if (this.currentIndex < this.questions.length - 1) {
 			this.navigateTo(this.currentIndex + 1);
 		} else {
 			this.showingConfirmation = true;
+			this.validationMessage = undefined;
 			this.invalidate();
 		}
 		this.tui.requestRender();
@@ -249,7 +302,7 @@ export class AnswerComponent implements Component {
 
 	private submit(): void {
 		this.saveCurrentEditorText();
-		this.onDone(buildAnswersMessage(this.questions, this.answers));
+		this.onDone(buildAnswerSubmission(this.questions, this.answers));
 	}
 
 	private cancel(): void {
@@ -271,11 +324,24 @@ export class AnswerComponent implements Component {
 			? { label: question.otherLabel, description: "Write your own answer" }
 			: question.options[optionIndex]!;
 		const isCurrent = this.cursorIndex === optionIndex;
+		const rankIndex = question.type === "ranking"
+			? answer.selectedOptionIndexes.indexOf(optionIndex)
+			: -1;
 		const isSelected = isOther
 			? answer.otherSelected
-			: answer.selectedOptionIndexes.includes(optionIndex);
-		const unchecked = question.type === "single_choice" ? "○" : "☐";
-		const checked = question.type === "single_choice" ? "◉" : "☑";
+			: question.type === "ranking"
+				? rankIndex >= 0
+				: answer.selectedOptionIndexes.includes(optionIndex);
+		const unchecked = question.type === "single_choice"
+			? "○"
+			: question.type === "ranking"
+				? "[ ]"
+				: "☐";
+		const checked = question.type === "single_choice"
+			? "◉"
+			: question.type === "ranking"
+				? `[${rankIndex + 1}]`
+				: "☑";
 		const icon = isSelected
 			? this.theme.fg("success", checked)
 			: isCurrent
@@ -416,6 +482,21 @@ export class AnswerComponent implements Component {
 			return;
 		}
 
+		if (question.type === "ranking") {
+			if (matchesKey(data, Key.space)) {
+				this.toggleRankingChoice(this.cursorIndex);
+				return;
+			}
+			if (matchesKey(data, Key.enter)) {
+				if (this.questionAnswered(this.currentIndex)) {
+					this.advanceOrConfirm();
+					return;
+				}
+				this.toggleRankingChoice(this.cursorIndex);
+			}
+			return;
+		}
+
 		if (question.type === "multiple_choice") {
 			if (matchesKey(data, Key.space)) {
 				this.toggleMultiChoice(this.cursorIndex);
@@ -493,6 +574,16 @@ export class AnswerComponent implements Component {
 			}
 		}
 
+		const questionRules = describeQuestionConstraints(question);
+		if (questionRules.length > 0) {
+			lines.push(padToWidth(emptyBoxLine()));
+			for (const rule of questionRules) {
+				for (const line of wrapTextWithAnsi(this.theme.fg("muted", `• ${rule}`), Math.max(8, contentWidth - 2))) {
+					lines.push(padToWidth(boxLine(line)));
+				}
+			}
+		}
+
 		lines.push(padToWidth(emptyBoxLine()));
 
 		if (question.type === "text") {
@@ -501,7 +592,9 @@ export class AnswerComponent implements Component {
 		} else {
 			const hint = question.type === "single_choice"
 				? this.theme.fg("muted", "Choose one option")
-				: this.theme.fg("muted", "Toggle any number of options");
+				: question.type === "ranking"
+					? this.theme.fg("muted", "Press Space in rank order, then Enter to continue")
+					: this.theme.fg("muted", "Toggle any number of options");
 			lines.push(padToWidth(boxLine(hint)));
 			lines.push(padToWidth(emptyBoxLine()));
 
@@ -516,6 +609,13 @@ export class AnswerComponent implements Component {
 				lines.push(padToWidth(emptyBoxLine()));
 				lines.push(padToWidth(boxLine(this.theme.fg("muted", `${question.otherLabel} details`))));
 				this.renderEditorBlock(lines, contentWidth, boxLine);
+			}
+		}
+
+		if (this.validationMessage) {
+			lines.push(padToWidth(emptyBoxLine()));
+			for (const line of wrapTextWithAnsi(this.theme.fg("warning", this.validationMessage), Math.max(8, contentWidth))) {
+				lines.push(padToWidth(boxLine(line)));
 			}
 		}
 
@@ -537,6 +637,8 @@ export class AnswerComponent implements Component {
 					: `${this.theme.fg("dim", "Enter")} save + next · ${this.theme.fg("dim", "Shift+Enter")} newline · ${this.theme.fg("dim", "Tab")} move · ${this.theme.fg("dim", "Esc")} back`;
 			} else if (question.type === "single_choice") {
 				controls = `${this.theme.fg("dim", "↑↓")} move · ${this.theme.fg("dim", "Enter")} select · ${this.theme.fg("dim", "Tab")} move · ${this.theme.fg("dim", "Esc")} cancel`;
+			} else if (question.type === "ranking") {
+				controls = `${this.theme.fg("dim", "↑↓")} move · ${this.theme.fg("dim", "Space")} rank/remove · ${this.theme.fg("dim", "Enter")} next/rank · ${this.theme.fg("dim", "Tab")} move · ${this.theme.fg("dim", "Esc")} cancel`;
 			} else {
 				controls = `${this.theme.fg("dim", "↑↓")} move · ${this.theme.fg("dim", "Space")} toggle · ${this.theme.fg("dim", "Enter")} next/edit · ${this.theme.fg("dim", "Tab")} move · ${this.theme.fg("dim", "Esc")} cancel`;
 			}

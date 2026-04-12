@@ -10,7 +10,7 @@ import { BorderedLoader } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
 import { buildBamlExtractionContext, parseBamlExtractionResult } from "./extraction";
 import { debugAnswer } from "./debug";
-import { type ExtractionResult, type ExtractionUiResult } from "./core";
+import { type AnswerSubmission, type ExtractionResult, type ExtractionUiResult } from "./core";
 import { AnswerComponent } from "./ui";
 
 const OLLAMA_PROVIDER = "ollama";
@@ -206,7 +206,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const answersResult = await ctx.ui.custom<string | null>((tui: TUI, theme: Theme, _kb: unknown, done: (result: string | null) => void) => {
+		const answersResult = await ctx.ui.custom<AnswerSubmission | null>((tui: TUI, theme: Theme, _kb: unknown, done: (result: AnswerSubmission | null) => void) => {
 			return new AnswerComponent(extractionResult.questions, tui, theme, done);
 		});
 
@@ -217,14 +217,19 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		debugAnswer("answers-submitted", {
-			chars: answersResult.length,
-			preview: answersResult,
+			chars: answersResult.transcript.length,
+			preview: answersResult.transcript,
+			structuredAnswers: answersResult.structuredAnswers,
 		});
 		pi.sendMessage(
 			{
 				customType: "answers",
-				content: "I answered your questions in the following way:\n\n" + answersResult,
+				content: "I answered your questions in the following way:\n\n" + answersResult.transcript,
 				display: true,
+				details: {
+					questions: extractionResult.questions,
+					answers: answersResult.structuredAnswers,
+				},
 			},
 			{ triggerTurn: true },
 		);
