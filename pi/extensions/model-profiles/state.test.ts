@@ -31,6 +31,15 @@ const resolved: ResolvedRoleResult = {
 	matchedRole: "small",
 	source: "config",
 	trace: [],
+	candidates: [{
+		model: makeModel("openai-codex", "gpt-5.4-mini"),
+		ref: {
+			provider: "openai-codex",
+			model: "gpt-5.4-mini",
+			thinkingLevel: "minimal",
+		},
+		matchedRole: "small",
+	}],
 };
 
 describe("isRawOverride", () => {

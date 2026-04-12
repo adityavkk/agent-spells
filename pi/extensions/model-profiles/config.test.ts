@@ -11,7 +11,7 @@ import {
 } from "./config";
 
 describe("normalizeModelProfilesConfig", () => {
-	it("normalizes profiles, roles, thinking levels, and fallback values", () => {
+	it("normalizes legacy single-target role config", () => {
 		expect(normalizeModelProfilesConfig({
 			activeProfile: "  work  ",
 			profiles: {
@@ -37,11 +37,49 @@ describe("normalizeModelProfilesConfig", () => {
 							provider: "openai-codex",
 							model: "gpt-5.4-mini",
 							thinkingLevel: "minimal",
+							targets: undefined,
 							fallback: ["workhorse", "smart"],
 						},
 					},
 				},
 			},
+		});
+	});
+
+	it("normalizes ordered target lists", () => {
+		expect(normalizeModelProfilesConfig({
+			profiles: {
+				work: {
+					roles: {
+						smart: {
+							targets: [
+								{ provider: " code-puppy ", model: " gpt-5.4 ", thinkingLevel: "HIGH" },
+								{ provider: " wibey-anthropic ", model: " claude-opus-4-6 " },
+								{ provider: "", model: "skip-me" },
+							],
+						},
+					},
+				},
+			},
+		})).toEqual({
+			profiles: {
+				work: {
+					roles: {
+						smart: {
+							provider: undefined,
+							model: undefined,
+							thinkingLevel: undefined,
+							targets: [
+								{ provider: "code-puppy", model: "gpt-5.4", thinkingLevel: "high" },
+								{ provider: "wibey-anthropic", model: "claude-opus-4-6", thinkingLevel: undefined },
+							],
+							fallback: undefined,
+						},
+					},
+					defaultRole: undefined,
+				},
+			},
+			activeProfile: undefined,
 		});
 	});
 });
@@ -69,9 +107,10 @@ describe("mergeModelProfilesConfig", () => {
 							thinkingLevel: "minimal",
 						},
 						smart: {
-							provider: "anthropic",
-							model: "claude-opus-4-1",
-							thinkingLevel: "high",
+							targets: [
+								{ provider: "code-puppy", model: "gpt-5.4", thinkingLevel: "high" },
+								{ provider: "wibey-anthropic", model: "claude-opus-4-6" },
+							],
 						},
 					},
 				},
@@ -86,12 +125,17 @@ describe("mergeModelProfilesConfig", () => {
 							provider: "openai-codex",
 							model: "gpt-5.4-mini",
 							thinkingLevel: "minimal",
+							targets: undefined,
 							fallback: undefined,
 						},
 						smart: {
-							provider: "anthropic",
-							model: "claude-opus-4-1",
-							thinkingLevel: "high",
+							provider: undefined,
+							model: undefined,
+							thinkingLevel: undefined,
+							targets: [
+								{ provider: "code-puppy", model: "gpt-5.4", thinkingLevel: "high" },
+								{ provider: "wibey-anthropic", model: "claude-opus-4-6" },
+							],
 							fallback: undefined,
 						},
 					},

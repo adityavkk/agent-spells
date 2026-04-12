@@ -7,6 +7,7 @@ import {
 	type ModelProfilesSelection,
 	type ModelProfilesState,
 	type ModelRoleConfig,
+	type ResolvedRoleCandidate,
 	type ResolutionSource,
 	type ResolveModelRoleInput,
 	type ResolvedModelRef,
@@ -75,43 +76,67 @@ function expandRoleCandidates(profile: ModelProfileConfig, roleName: string, tra
 	return ordered;
 }
 
-async function resolveConfiguredModel(
+function getRoleTargets(roleConfig: ModelRoleConfig | undefined): ResolvedModelRef[] {
+	if (!roleConfig) return [];
+	if (roleConfig.targets && roleConfig.targets.length > 0) {
+		return roleConfig.targets
+			.filter((target): target is Required<Pick<ResolvedModelRef, "provider" | "model">> & ResolvedModelRef => !!target.provider && !!target.model)
+			.map((target) => ({
+				provider: target.provider,
+				model: target.model,
+				thinkingLevel: target.thinkingLevel,
+			}));
+	}
+	if (roleConfig.provider && roleConfig.model) {
+		return [{
+			provider: roleConfig.provider,
+			model: roleConfig.model,
+			thinkingLevel: roleConfig.thinkingLevel,
+		}];
+	}
+	return [];
+}
+
+async function resolveConfiguredCandidates(
 	roleName: string,
 	roleConfig: ModelRoleConfig | undefined,
 	input: ResolveModelRoleInput,
 	trace: string[],
-): Promise<{ model: Model<any>; ref: ResolvedModelRef } | null> {
+): Promise<ResolvedRoleCandidate[]> {
 	if (!roleConfig) {
 		pushTrace(trace, `role ${roleName} missing`);
-		return null;
+		return [];
 	}
 
-	if (!roleConfig.provider || !roleConfig.model) {
-		pushTrace(trace, `role ${roleName} incomplete; provider/model required`);
-		return null;
+	const targets = getRoleTargets(roleConfig);
+	if (targets.length === 0) {
+		pushTrace(trace, `role ${roleName} incomplete; provider/model or targets required`);
+		return [];
 	}
 
-	const model = input.modelRegistry.find(roleConfig.provider, roleConfig.model);
-	if (!model) {
-		pushTrace(trace, `role ${roleName} model ${roleConfig.provider}/${roleConfig.model} not found in registry`);
-		return null;
+	const candidates: ResolvedRoleCandidate[] = [];
+	for (const [index, target] of targets.entries()) {
+		const model = input.modelRegistry.find(target.provider, target.model);
+		if (!model) {
+			pushTrace(trace, `role ${roleName} target ${index + 1} ${target.provider}/${target.model} not found in registry`);
+			continue;
+		}
+
+		const auth = await input.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) {
+			pushTrace(trace, `role ${roleName} target ${index + 1} ${modelLabel(model)} auth unavailable: ${auth.error}`);
+			continue;
+		}
+
+		pushTrace(trace, `role ${roleName} target ${index + 1} resolved to ${modelLabel(model)}`);
+		candidates.push({
+			model,
+			ref: target,
+			matchedRole: roleName,
+		});
 	}
 
-	const auth = await input.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		pushTrace(trace, `role ${roleName} model ${modelLabel(model)} auth unavailable: ${auth.error}`);
-		return null;
-	}
-
-	pushTrace(trace, `role ${roleName} resolved to ${modelLabel(model)}`);
-	return {
-		model,
-		ref: {
-			provider: roleConfig.provider,
-			model: roleConfig.model,
-			thinkingLevel: roleConfig.thinkingLevel,
-		},
-	};
+	return candidates;
 }
 
 async function resolveCurrentModel(
@@ -160,70 +185,78 @@ export async function resolveModelRole(input: ResolveModelRoleInput): Promise<Re
 	const profileName = selectedProfile.value;
 	const profile = profileName ? config.profiles[profileName] : undefined;
 
-	if (profileName && !profile) {
-		pushTrace(trace, `profile ${profileName} not found`);
-	}
-	if (profileName && profile) {
-		pushTrace(trace, `profile ${profileName} selected via ${selectedProfile.source}`);
-	}
+	if (profileName && !profile) pushTrace(trace, `profile ${profileName} not found`);
+	if (profileName && profile) pushTrace(trace, `profile ${profileName} selected via ${selectedProfile.source}`);
 
 	const selectedRole = getSelectionValue(input.role, env.PI_MODEL_ROLE, state.activeRole, undefined);
 	const defaultRole = profile?.defaultRole;
 	const roleName = selectedRole.value ?? defaultRole;
 	const roleSource = selectedRole.value ? selectedRole.source : defaultRole ? selectedProfile.source ?? "config" : undefined;
 
-	if (selectedRole.value) {
-		pushTrace(trace, `role ${selectedRole.value} selected via ${selectedRole.source}`);
-	} else if (defaultRole) {
-		pushTrace(trace, `role defaulted to ${defaultRole}`);
-	}
+	if (selectedRole.value) pushTrace(trace, `role ${selectedRole.value} selected via ${selectedRole.source}`);
+	else if (defaultRole) pushTrace(trace, `role defaulted to ${defaultRole}`);
 
 	if (profile && roleName) {
 		const candidateRoles = expandRoleCandidates(profile, roleName, trace);
 		appendUnique(candidateRoles, defaultRole && defaultRole !== roleName ? defaultRole : undefined);
+		const candidates: ResolvedRoleCandidate[] = [];
 		for (const candidateRoleName of candidateRoles) {
-			const resolved = await resolveConfiguredModel(candidateRoleName, profile.roles[candidateRoleName], input, trace);
-			if (!resolved) continue;
+			const resolvedCandidates = await resolveConfiguredCandidates(candidateRoleName, profile.roles[candidateRoleName], input, trace);
+			candidates.push(...resolvedCandidates);
+		}
+		if (candidates.length > 0) {
+			const primary = candidates[0]!;
 			return {
-				model: resolved.model,
-				ref: resolved.ref,
-				thinkingLevel: resolved.ref.thinkingLevel,
+				model: primary.model,
+				ref: primary.ref,
+				thinkingLevel: primary.ref.thinkingLevel,
 				profile: profileName,
 				role: roleName,
-				matchedRole: candidateRoleName,
+				matchedRole: primary.matchedRole,
 				source: chooseSource(roleSource, selectedProfile.source),
 				trace,
+				candidates,
 			};
 		}
 	}
 
 	const currentModel = await resolveCurrentModel(input.currentModel, input, trace);
 	if (currentModel) {
-		return {
+		const candidate = {
 			model: currentModel,
 			ref: {
 				provider: currentModel.provider,
 				model: currentModel.id,
 			},
+		};
+		return {
+			model: currentModel,
+			ref: candidate.ref,
 			profile: profileName,
 			role: roleName,
 			source: "current-model",
 			trace,
+			candidates: [candidate],
 		};
 	}
 
 	const firstAvailableModel = await resolveFirstAvailableModel(input, trace);
 	if (firstAvailableModel) {
-		return {
+		const candidate = {
 			model: firstAvailableModel,
 			ref: {
 				provider: firstAvailableModel.provider,
 				model: firstAvailableModel.id,
 			},
+		};
+		return {
+			model: firstAvailableModel,
+			ref: candidate.ref,
 			profile: profileName,
 			role: roleName,
 			source: "first-available",
 			trace,
+			candidates: [candidate],
 		};
 	}
 

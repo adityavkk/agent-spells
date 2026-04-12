@@ -10,6 +10,7 @@ import {
 	type ModelProfilesState,
 	type ModelProfilesThinkingLevel,
 	type ModelRoleConfig,
+	type ModelRoleConfigTarget,
 } from "./types";
 
 const THINKING_LEVELS = new Set<ModelProfilesThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
@@ -42,12 +43,30 @@ function normalizeFallback(value: unknown): string[] | undefined {
 	return fallback.length > 0 ? fallback : undefined;
 }
 
+function normalizeRoleTarget(value: unknown): ModelRoleConfigTarget | undefined {
+	if (!isRecord(value)) return undefined;
+	const provider = normalizeString(value.provider);
+	const model = normalizeString(value.model);
+	const thinkingLevel = normalizeThinkingLevel(value.thinkingLevel);
+	if (!provider && !model && !thinkingLevel) return undefined;
+	return { provider, model, thinkingLevel };
+}
+
+function normalizeRoleTargets(value: unknown): ModelRoleConfigTarget[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const targets = value
+		.map(normalizeRoleTarget)
+		.filter((target): target is ModelRoleConfigTarget => !!target && !!target.provider && !!target.model);
+	return targets.length > 0 ? targets : undefined;
+}
+
 function normalizeRoleConfig(value: unknown): ModelRoleConfig | undefined {
 	if (!isRecord(value)) return undefined;
 	return {
 		provider: normalizeString(value.provider),
 		model: normalizeString(value.model),
 		thinkingLevel: normalizeThinkingLevel(value.thinkingLevel),
+		targets: normalizeRoleTargets(value.targets),
 		fallback: normalizeFallback(value.fallback),
 	};
 }
@@ -108,6 +127,7 @@ function mergeRoleConfig(base?: ModelRoleConfig, override?: ModelRoleConfig): Mo
 		provider: override?.provider ?? base?.provider,
 		model: override?.model ?? base?.model,
 		thinkingLevel: override?.thinkingLevel ?? base?.thinkingLevel,
+		targets: override?.targets ?? base?.targets,
 		fallback: override?.fallback ?? base?.fallback,
 	};
 }

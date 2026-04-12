@@ -1,4 +1,4 @@
-import type { Model } from "@mariozechner/pi-ai";
+import type { Api, AssistantMessage, Context, Model, ProviderStreamOptions } from "@mariozechner/pi-ai";
 
 export const MODEL_PROFILES_FILENAME = "model-profiles.json";
 export const MODEL_PROFILES_STATE_CUSTOM_TYPE = "model-profiles-state";
@@ -14,10 +14,17 @@ export interface ResolvedModelRef {
 	thinkingLevel?: ModelProfilesThinkingLevel;
 }
 
+export interface ModelRoleConfigTarget {
+	provider?: string;
+	model?: string;
+	thinkingLevel?: ModelProfilesThinkingLevel;
+}
+
 export interface ModelRoleConfig {
 	provider?: string;
 	model?: string;
 	thinkingLevel?: ModelProfilesThinkingLevel;
+	targets?: ModelRoleConfigTarget[];
 	fallback?: string[];
 }
 
@@ -90,6 +97,12 @@ export interface ResolveModelRoleInput {
 	env?: Record<string, string | undefined>;
 }
 
+export interface ResolvedRoleCandidate {
+	model: Model<any>;
+	ref: ResolvedModelRef;
+	matchedRole?: string;
+}
+
 export interface ResolvedRoleResult {
 	model: Model<any>;
 	ref: ResolvedModelRef;
@@ -99,4 +112,31 @@ export interface ResolvedRoleResult {
 	matchedRole?: string;
 	source: ResolutionSource;
 	trace: string[];
+	candidates: ResolvedRoleCandidate[];
+}
+
+export interface RetryableModelFailureDecisionInput {
+	response?: AssistantMessage;
+	error?: unknown;
+}
+
+export interface CompleteWithModelRoleFallbackInput<TApi extends Api = Api> {
+	resolved: ResolvedRoleResult;
+	modelRegistry: ModelRegistryLike;
+	context: Context;
+	buildOptions?: (candidate: ResolvedRoleCandidate, auth: ModelRegistryAuthResult) => ProviderStreamOptions | Promise<ProviderStreamOptions>;
+	completeFn?: (model: Model<TApi>, context: Context, options?: ProviderStreamOptions) => Promise<AssistantMessage>;
+	isRetryableFailure?: (input: RetryableModelFailureDecisionInput) => boolean;
+}
+
+export interface CompleteWithModelRoleFallbackAttempt {
+	candidate: ResolvedRoleCandidate;
+	status: "success" | "retryable-response-error" | "retryable-throw" | "non-retryable-response-error" | "non-retryable-throw" | "auth-unavailable";
+	message?: string;
+}
+
+export interface CompleteWithModelRoleFallbackResult {
+	response: AssistantMessage;
+	candidate: ResolvedRoleCandidate;
+	attempts: CompleteWithModelRoleFallbackAttempt[];
 }

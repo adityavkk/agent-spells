@@ -117,6 +117,7 @@ describe("resolveModelRole", () => {
 		expect(resolved?.role).toBe("smart");
 		expect(resolved?.matchedRole).toBe("smart");
 		expect(resolved?.source).toBe("flag");
+		expect(resolved?.candidates.map((candidate) => candidate.matchedRole)).toEqual(["smart", "workhorse"]);
 	});
 
 	it("uses role fallback chain before dropping to current model", async () => {
@@ -139,6 +140,7 @@ describe("resolveModelRole", () => {
 		expect(resolved?.matchedRole).toBe("workhorse");
 		expect(resolved?.thinkingLevel).toBe("medium");
 		expect(resolved?.trace.some((line) => line.includes("auth unavailable"))).toBeTrue();
+		expect(resolved?.candidates.map((candidate) => candidate.ref.model)).toEqual(["gpt-5.4"]);
 	});
 
 	it("uses profile default role when no role is requested", async () => {
@@ -199,5 +201,41 @@ describe("resolveModelRole", () => {
 		expect(resolved?.model.provider).toBe("anthropic");
 		expect(resolved?.model.id).toBe("claude-sonnet-4-5");
 		expect(resolved?.source).toBe("first-available");
+	});
+
+	it("keeps ordered concrete targets inside one role", async () => {
+		const registry = makeRegistry([
+			makeModel("code-puppy", "gpt-5.4"),
+			makeModel("wibey-anthropic", "claude-opus-4-6"),
+		], [
+			"code-puppy/gpt-5.4",
+			"wibey-anthropic/claude-opus-4-6",
+		]);
+		const resolved = await resolveModelRole({
+			modelRegistry: registry,
+			config: {
+				activeProfile: "work",
+				profiles: {
+					work: {
+						defaultRole: "smart",
+						roles: {
+							smart: {
+								targets: [
+									{ provider: "code-puppy", model: "gpt-5.4", thinkingLevel: "high" },
+									{ provider: "wibey-anthropic", model: "claude-opus-4-6" },
+								],
+							},
+						},
+					},
+				},
+			},
+		});
+
+		expect(resolved?.model.provider).toBe("code-puppy");
+		expect(resolved?.model.id).toBe("gpt-5.4");
+		expect(resolved?.candidates.map((candidate) => `${candidate.ref.provider}/${candidate.ref.model}`)).toEqual([
+			"code-puppy/gpt-5.4",
+			"wibey-anthropic/claude-opus-4-6",
+		]);
 	});
 });
