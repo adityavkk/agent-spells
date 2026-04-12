@@ -92,22 +92,29 @@ That means:
 
 ## Current state
 
-Already implemented:
+Implemented now:
 
 - proper `model-profiles` Pi extension
 - `/profile` UX
 - session persistence
 - preflight role resolution
 - ordered `targets[]` per role
+- synthetic native Pi provider:
+  - `profiles`
+- synthetic profile-role models like:
+  - `profiles/personal:smart`
+- provider-wrapper routing for normal Pi chat turns
+- runtime fallback stream wrapper for synthetic provider traffic
 - runtime fallback helper for extension-controlled call sites
   - `answer`
   - `render` harness
 
-Not implemented yet:
+Still missing / remaining:
 
-- universal fallback for normal Pi chat turns
-- synthetic native Pi models for profile roles
-- provider-wrapper routing for all session traffic
+- operator-friendly runtime diagnostics in `/profile status`
+- optional fallback notifications
+- live smoke verification inside an interactive Pi session
+- README polish / status output examples after diagnostics land
 
 ## Why current approach is insufficient
 
@@ -203,6 +210,8 @@ Legacy single-target config remains supported:
 
 ### Slice 1 - synthetic provider spec + model generation
 
+Status: implemented
+
 Files:
 
 - `pi/extensions/model-profiles/provider.ts`
@@ -225,6 +234,8 @@ Verify:
 
 ### Slice 2 - runtime fallback stream wrapper
 
+Status: implemented
+
 Files:
 
 - `pi/extensions/model-profiles/provider-runtime.ts`
@@ -245,6 +256,8 @@ Verify:
 - unit tests for target exhaustion
 
 ### Slice 3 - bind `/profile` to synthetic models
+
+Status: implemented
 
 Files:
 
@@ -285,6 +298,8 @@ Verify:
 - behavior consistent with normal chat turns
 
 ### Slice 5 - diagnostics and operator UX
+
+Status: next
 
 Files:
 
@@ -393,6 +408,17 @@ Done means all of these are true:
 - `/profile status` can show last resolved concrete target and fallback trace
 - answer/render behavior remains compatible
 - tests cover retryable and non-retryable runtime fallback behavior
+
+Current acceptance status:
+
+- done:
+  - synthetic native model selection
+  - universal provider-wrapper fallback path
+  - retryable vs non-retryable behavior in tests
+  - session restore alignment
+  - footer keeps logical selection
+- pending:
+  - richer `/profile status` runtime diagnostics
 
 ## Non-goals
 

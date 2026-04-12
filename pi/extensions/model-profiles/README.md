@@ -23,6 +23,9 @@ Examples:
   - Pi model registry auth availability
   - ordered fallback targets per role
   - fallback to current model / first available model when nothing resolves
+- exposes profile roles as synthetic native Pi models through provider:
+  - `profiles`
+  - example synthetic model id: `personal:smart`
 - lets users activate profiles and roles through one command:
   - `/profile`
   - `/profile personal`
@@ -135,20 +138,83 @@ Legacy single-target role config still works:
 }
 ```
 
+## Native synthetic provider behavior
+
+When a profile role is managed successfully, `/profile personal:smart` does not set the session to the raw concrete model.
+It sets the session to a synthetic model under provider `profiles`:
+
+- `profiles/personal:smart`
+
+At request time that synthetic provider:
+
+1. resolves the ordered concrete targets for `personal:smart`
+2. applies target-specific auth and headers
+3. applies target-specific thinking
+4. streams with fallback across retryable failures
+
+This makes profile roles feel like normal Pi model selections rather than answer/render-specific glue.
+
+## Runtime fallback behavior
+
+Retryable failures:
+
+- `429`
+- `too many requests`
+- `rate limit`
+- `throttle` / `throttled`
+- `500` / `502` / `503` / `504`
+- `overloaded`
+- `temporarily unavailable`
+- `timeout` / `timed out`
+- `connection reset` / `econnreset`
+- `server error`
+
+Non-retryable failures stop immediately.
+Examples:
+
+- unsupported parameters
+- invalid model id
+- malformed payload
+- other provider errors not classified as transient
+
+Important streaming caveat:
+
+- fallback only happens before visible output is committed
+- if a provider already emitted visible text/thinking/tool-call deltas and then fails, the extension does not jump to another model mid-stream
+- reason: cannot safely replay/erase already-shown output without corrupting turn semantics
+
+So universal fallback is strongest for:
+
+- pre-output provider failures
+- request setup failures
+- early transport failures
+- early retryable provider errors
+
+## Current diagnostics state
+
+Today `/profile status` shows logical selection + resolved summary.
+It does not yet show a per-turn fallback trace like:
+
+- attempted targets
+- winning concrete target
+- why earlier targets failed
+
+That is the next operator UX layer to add.
+See `./docs/runtime-diagnostics.md`.
+
 ## Notes
 
 - built-in `/model` stays unchanged
 - manual `/model` changes show as `raw-override`
 - role resolution is auth-aware
 - ordered target lists are tried in order during preflight resolution
-- runtime fallback retries the next configured target on retryable failures such as:
-  - 429 / rate limit
-  - 5xx / overloaded / timeout style errors
+- synthetic provider runtime fallback retries the next configured target on retryable failures
 - unresolved role mappings fall back to current model, then first available model
 - roles without `thinkingLevel` explicitly reset thinking to `off`
 - this is a proper Pi extension:
   - registers flags and `/profile`
   - listens to `session_start` and `model_select`
+  - registers synthetic provider/models via `pi.registerProvider(...)`
   - applies model switches via `pi.setModel(...)`
   - applies thinking via `pi.setThinkingLevel(...)`
   - persists session state via `pi.appendEntry(...)`
@@ -157,3 +223,5 @@ Legacy single-target role config still works:
 
 - plan: `./docs/plan.md`
 - research: `./docs/research.md`
+- universal fallback plan: `./docs/universal-fallback-plan.md`
+- runtime diagnostics: `./docs/runtime-diagnostics.md`
