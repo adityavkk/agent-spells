@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { ModelRoleConfigTarget } from "../model-profiles/types";
 
 export const RENDER_CONFIG_FILENAME = "render.json";
 
@@ -12,6 +13,11 @@ export interface RenderModelSelectionConfig {
 	useActiveProfile?: boolean;
 	fallbackToActiveRole?: boolean;
 	fallbackToDefaultRole?: boolean;
+	provider?: string;
+	model?: string;
+	thinkingLevel?: ModelRoleConfigTarget["thinkingLevel"];
+	targets?: ModelRoleConfigTarget[];
+	targetsByProfile?: Record<string, ModelRoleConfigTarget[]>;
 }
 
 export interface RenderConfig {
@@ -71,6 +77,33 @@ function normalizeStringArray(value: unknown): string[] | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
+function normalizeRoleTarget(value: unknown): ModelRoleConfigTarget | undefined {
+	if (!isRecord(value)) return undefined;
+	const provider = normalizeString(value.provider);
+	const model = normalizeString(value.model);
+	const thinkingLevel = normalizeString(value.thinkingLevel) as ModelRoleConfigTarget["thinkingLevel"] | undefined;
+	if (!provider && !model && !thinkingLevel) return undefined;
+	return { provider, model, thinkingLevel };
+}
+
+function normalizeRoleTargets(value: unknown): ModelRoleConfigTarget[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const targets = value.filter((item) => !!item).map(normalizeRoleTarget).filter((item): item is ModelRoleConfigTarget => !!item && !!item.provider && !!item.model);
+	return targets.length > 0 ? targets : undefined;
+}
+
+function normalizeTargetsByProfile(value: unknown): Record<string, ModelRoleConfigTarget[]> | undefined {
+	if (!isRecord(value)) return undefined;
+	const normalized: Record<string, ModelRoleConfigTarget[]> = {};
+	for (const [key, rawValue] of Object.entries(value)) {
+		const normalizedKey = normalizeString(key);
+		const normalizedValue = normalizeRoleTargets(rawValue);
+		if (!normalizedKey || !normalizedValue) continue;
+		normalized[normalizedKey] = normalizedValue;
+	}
+	return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function normalizeModelSelectionConfig(value: unknown): RenderModelSelectionConfig {
 	if (!isRecord(value)) return {};
 	return {
@@ -81,6 +114,11 @@ function normalizeModelSelectionConfig(value: unknown): RenderModelSelectionConf
 		useActiveProfile: normalizeBoolean(value.useActiveProfile),
 		fallbackToActiveRole: normalizeBoolean(value.fallbackToActiveRole),
 		fallbackToDefaultRole: normalizeBoolean(value.fallbackToDefaultRole),
+		provider: normalizeString(value.provider),
+		model: normalizeString(value.model),
+		thinkingLevel: normalizeString(value.thinkingLevel) as ModelRoleConfigTarget["thinkingLevel"] | undefined,
+		targets: normalizeRoleTargets(value.targets),
+		targetsByProfile: normalizeTargetsByProfile(value.targetsByProfile),
 	};
 }
 
@@ -104,6 +142,14 @@ export function mergeRenderConfig(base: RenderConfig, override: RenderConfig): R
 			useActiveProfile: override.modelSelection.useActiveProfile ?? base.modelSelection.useActiveProfile,
 			fallbackToActiveRole: override.modelSelection.fallbackToActiveRole ?? base.modelSelection.fallbackToActiveRole,
 			fallbackToDefaultRole: override.modelSelection.fallbackToDefaultRole ?? base.modelSelection.fallbackToDefaultRole,
+			provider: override.modelSelection.provider ?? base.modelSelection.provider,
+			model: override.modelSelection.model ?? base.modelSelection.model,
+			thinkingLevel: override.modelSelection.thinkingLevel ?? base.modelSelection.thinkingLevel,
+			targets: override.modelSelection.targets ?? base.modelSelection.targets,
+			targetsByProfile: {
+				...(base.modelSelection.targetsByProfile ?? {}),
+				...(override.modelSelection.targetsByProfile ?? {}),
+			},
 		},
 	};
 }

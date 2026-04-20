@@ -18,6 +18,17 @@ describe("render config", () => {
 				useActiveProfile: true,
 				fallbackToActiveRole: false,
 				fallbackToDefaultRole: true,
+				provider: " openai-codex ",
+				model: " gpt-5.4-mini ",
+				thinkingLevel: "minimal",
+				targets: [
+					{ provider: " code-puppy ", model: " gpt-5.4-mini ", thinkingLevel: "minimal" },
+				],
+				targetsByProfile: {
+					work: [
+						{ provider: " wibey-anthropic ", model: " claude-haiku-4-5-20251001 " },
+					],
+				},
 			},
 		})).toEqual({
 			modelSelection: {
@@ -31,6 +42,17 @@ describe("render config", () => {
 				useActiveProfile: true,
 				fallbackToActiveRole: false,
 				fallbackToDefaultRole: true,
+				provider: "openai-codex",
+				model: "gpt-5.4-mini",
+				thinkingLevel: "minimal",
+				targets: [
+					{ provider: "code-puppy", model: "gpt-5.4-mini", thinkingLevel: "minimal" },
+				],
+				targetsByProfile: {
+					work: [
+						{ provider: "wibey-anthropic", model: "claude-haiku-4-5-20251001" },
+					],
+				},
 			},
 		});
 	});
@@ -41,11 +63,17 @@ describe("render config", () => {
 				rolesByProfile: { personal: "smol" },
 				roleCandidates: ["render", "smol"],
 				useActiveProfile: true,
+				targetsByProfile: {
+					personal: [{ provider: "openai-codex", model: "gpt-5.4-mini" }],
+				},
 			},
 		}, {
 			modelSelection: {
 				rolesByProfile: { work: "small" },
 				fallbackToDefaultRole: false,
+				targetsByProfile: {
+					work: [{ provider: "code-puppy", model: "gpt-5.4-mini" }],
+				},
 			},
 		});
 
@@ -55,6 +83,10 @@ describe("render config", () => {
 				roleCandidates: ["render", "smol"],
 				useActiveProfile: true,
 				fallbackToDefaultRole: false,
+				targetsByProfile: {
+					personal: [{ provider: "openai-codex", model: "gpt-5.4-mini" }],
+					work: [{ provider: "code-puppy", model: "gpt-5.4-mini" }],
+				},
 			},
 		});
 	});
@@ -69,12 +101,18 @@ describe("render config", () => {
 			modelSelection: {
 				rolesByProfile: { personal: "smol" },
 				roleCandidates: ["render", "smol"],
+				targetsByProfile: {
+					personal: [{ provider: "openai-codex", model: "gpt-5.4-mini" }],
+				},
 			},
 		}));
 		writeFileSync(join(cwd, ".pi", "render.json"), JSON.stringify({
 			modelSelection: {
 				rolesByProfile: { work: "small" },
 				fallbackToActiveRole: false,
+				targetsByProfile: {
+					work: [{ provider: "code-puppy", model: "gpt-5.4-mini" }],
+				},
 			},
 		}));
 
@@ -85,6 +123,10 @@ describe("render config", () => {
 				rolesByProfile: { personal: "smol", work: "small" },
 				roleCandidates: ["render", "smol"],
 				fallbackToActiveRole: false,
+				targetsByProfile: {
+					personal: [{ provider: "openai-codex", model: "gpt-5.4-mini" }],
+					work: [{ provider: "code-puppy", model: "gpt-5.4-mini" }],
+				},
 			},
 		});
 

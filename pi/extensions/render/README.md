@@ -127,6 +127,8 @@ Today:
 - `/render reopen` reopens the latest persisted render session on the current branch
 - extraction model selection is configurable via `render.json`
 - active `/profile` session state is used first by default for profile selection
+- questionnaire blocks can be answered from the viewer with `a`
+- submitted answers are saved into render runtime and sent back to the assistant as a follow-up turn
 
 Not done yet:
 - editing
@@ -159,7 +161,37 @@ Example:
 }
 ```
 
+Direct model escape hatch:
+
+```json
+{
+  "modelSelection": {
+    "targetsByProfile": {
+      "personal": [
+        { "provider": "openai-codex", "model": "gpt-5.4-mini", "thinkingLevel": "minimal" }
+      ],
+      "work": [
+        { "provider": "code-puppy", "model": "gpt-5.4-mini" }
+      ]
+    }
+  }
+}
+```
+
+Or one fixed model for everything:
+
+```json
+{
+  "modelSelection": {
+    "provider": "openai-codex",
+    "model": "gpt-5.4-mini",
+    "thinkingLevel": "minimal"
+  }
+}
+```
+
 Selection behavior:
+- if direct `targetsByProfile`, `targets`, or `provider`+`model` is configured, render uses those first
 - if `modelSelection.profile` is set, use that profile
 - otherwise use active `/profile` session state first
 - then choose role candidates in configured order
@@ -169,6 +201,7 @@ Selection behavior:
 Useful pattern:
 - define hidden per-profile extraction role names in `model-profiles.json`, like `render`
 - or map profiles directly to existing public roles via `rolesByProfile`
+- or skip roles entirely and point render straight at concrete targets via `targetsByProfile`
 
 ## Scope for v1
 

@@ -4,6 +4,16 @@ import { BlockType, EmbeddedContentType, QuestionType, type Block, type Collecti
 import type { RenderRuntime, RenderSession } from "./core";
 import { getCurrentRenderRevision, getRenderSessionSummary, getRenderSessionTitle } from "./session";
 
+export interface RenderQuestionnaireSelection {
+	key: string;
+	title?: string;
+	questions: Question[];
+}
+
+export type RenderViewerResult =
+	| { type: "close"; runtime: RenderRuntime }
+	| { type: "answer"; runtime: RenderRuntime; questionnaire: RenderQuestionnaireSelection };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -178,7 +188,7 @@ function clampIndex(index: number, size: number): number {
 export class RenderViewerComponent implements Component {
 	private readonly tui: TUI;
 	private readonly theme: Theme;
-	private readonly onDone: (runtime: RenderRuntime) => void;
+	private readonly onDone: (result: RenderViewerResult) => void;
 	private readonly doc: RenderDoc;
 	private readonly runtime: RenderRuntime;
 	private readonly title: string;
@@ -187,7 +197,7 @@ export class RenderViewerComponent implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
-	constructor(session: RenderSession, tui: TUI, theme: Theme, onDone: (runtime: RenderRuntime) => void) {
+	constructor(session: RenderSession, tui: TUI, theme: Theme, onDone: (result: RenderViewerResult) => void) {
 		this.tui = tui;
 		this.theme = theme;
 		this.onDone = onDone;
@@ -247,6 +257,25 @@ export class RenderViewerComponent implements Component {
 		}
 	}
 
+	private currentQuestionnaire(): RenderQuestionnaireSelection | null {
+		const currentBlock = this.currentBlock();
+		if (currentBlock.type === BlockType.QUESTIONNAIRE) {
+			return {
+				key: currentBlock.id ?? `block-${this.currentBlockIndex}`,
+				title: currentBlock.title,
+				questions: currentBlock.questions,
+			};
+		}
+		if (currentBlock.type !== BlockType.COLLECTION) return null;
+		const selected = currentBlock.collectionItems[this.currentNestedIndex(currentBlock)];
+		if (!selected || selected.content.type !== EmbeddedContentType.QUESTIONNAIRE) return null;
+		return {
+			key: selected.id ?? currentBlock.id ?? `block-${this.currentBlockIndex}`,
+			title: selected.title ?? selected.navLabel ?? currentBlock.title,
+			questions: selected.content.questions,
+		};
+	}
+
 	private buildRuntime(): RenderRuntime {
 		const currentBlock = this.currentBlock();
 		const activeItemIds = currentItemIdsFromSelections(this.runtime.selections);
@@ -270,7 +299,14 @@ export class RenderViewerComponent implements Component {
 
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.enter)) {
-			this.onDone(this.buildRuntime());
+			this.onDone({ type: "close", runtime: this.buildRuntime() });
+			return;
+		}
+		if (data === "a") {
+			const questionnaire = this.currentQuestionnaire();
+			if (questionnaire) {
+				this.onDone({ type: "answer", runtime: this.buildRuntime(), questionnaire });
+			}
 			return;
 		}
 		if (matchesKey(data, Key.tab) || matchesKey(data, Key.right) || data === "l") {
@@ -326,7 +362,9 @@ export class RenderViewerComponent implements Component {
 			pushCollectionSelection(lines, current.collectionItems, clampIndex(nestedIndex, current.collectionItems.length), 0, safeWidth, this.theme);
 		}
 		lines.push("");
-		lines.push(truncateToWidth(this.theme.fg("dim", "Tab/←→ blocks • ↑↓ items • Enter/Esc close"), safeWidth));
+		const hints = ["Tab/←→ blocks", "↑↓ items", "Enter/Esc close"];
+		if (this.currentQuestionnaire()) hints.splice(2, 0, "a answer");
+		lines.push(truncateToWidth(this.theme.fg("dim", hints.join(" • ")), safeWidth));
 		lines.push(truncateToWidth(this.theme.fg("accent", "─".repeat(safeWidth)), safeWidth));
 
 		this.cachedWidth = width;

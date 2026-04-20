@@ -2,17 +2,20 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { BorderedLoader } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
+import type { AnswerSubmission } from "../answer/core";
+import { AnswerComponent } from "../answer/ui";
 import { loadModelProfilesConfig } from "../model-profiles/config";
 import { readModelProfilesState } from "../model-profiles/resolve";
 import { completeWithModelRoleFallback } from "../model-profiles/runtime";
 import type { ModelProfilesState, ResolvedRoleResult } from "../model-profiles/types";
+import { applyQuestionnaireAnswers, buildRenderAnswersMessage, toRenderAnswerQuestions } from "./answers";
 import { loadRenderConfig } from "./config";
 import { buildBamlRenderContext, parseBamlRenderResult } from "./extract";
 import { normalizeRenderDoc } from "./normalize";
 import { resolveRenderExtractionModel } from "./model-selection";
 import type { RenderRuntime } from "./core";
 import { createRenderSession, getRenderSessionSummary, readLatestRenderSession, RENDER_MESSAGE_CUSTOM_TYPE, type RenderSessionMessageDetails, withCurrentRenderRuntime } from "./session";
-import { createRenderMessageComponent, RenderViewerComponent } from "./ui";
+import { createRenderMessageComponent, RenderViewerComponent, type RenderViewerResult } from "./ui";
 
 interface AssistantSource {
 	entryId: string;
@@ -23,6 +26,15 @@ interface ExtractionResult {
 	status: "success" | "cancelled" | "error";
 	doc?: ReturnType<typeof parseBamlRenderResult>;
 	message?: string;
+}
+
+interface RenderInteractionResult {
+	details: RenderSessionMessageDetails;
+	answered?: {
+		title?: string;
+		submission: AnswerSubmission;
+	};
+	changed: boolean;
 }
 
 async function resolveRenderModelRole(
@@ -80,12 +92,66 @@ function extractLastAssistantSource(ctx: ExtensionContext): AssistantSource | nu
 	return null;
 }
 
-async function openRenderViewer(ctx: ExtensionContext, details: RenderSessionMessageDetails): Promise<RenderSessionMessageDetails> {
-	const runtime = await ctx.ui.custom<RenderRuntime>((tui: TUI, theme, _kb, done) => new RenderViewerComponent(details.session, tui, theme, done));
-	return {
-		...details,
-		session: withCurrentRenderRuntime(details.session, runtime),
-	};
+function sessionChanged(before: RenderSessionMessageDetails, after: RenderSessionMessageDetails): boolean {
+	return JSON.stringify(before.session) !== JSON.stringify(after.session);
+}
+
+async function runQuestionnaireAnswers(ctx: ExtensionContext, result: Extract<RenderViewerResult, { type: "answer" }>): Promise<AnswerSubmission | null> {
+	const questions = toRenderAnswerQuestions(result.questionnaire.questions);
+	return await ctx.ui.custom<AnswerSubmission | null>((tui: TUI, theme, _kb, done) => new AnswerComponent(questions, tui, theme, done));
+}
+
+async function interactWithRenderSession(ctx: ExtensionContext, initialDetails: RenderSessionMessageDetails): Promise<RenderInteractionResult> {
+	let details = initialDetails;
+	let changed = false;
+	while (true) {
+		const result = await ctx.ui.custom<RenderViewerResult>((tui: TUI, theme, _kb, done) => new RenderViewerComponent(details.session, tui, theme, done));
+		const updatedDetails = {
+			...details,
+			session: withCurrentRenderRuntime(details.session, result.runtime),
+		};
+		changed = changed || sessionChanged(details, updatedDetails);
+		details = updatedDetails;
+
+		if (result.type === "close") {
+			return { details, changed };
+		}
+
+		const submission = await runQuestionnaireAnswers(ctx, result);
+		if (!submission) continue;
+
+		details = {
+			...details,
+			session: withCurrentRenderRuntime(details.session, applyQuestionnaireAnswers(
+				getCurrentRenderRuntime(details),
+				result.questionnaire.key,
+				result.questionnaire.title,
+				submission,
+			)),
+		};
+		return {
+			details,
+			changed: true,
+			answered: {
+				title: result.questionnaire.title,
+				submission,
+			},
+		};
+	}
+}
+
+function getCurrentRenderRuntime(details: RenderSessionMessageDetails): RenderRuntime {
+	return details.session.revisions.find((revision) => revision.id === details.session.currentRevisionId)?.runtime
+		?? details.session.revisions[details.session.revisions.length - 1]!.runtime;
+}
+
+function persistRenderSession(pi: ExtensionAPI, details: RenderSessionMessageDetails, display: boolean, prefix = "Opened render view"): void {
+	pi.sendMessage({
+		customType: RENDER_MESSAGE_CUSTOM_TYPE,
+		content: `${prefix}: ${getRenderSessionSummary(details.session)}`,
+		display,
+		details,
+	});
 }
 
 async function runExtraction(ctx: ExtensionContext, source: AssistantSource, resolved: ResolvedRoleResult): Promise<ExtractionResult> {
@@ -174,7 +240,20 @@ export default function renderExtension(pi: ExtensionAPI) {
 					ctx.ui.notify("No render sessions found on this branch", "error");
 					return;
 				}
-				await openRenderViewer(ctx, { session });
+				const interaction = await interactWithRenderSession(ctx, { session });
+				if (interaction.changed) {
+					persistRenderSession(pi, interaction.details, false, "Updated render view");
+				}
+				if (interaction.answered) {
+					const answerMessage = buildRenderAnswersMessage(interaction.answered.title, interaction.answered.submission);
+					pi.sendMessage({
+						customType: "render-answers",
+						content: answerMessage.content,
+						display: true,
+						details: answerMessage.details,
+					}, { triggerTurn: true });
+					ctx.ui.notify("Answers sent", "info");
+				}
 				return;
 			}
 
@@ -214,13 +293,19 @@ export default function renderExtension(pi: ExtensionAPI) {
 					surface: "tui",
 				}),
 			};
-			const details = await openRenderViewer(ctx, initialDetails);
-			pi.sendMessage({
-				customType: RENDER_MESSAGE_CUSTOM_TYPE,
-				content: `Opened render view: ${getRenderSessionSummary(details.session)}`,
-				display: true,
-				details,
-			});
+			const interaction = await interactWithRenderSession(ctx, initialDetails);
+			persistRenderSession(pi, interaction.details, true);
+			if (interaction.answered) {
+				const answerMessage = buildRenderAnswersMessage(interaction.answered.title, interaction.answered.submission);
+				pi.sendMessage({
+					customType: "render-answers",
+					content: answerMessage.content,
+					display: true,
+					details: answerMessage.details,
+				}, { triggerTurn: true });
+				ctx.ui.notify("Render session saved and answers sent", "info");
+				return;
+			}
 			ctx.ui.notify("Render session saved", "info");
 		},
 	});

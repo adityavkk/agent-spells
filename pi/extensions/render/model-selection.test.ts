@@ -158,6 +158,54 @@ describe("render model selection", () => {
 		expect(work?.model.id).toBe("gpt-4.1-mini");
 	});
 
+	it("uses direct per-profile targets before role resolution", async () => {
+		const config: ModelProfilesConfig = {
+			activeProfile: "personal",
+			profiles: {
+				personal: {
+					defaultRole: "workhorse",
+					roles: {
+						workhorse: { provider: "openai-codex", model: "gpt-5.4" },
+					},
+				},
+				work: {
+					defaultRole: "workhorse",
+					roles: {
+						workhorse: { provider: "openai-codex", model: "gpt-5.4" },
+					},
+				},
+			},
+		};
+		const registry = makeRegistry([
+			makeModel("openai-codex", "gpt-5.4"),
+			makeModel("openai-codex", "gpt-5.4-mini"),
+			makeModel("code-puppy", "gpt-5.4-mini"),
+		], [
+			"openai-codex/gpt-5.4",
+			"openai-codex/gpt-5.4-mini",
+			"code-puppy/gpt-5.4-mini",
+		]);
+
+		const resolved = await resolveRenderExtractionModel({
+			modelRegistry: registry,
+			config,
+			renderConfig: {
+				modelSelection: {
+					targetsByProfile: {
+						personal: [{ provider: "openai-codex", model: "gpt-5.4-mini", thinkingLevel: "minimal" }],
+						work: [{ provider: "code-puppy", model: "gpt-5.4-mini" }],
+					},
+				},
+			},
+			state: { activeProfile: "work", activeRole: "workhorse" },
+		});
+
+		expect(resolved?.profile).toBe("work");
+		expect(resolved?.role).toBeUndefined();
+		expect(resolved?.model.provider).toBe("code-puppy");
+		expect(resolved?.model.id).toBe("gpt-5.4-mini");
+	});
+
 	it("builds configurable per-profile render role candidates", () => {
 		const config: ModelProfilesConfig = {
 			activeProfile: "personal",
