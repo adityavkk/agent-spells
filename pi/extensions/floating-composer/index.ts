@@ -709,17 +709,32 @@ function getThemeVarColor(
   return fallback;
 }
 
-function applyBgAnsi(value: string, text: string): string {
-  if (value === "") return `\x1b[49m${text}\x1b[49m`;
-  if (/^\d+$/.test(value)) return `\x1b[48;5;${value}m${text}\x1b[49m`;
+function getBgAnsi(value: string): string | null {
+  if (value === "") return "\x1b[49m";
+  if (/^\d+$/.test(value)) return `\x1b[48;5;${value}m`;
   if (/^#[0-9a-f]{6}$/i.test(value)) {
     const hex = value.slice(1);
     const r = parseInt(hex.slice(0, 2), 16);
     const g = parseInt(hex.slice(2, 4), 16);
     const b = parseInt(hex.slice(4, 6), 16);
-    return `\x1b[48;2;${r};${g};${b}m${text}\x1b[49m`;
+    return `\x1b[48;2;${r};${g};${b}m`;
   }
-  return text;
+  return null;
+}
+
+function applyBgAnsi(value: string, text: string): string {
+  const bgAnsi = getBgAnsi(value);
+  if (!bgAnsi) return text;
+
+  // Editor/rendered text can contain full resets (0m) or bg resets (49m).
+  // Re-apply the panel background after those resets so the area after the
+  // cursor and any trailing padding stays on the composer bg instead of
+  // falling back to pi's default grey editor background.
+  const withReappliedBg = text
+    .replace(/\x1b\[0m/g, `\x1b[0m${bgAnsi}`)
+    .replace(/\x1b\[49m/g, `\x1b[49m${bgAnsi}`);
+
+  return `${bgAnsi}${withReappliedBg}\x1b[49m`;
 }
 
 function applyFgAnsi(value: string, text: string): string {
@@ -975,7 +990,10 @@ class FloatingComposerEditor extends CustomEditor {
     const cardWidth = Math.max(12, width - outerMargin * 2);
     const innerWidth = Math.max(4, cardWidth - borderWidth - padLeft - padRight);
 
-    const editorLines = super.render(innerWidth).map((line) => truncateToWidth(line, innerWidth));
+    const rawEditorLines = super.render(innerWidth).map((line) => truncateToWidth(line, innerWidth));
+    const editorLines = rawEditorLines.slice();
+    while (editorLines.length > 1 && visibleWidth(editorLines[0]) === 0) editorLines.shift();
+    while (editorLines.length > 1 && visibleWidth(editorLines[editorLines.length - 1]) === 0) editorLines.pop();
     const footer = this.footerRenderer
       ? this.footerRenderer(innerWidth, width)
       : { inside: [], outside: [] };
