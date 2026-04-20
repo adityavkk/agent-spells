@@ -871,52 +871,89 @@ function formatModelSegment(model: Model<any> | undefined, thinkingLevel: string
   return value;
 }
 
+interface FloatingComposerFooterContent {
+  inside: string[];
+  outside: string[];
+}
+
+type FloatingComposerFooterRenderer = (innerWidth: number, outerWidth: number) => FloatingComposerFooterContent;
+
 class FloatingComposerEditor extends CustomEditor {
-  private footerRenderer: ((width: number) => string[]) | null = null;
+  private footerRenderer: FloatingComposerFooterRenderer | null = null;
   private footerTheme: any = null;
 
-  setFooterRenderer(renderer: ((width: number) => string[]) | null, theme: any): void {
+  setFooterRenderer(renderer: FloatingComposerFooterRenderer | null, theme: any): void {
     this.footerRenderer = renderer;
     this.footerTheme = theme;
   }
 
   render(width: number): string[] {
-    const outerMargin = width >= 120 ? 6 : width >= 90 ? 4 : 2;
-    const cardWidth = Math.max(24, width - outerMargin * 2);
-    const innerWidth = Math.max(8, cardWidth - 4);
-    const editorLines = super.render(innerWidth).map((line) => truncateToWidth(line, innerWidth));
-    const footerLines = this.footerRenderer ? this.footerRenderer(innerWidth) : [];
     const theme = this.footerTheme;
-    const bg = (text: string) => theme ? theme.bg("selectedBg", padPlain(text, innerWidth)) : padPlain(text, innerWidth);
-    const border = (text: string) => theme ? theme.fg("borderMuted", text) : text;
+    const padLeft = 2;
+    const padRight = 2;
+    const borderWidth = 1;
+
+    // opencode composer: panel is full-width with no outer margin. At very
+    // wide terminals leave one column of breathing room on each side so it
+    // doesn't feel stretched.
+    const outerMargin = width >= 160 ? 1 : 0;
+    const cardWidth = Math.max(12, width - outerMargin * 2);
+    const innerWidth = Math.max(4, cardWidth - borderWidth - padLeft - padRight);
+
+    const editorLines = super.render(innerWidth).map((line) => truncateToWidth(line, innerWidth));
+    const footer = this.footerRenderer
+      ? this.footerRenderer(innerWidth, width)
+      : { inside: [], outside: [] };
+
+    const bar = theme ? theme.fg("accent", "│") : "│";
+    const foot = theme ? theme.fg("accent", "╹") : "╹";
+    const panelBodyWidth = Math.max(0, cardWidth - borderWidth);
+    const panelRow = (content: string) => {
+      const padded = padPlain(content, panelBodyWidth);
+      return bar + (theme ? theme.bg("selectedBg", padded) : padded);
+    };
+    const panelPad = () => panelRow("");
+    const padBothSides = (content: string) =>
+      " ".repeat(padLeft) + content + " ".repeat(Math.max(0, padRight));
 
     const lines: string[] = [];
     const leftMargin = " ".repeat(outerMargin);
-    const top = leftMargin + border(`╭${"─".repeat(cardWidth - 2)}╮`);
-    const divider = leftMargin + border(`├${"─".repeat(cardWidth - 2)}┤`);
-    const bottom = leftMargin + border(`╰${"─".repeat(cardWidth - 2)}╯`);
-    const empty = leftMargin + border("│") + bg(" ".repeat(innerWidth)) + border("│");
 
-    lines.push(top);
-    lines.push(empty);
+    // paddingTop={1} above editor body.
+    lines.push(leftMargin + panelPad());
 
     for (const line of editorLines) {
-      lines.push(leftMargin + border("│") + bg(line) + border("│"));
+      lines.push(leftMargin + panelRow(padBothSides(truncateToWidth(line, innerWidth))));
     }
 
-    lines.push(empty);
-
-    if (footerLines.length > 0) {
-      lines.push(divider);
-      for (const line of footerLines) {
-        const wrapped = wrapTextWithAnsi(line, innerWidth);
-        for (const wrappedLine of wrapped) {
-          lines.push(leftMargin + border("│") + bg(truncateToWidth(wrappedLine, innerWidth)) + border("│"));
+    if (footer.inside.length > 0) {
+      // blank gap row between editor and inline status (opencode
+      // paddingTop={1} on the bottom row).
+      lines.push(leftMargin + panelPad());
+      for (const rawLine of footer.inside) {
+        const wrapped = wrapTextWithAnsi(rawLine, innerWidth);
+        for (const wline of wrapped) {
+          lines.push(leftMargin + panelRow(padBothSides(truncateToWidth(wline, innerWidth))));
         }
       }
     }
 
-    lines.push(bottom);
+    // shadow foot: accent ╹ tick + upper-half ▀ block extending right in a
+    // muted border color. Reads as a drop-shadow under the panel.
+    if (panelBodyWidth > 0) {
+      const shadeStr = "▀".repeat(panelBodyWidth);
+      const shade = theme ? theme.fg("borderMuted", shadeStr) : shadeStr;
+      lines.push(leftMargin + foot + shade);
+    }
+
+    // outside rows render on the plain terminal background.
+    for (const rawLine of footer.outside) {
+      const wrapped = wrapTextWithAnsi(rawLine, width);
+      for (const wline of wrapped) {
+        lines.push(truncateToWidth(wline, width));
+      }
+    }
+
     return lines.map((line) => truncateToWidth(line, width));
   }
 }
@@ -1014,8 +1051,12 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
       tuiRef = tui;
       const editor = new FloatingComposerEditor(tui, theme, kb);
       editorRef = editor;
-      footerThemeRef = theme;
-      editor.setFooterRenderer((width: number) => {
+      footerThemeRef = ctx.ui.theme ?? theme;
+      editor.setFooterRenderer((innerWidth: number, outerWidth: number) => {
+        // Use the live theme ref so theme changes during a session are
+        // picked up without remounting the editor. Falls back to the theme
+        // captured at component construction.
+        const footerTheme = footerThemeRef ?? ctx.ui.theme ?? theme;
         const footerData = footerDataRef;
         const safeCtx = latestCtx ?? ctx;
         const logicalStatus = sanitizeStatusText(footerData?.getExtensionStatuses?.().get("model-profiles"));
@@ -1025,6 +1066,7 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         const thinkingLevel = getThinkingLevel(safeCtx);
         const { percentage, used, total } = getContextInfo(safeCtx, actualModel ?? undefined);
 
+        // pwd + branch (outside row, below the panel)
         let pwd = process.cwd();
         const home = process.env.HOME || process.env.USERPROFILE;
         if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
@@ -1036,52 +1078,65 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         let branchStr = "";
         if (gitCache?.branch) {
           const branchColor = gitCache.dirty ? "warning" : "success";
-          branchStr = theme.fg(branchColor, gitCache.branch);
-          if (gitCache.dirty) branchStr += theme.fg("warning", " *");
-          if (gitCache.ahead) branchStr += theme.fg("success", ` ↑${gitCache.ahead}`);
-          if (gitCache.behind) branchStr += theme.fg("error", ` ↓${gitCache.behind}`);
+          branchStr = footerTheme.fg(branchColor, gitCache.branch);
+          if (gitCache.dirty) branchStr += footerTheme.fg("warning", " *");
+          if (gitCache.ahead) branchStr += footerTheme.fg("success", ` ↑${gitCache.ahead}`);
+          if (gitCache.behind) branchStr += footerTheme.fg("error", ` ↓${gitCache.behind}`);
         }
 
-        const sep = " " + theme.fg("dim", ">") + " ";
-        const indent = "  ";
-        const pwdStr = `${theme.fg("muted", pwdParent)}${theme.fg("accent", pwdBase || normalizedPwd)}`;
-        const lines: string[] = [];
+        const sep = " " + footerTheme.fg("dim", "·") + " ";
+        const pwdStr = `${footerTheme.fg("muted", pwdParent)}${footerTheme.fg("accent", pwdBase || normalizedPwd)}`;
 
-        lines.push(...wrapFooterSegments([
-          fitFooterSegment(width, branchStr ? [pwdStr + sep + branchStr, pwdStr] : [pwdStr]),
-        ], width, sep));
+        // INSIDE: single inline row. Left = profile status + provider/model
+        // (+ thinking). Right = ctx gauge, width-aware.
+        const statusBlocks: string[] = [];
+        if (latestResolution?.logicalStatus) statusBlocks.push(footerTheme.fg("accent", latestResolution.logicalStatus));
+        statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, footerTheme));
+        const statusLeft = statusBlocks.join(sep);
 
-        const statusBlocks = [] as string[];
-        if (latestResolution?.logicalStatus) statusBlocks.push(theme.fg("accent", latestResolution.logicalStatus));
-        statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, theme));
-        const statusLeft = wrapFooterSegments(statusBlocks, Math.max(1, width - indent.length), sep).join(sep);
-        const statusRight = fitFooterSegment(width, [
-          renderContextGauge(percentage, theme, used, total, { barWidth: 12, includeCounts: true }),
-          renderContextGauge(percentage, theme, used, total, { barWidth: 10, includeCounts: false }),
-          renderContextGauge(percentage, theme, used, total, { barWidth: 8, includeCounts: false }),
-          renderContextGauge(percentage, theme, used, total, { barWidth: 6, includeCounts: false }),
-          renderContextGauge(percentage, theme, used, total, { barWidth: 4, includeCounts: false }),
-        ]);
-        lines.push(...joinFooterSides(indent + statusLeft, indent + statusRight, width));
+        const ctxBudget = Math.max(8, innerWidth - visibleWidth(statusLeft) - 2);
+        const ctxVariants = innerWidth >= 100
+          ? [
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 12, includeCounts: true }),
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 10, includeCounts: true }),
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 10, includeCounts: false }),
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 8, includeCounts: false }),
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 6, includeCounts: false }),
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 4, includeCounts: false }),
+            ]
+          : [
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 10, includeCounts: false }),
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 8, includeCounts: false }),
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 6, includeCounts: false }),
+              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 4, includeCounts: false }),
+            ];
+        const statusRight = fitFooterSegment(ctxBudget, ctxVariants);
+        const inside = joinFooterSides(statusLeft, statusRight, innerWidth);
 
-        if (latestUsage && latestUsage.windows.length > 0) {
-          const usageLeft = indent + theme.fg("accent", latestUsage.provider);
-          const usageRight = wrapFooterSegments(
-            latestUsage.windows.map((window) => fitFooterSegment(width, [
-              renderUsageWindow(window, theme, { barWidth: 10, includeReset: true }),
-              renderUsageWindow(window, theme, { barWidth: 8, includeReset: true }),
-              renderUsageWindow(window, theme, { barWidth: 8, includeReset: false }),
-              renderUsageWindow(window, theme, { barWidth: 6, includeReset: false }),
-              renderUsageWindow(window, theme, { barWidth: 4, includeReset: false }),
-            ])),
-            Math.max(1, width - indent.length - visibleWidth(usageLeft) - 2),
-            sep
-          ).join(sep);
-          lines.push(...joinFooterSides(usageLeft, usageRight, width));
+        // OUTSIDE: pwd/branch on left, provider usage on right (when
+        // available). Falls over to two stacked rows on narrow widths.
+        const pwdLine = fitFooterSegment(outerWidth, branchStr ? [pwdStr + sep + branchStr, pwdStr] : [pwdStr]);
+        const outside: string[] = [];
+        const showUsage = !!latestUsage && latestUsage.windows.length > 0 && outerWidth >= 60;
+        if (showUsage) {
+          const usage = latestUsage!;
+          const usageLabel = footerTheme.fg("accent", usage.provider);
+          const windowBudget = Math.max(12, outerWidth - visibleWidth(pwdLine) - visibleWidth(usageLabel) - 4);
+          const windowVariants = (w: RateWindow) => [
+            renderUsageWindow(w, footerTheme, { barWidth: 10, includeReset: true }),
+            renderUsageWindow(w, footerTheme, { barWidth: 8, includeReset: true }),
+            renderUsageWindow(w, footerTheme, { barWidth: 8, includeReset: false }),
+            renderUsageWindow(w, footerTheme, { barWidth: 6, includeReset: false }),
+            renderUsageWindow(w, footerTheme, { barWidth: 4, includeReset: false }),
+          ];
+          const usageRightRaw = [usageLabel, ...usage.windows.map((w) => fitFooterSegment(windowBudget, windowVariants(w)))].join(sep);
+          outside.push(...joinFooterSides(pwdLine, usageRightRaw, outerWidth));
+        } else {
+          outside.push(truncateToWidth(pwdLine, outerWidth));
         }
 
-        return lines;
-      }, theme);
+        return { inside, outside };
+      }, footerThemeRef);
       return editor;
     });
 
