@@ -3,12 +3,13 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ModelRegi
 import { BorderedLoader } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
 import { loadModelProfilesConfig } from "../model-profiles/config";
-import { resolveModelRole } from "../model-profiles/resolve";
+import { readModelProfilesState } from "../model-profiles/resolve";
 import { completeWithModelRoleFallback } from "../model-profiles/runtime";
-import type { ResolvedRoleResult } from "../model-profiles/types";
+import type { ModelProfilesState, ResolvedRoleResult } from "../model-profiles/types";
+import { loadRenderConfig } from "./config";
 import { buildBamlRenderContext, parseBamlRenderResult } from "./extract";
 import { normalizeRenderDoc } from "./normalize";
-import { DEFAULT_RENDER_MODEL_ROLE } from "./model-selection";
+import { resolveRenderExtractionModel } from "./model-selection";
 import type { RenderRuntime } from "./core";
 import { createRenderSession, getRenderSessionSummary, readLatestRenderSession, RENDER_MESSAGE_CUSTOM_TYPE, type RenderSessionMessageDetails, withCurrentRenderRuntime } from "./session";
 import { createRenderMessageComponent, RenderViewerComponent } from "./ui";
@@ -28,14 +29,25 @@ async function resolveRenderModelRole(
 	currentModel: Model<Api>,
 	modelRegistry: ModelRegistry,
 	cwd: string,
-): Promise<ResolvedRoleResult | null> {
-	const loadedConfig = loadModelProfilesConfig(cwd);
-	return await resolveModelRole({
-		modelRegistry,
-		config: loadedConfig.mergedConfig,
-		currentModel,
-		role: { value: DEFAULT_RENDER_MODEL_ROLE, source: "config" },
-	});
+	state: ModelProfilesState,
+): Promise<{
+	resolved: ResolvedRoleResult | null;
+	profileErrors: string[];
+	renderErrors: string[];
+}> {
+	const loadedProfilesConfig = loadModelProfilesConfig(cwd);
+	const loadedRenderConfig = loadRenderConfig(cwd);
+	return {
+		resolved: await resolveRenderExtractionModel({
+			modelRegistry,
+			config: loadedProfilesConfig.mergedConfig,
+			renderConfig: loadedRenderConfig.mergedConfig,
+			state,
+			currentModel,
+		}),
+		profileErrors: loadedProfilesConfig.errors.map((error) => `${error.path}: ${error.message}`),
+		renderErrors: loadedRenderConfig.errors.map((error) => `${error.path}: ${error.message}`),
+	};
 }
 
 function getResponseText(response: { content: Array<{ type: string; text?: string }> }): string {
@@ -174,7 +186,10 @@ export default function renderExtension(pi: ExtensionAPI) {
 			const source = extractLastAssistantSource(ctx);
 			if (!source) return;
 
-			const resolved = await resolveRenderModelRole(ctx.model, ctx.modelRegistry, ctx.cwd);
+			const modelProfilesState = readModelProfilesState(ctx.sessionManager.getBranch());
+			const { resolved, profileErrors, renderErrors } = await resolveRenderModelRole(ctx.model, ctx.modelRegistry, ctx.cwd, modelProfilesState);
+			for (const error of profileErrors) ctx.ui.notify(`model-profiles config error: ${error}`, "warning");
+			for (const error of renderErrors) ctx.ui.notify(`render config error: ${error}`, "warning");
 			if (!resolved) {
 				ctx.ui.notify("No render extraction model available", "error");
 				return;

@@ -52,6 +52,10 @@ Current:
    - extractor orchestration
    - persisted render-session messages
 
+2. `config.ts`
+   - global + project render config loading
+   - configurable model-selection behavior
+
 2. `extract.ts`
    - second-model extraction
    - BAML prompt/schema
@@ -121,6 +125,8 @@ Today:
 - opens a minimal TUI viewer
 - persists a `render-session` custom message with canonical session details
 - `/render reopen` reopens the latest persisted render session on the current branch
+- extraction model selection is configurable via `render.json`
+- active `/profile` session state is used first by default for profile selection
 
 Not done yet:
 - editing
@@ -128,6 +134,41 @@ Not done yet:
 - questionnaire answer capture
 - HTML/Markdown export surfaces
 - full multi-surface runtime abstraction
+
+## Render config
+
+Optional config files:
+- global: `~/.pi/agent/render.json`
+- project: `.pi/render.json`
+
+Project overrides global.
+
+Example:
+
+```json
+{
+  "modelSelection": {
+    "rolesByProfile": {
+      "personal": "small",
+      "work": "smol"
+    },
+    "roleCandidates": ["render", "small", "smol"],
+    "fallbackToActiveRole": true,
+    "fallbackToDefaultRole": true
+  }
+}
+```
+
+Selection behavior:
+- if `modelSelection.profile` is set, use that profile
+- otherwise use active `/profile` session state first
+- then choose role candidates in configured order
+- `rolesByProfile` lets each model-profile choose a different extraction role
+- if no configured role resolves, render falls back to normal model-role resolution
+
+Useful pattern:
+- define hidden per-profile extraction role names in `model-profiles.json`, like `render`
+- or map profiles directly to existing public roles via `rolesByProfile`
 
 ## Scope for v1
 
