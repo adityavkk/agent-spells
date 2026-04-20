@@ -21,7 +21,6 @@ import {
 	readModelProfilesRuntimeState,
 	type ModelProfilesStatusInput,
 } from "./state";
-import { createModelProfilesFooter } from "./ui";
 import {
 	MODEL_PROFILES_PROVIDER,
 	MODEL_PROFILES_PROVIDER_API,
@@ -213,16 +212,6 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		return formatModelProfilesStatus(currentStatusInput(ctx));
 	}
 
-	function installFooter(ctx: ExtensionContext): void {
-		latestCtx = ctx;
-		ctx.ui.setFooter((_tui, theme, footerData) => createModelProfilesFooter(theme, footerData, () => ({
-			ctx: latestCtx,
-			model: displayModel ?? latestCtx?.model,
-			thinkingLevel: pi.getThinkingLevel(),
-			statusText: latestCtx ? currentStatusText(latestCtx) : undefined,
-		})));
-	}
-
 	function updateStatus(ctx: ExtensionContext): void {
 		latestCtx = ctx;
 		ctx.ui.setStatus(STATUS_KEY, currentStatusText(ctx));
@@ -341,7 +330,6 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		}
 		pi.setThinkingLevel(getAppliedThinkingLevel(resolved));
 		displayModel = getDisplayModel(ctx) ?? managedModel;
-		installFooter(ctx);
 		updateStatus(ctx);
 		if (options.notify !== false) {
 			const activeTarget = currentStatusText(ctx) ?? resolved.role ?? resolved.profile ?? "profile";
@@ -434,7 +422,6 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		}
 		lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
 		displayModel = getDisplayModel(ctx);
-		installFooter(ctx);
 		if (loadedConfig.errors.length > 0 && ctx.hasUI) {
 			notifyConfigErrors(ctx);
 		}
@@ -475,7 +462,6 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			lastRuntimeDiagnostics = null;
 		}
 		displayModel = getDisplayModel(ctx);
-		installFooter(ctx);
 		updateStatus(ctx);
 	});
 
