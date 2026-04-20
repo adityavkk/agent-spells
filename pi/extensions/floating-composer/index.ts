@@ -687,6 +687,22 @@ function isBlankRenderLine(text: string): boolean {
   return stripAnsi(text).trim().length === 0;
 }
 
+/**
+ * pi-tui's Editor.render() always emits a top and bottom row filled with
+ * `─` characters (painted in the theme's borderMuted color). When scrolled,
+ * those rows include a scroll indicator like `─── ↑ 5 more ───`.
+ *
+ * Detect those rows so we can strip them out and let the composer panel own
+ * the entire visual frame instead of inheriting pi's default editor border.
+ */
+function isEditorBorderLine(text: string): boolean {
+  const stripped = stripAnsi(text).trim();
+  if (stripped.length === 0) return true;
+  if (!stripped.includes("─")) return false;
+  // all-hyphens or hyphens with a scroll indicator ("↑ N more" / "↓ N more")
+  return /^[─\s]*(?:[↑↓]\s*\d+\s+more\s*)?[─\s]*$/.test(stripped);
+}
+
 function parseThemeJsonFile(themePath: string): any | null {
   try {
     if (!themePath || !existsSync(themePath)) return null;
@@ -1007,8 +1023,21 @@ class FloatingComposerEditor extends CustomEditor {
 
     const rawEditorLines = super.render(innerWidth).map((line) => truncateToWidth(stripBgAnsi(line), innerWidth));
     const editorLines = rawEditorLines.slice();
-    while (editorLines.length > 1 && isBlankRenderLine(editorLines[0])) editorLines.shift();
-    while (editorLines.length > 1 && isBlankRenderLine(editorLines[editorLines.length - 1])) editorLines.pop();
+    // Drop pi-tui editor's built-in top/bottom horizontal border rows (and any
+    // blank rows) so the composer panel frames the content directly.
+    while (
+      editorLines.length > 1 &&
+      (isBlankRenderLine(editorLines[0]) || isEditorBorderLine(editorLines[0]))
+    ) {
+      editorLines.shift();
+    }
+    while (
+      editorLines.length > 1 &&
+      (isBlankRenderLine(editorLines[editorLines.length - 1]) ||
+        isEditorBorderLine(editorLines[editorLines.length - 1]))
+    ) {
+      editorLines.pop();
+    }
     const footer = this.footerRenderer
       ? this.footerRenderer(innerWidth, width)
       : { inside: [], outside: [] };
