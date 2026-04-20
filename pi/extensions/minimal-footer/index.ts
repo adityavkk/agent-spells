@@ -719,11 +719,12 @@ function renderUsageWindow(
   return `${dim(window.label)} ${bar} ${pct}${timeStr}`;
 }
 
-function renderUsageLine(usage: UsageSnapshot, width: number, theme: any): string[] {
+function renderUsageLine(usage: UsageSnapshot, width: number, theme: any, options?: { indent?: string }): string[] {
   if (!usage.windows.length) return [];
 
   const dim = (s: string) => theme.fg("dim", s);
   const sep = " " + dim(">") + " ";
+  const indent = options?.indent ?? "";
   const segments: string[] = [theme.fg("accent", usage.provider)];
 
   for (const window of usage.windows) {
@@ -738,7 +739,8 @@ function renderUsageLine(usage: UsageSnapshot, width: number, theme: any): strin
     );
   }
 
-  return wrapFooterSegments(segments, width, sep);
+  return wrapFooterSegments(segments, Math.max(1, width - visibleWidth(indent)), sep)
+    .map((line) => indent + line);
 }
 
 function getThinkingLevel(ctx: ExtensionContext): string {
@@ -818,12 +820,20 @@ function resolveFooterModel(ctx: ExtensionContext, logicalStatus?: string): Foot
   };
 }
 
-function formatModelSegment(model: Model<any> | undefined, thinkingLevel: string): string {
-  if (!model) return "no-model";
-  let value = `${model.provider}/${model.id}`;
+function formatModelSegment(model: Model<any> | undefined, thinkingLevel: string, theme?: any): string {
+  if (!model) return theme ? theme.fg("muted", "no-model") : "no-model";
+
+  const provider = theme ? theme.fg("dim", `${model.provider}/`) : `${model.provider}/`;
+  const modelId = theme ? theme.fg("muted", model.id) : model.id;
+  let value = `${provider}${modelId}`;
+
   if (model.reasoning) {
-    value += thinkingLevel !== "off" ? ` > ${thinkingLevel}` : " > thinking off";
+    const thinkingText = thinkingLevel !== "off" ? thinkingLevel : "thinking off";
+    value += theme
+      ? ` ${theme.fg("dim", ">")} ${theme.fg("dim", thinkingText)}`
+      : ` > ${thinkingText}`;
   }
+
   return value;
 }
 
@@ -942,6 +952,10 @@ export default function minimalFooterExtension(pi: ExtensionAPI) {
           let pwd = process.cwd();
           const home = process.env.HOME || process.env.USERPROFILE;
           if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
+          const normalizedPwd = pwd || ".";
+          const lastSlash = normalizedPwd.lastIndexOf("/");
+          const pwdParent = lastSlash >= 0 ? normalizedPwd.slice(0, lastSlash + 1) : "";
+          const pwdBase = lastSlash >= 0 ? normalizedPwd.slice(lastSlash + 1) : normalizedPwd;
 
           let branchStr = "";
           if (gitCache?.branch) {
@@ -953,7 +967,8 @@ export default function minimalFooterExtension(pi: ExtensionAPI) {
           }
 
           const sep = " " + theme.fg("dim", ">") + " ";
-          const pwdStr = theme.fg("accent", pwd);
+          const indent = "  ";
+          const pwdStr = `${theme.fg("muted", pwdParent)}${theme.fg("accent", pwdBase || normalizedPwd)}`;
           const lines: string[] = [];
 
           lines.push(...wrapFooterSegments([
@@ -964,7 +979,7 @@ export default function minimalFooterExtension(pi: ExtensionAPI) {
           if (latestResolution?.logicalStatus) {
             statusBlocks.push(theme.fg("accent", latestResolution.logicalStatus));
           }
-          statusBlocks.push(theme.fg("muted", formatModelSegment(actualModel, thinkingLevel)));
+          statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, theme));
           statusBlocks.push(fitFooterSegment(width, [
             renderContextGauge(percentage, theme, used, total, { barWidth: 12, includeCounts: true }),
             renderContextGauge(percentage, theme, used, total, { barWidth: 10, includeCounts: false }),
@@ -972,10 +987,10 @@ export default function minimalFooterExtension(pi: ExtensionAPI) {
             renderContextGauge(percentage, theme, used, total, { barWidth: 6, includeCounts: false }),
             renderContextGauge(percentage, theme, used, total, { barWidth: 4, includeCounts: false }),
           ]));
-          lines.push(...wrapFooterSegments(statusBlocks, width, sep));
+          lines.push(...wrapFooterSegments(statusBlocks, Math.max(1, width - indent.length), sep).map((line) => indent + line));
 
           if (latestUsage && latestUsage.windows.length > 0) {
-            lines.push(...renderUsageLine(latestUsage, width, theme));
+            lines.push(...renderUsageLine(latestUsage, width, theme, { indent }));
           }
 
           return lines.map((line) => truncateToWidth(line, width));
