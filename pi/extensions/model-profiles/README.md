@@ -39,6 +39,7 @@ Examples:
   - `personal:small`
   - `personal:small raw-override`
   - `personal:small unresolved`
+- footer keeps logical profile status visible while also showing the concrete provider/model winner
 - keeps current scope narrow:
   - model + thinking only
   - command UX intentionally generic enough to extend later
@@ -164,7 +165,7 @@ Sticky runtime policy:
 - retries wrap around the remaining targets in round-robin order
 - on success, cursor sticks to the winning concrete target
 - `/profile reset` clears the sticky cursor so the next turn starts from the first configured target again
-- footer model display shows the last concrete winner, while the logical status line still shows `profile:role`
+- footer model display shows the last concrete winner, while the logical status line shows `profile <profile:role> -> <provider/model>`
 
 ## Runtime fallback behavior
 

@@ -1,7 +1,5 @@
 import { truncateToWidth, visibleWidth, type Component } from "@mariozechner/pi-tui";
-import type { Theme } from "@mariozechner/pi-coding-agent";
-import type { ReadonlyFooterDataProvider } from "@mariozechner/pi-coding-agent";
-import type { ContextUsage, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ContextUsage, ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@mariozechner/pi-coding-agent";
 import type { Model } from "@mariozechner/pi-ai";
 
 function sanitizeStatusText(text: string): string {
@@ -14,6 +12,21 @@ function formatTokens(count: number): string {
 	if (count < 1000000) return `${Math.round(count / 1000)}k`;
 	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
 	return `${Math.round(count / 1000000)}M`;
+}
+
+function formatModelLine(model: Model<any> | undefined, thinkingLevel: string | undefined): string {
+	if (!model) return "no-model";
+	let line = `${model.provider}/${model.id}`;
+	if (model.reasoning) {
+		line += thinkingLevel && thinkingLevel !== "off" ? ` • ${thinkingLevel}` : " • thinking off";
+	}
+	return line;
+}
+
+function formatProfileStatusLine(statusText: string, model: Model<any> | undefined, thinkingLevel: string | undefined): string {
+	const cleanStatus = sanitizeStatusText(statusText);
+	const modelLine = formatModelLine(model, thinkingLevel);
+	return `profile ${cleanStatus} -> ${modelLine}`;
 }
 
 export interface ModelProfilesFooterState {
@@ -78,16 +91,12 @@ export function createModelProfilesFooter(
 			else statsParts.push(contextPercentDisplay);
 
 			let statsLeft = statsParts.join(" ");
-			const modelName = model?.id || "no-model";
-			let rightSideWithoutProvider = modelName;
-			if (model?.reasoning) {
-				rightSideWithoutProvider =
-					thinkingLevel && thinkingLevel !== "off" ? `${modelName} • ${thinkingLevel}` : `${modelName} • thinking off`;
-			}
-			let rightSide = rightSideWithoutProvider;
-			if (footerData.getAvailableProviderCount() > 1 && model) {
-				rightSide = `(${model.provider}) ${rightSideWithoutProvider}`;
-				if (visibleWidth(statsLeft) + 2 + visibleWidth(rightSide) > width) rightSide = rightSideWithoutProvider;
+			let rightSide = formatModelLine(model, thinkingLevel);
+			if (visibleWidth(statsLeft) + 2 + visibleWidth(rightSide) > width && model) {
+				rightSide = model.id;
+				if (model.reasoning) {
+					rightSide += thinkingLevel && thinkingLevel !== "off" ? ` • ${thinkingLevel}` : " • thinking off";
+				}
 			}
 
 			if (visibleWidth(statsLeft) > width) statsLeft = truncateToWidth(statsLeft, width, "...");
@@ -105,10 +114,8 @@ export function createModelProfilesFooter(
 			}
 
 			if (statusText) {
-				const clean = sanitizeStatusText(statusText);
-				const truncated = truncateToWidth(clean, width, "...");
-				const statusPadding = Math.max(0, width - visibleWidth(truncated));
-				lines.push(theme.fg("dim", " ".repeat(statusPadding) + truncated));
+				const statusLine = formatProfileStatusLine(statusText, model, thinkingLevel);
+				lines.push(truncateToWidth(theme.fg("dim", statusLine), width, theme.fg("dim", "...")));
 			}
 
 			return lines;
