@@ -672,6 +672,14 @@ function padPlain(text: string, width: number): string {
   return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
 }
 
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function isBlankRenderLine(text: string): boolean {
+  return stripAnsi(text).trim().length === 0;
+}
+
 function parseThemeJsonFile(themePath: string): any | null {
   try {
     if (!themePath || !existsSync(themePath)) return null;
@@ -992,8 +1000,8 @@ class FloatingComposerEditor extends CustomEditor {
 
     const rawEditorLines = super.render(innerWidth).map((line) => truncateToWidth(line, innerWidth));
     const editorLines = rawEditorLines.slice();
-    while (editorLines.length > 1 && visibleWidth(editorLines[0]) === 0) editorLines.shift();
-    while (editorLines.length > 1 && visibleWidth(editorLines[editorLines.length - 1]) === 0) editorLines.pop();
+    while (editorLines.length > 1 && isBlankRenderLine(editorLines[0])) editorLines.shift();
+    while (editorLines.length > 1 && isBlankRenderLine(editorLines[editorLines.length - 1])) editorLines.pop();
     const footer = this.footerRenderer
       ? this.footerRenderer(innerWidth, width)
       : { inside: [], outside: [] };
