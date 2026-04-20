@@ -46,6 +46,11 @@ interface FooterModelResolution {
   actualModel?: Model<any>;
 }
 
+interface FloatingComposerThemeTokens {
+  panelBg: string;
+  shadowFg: string;
+}
+
 const USAGE_REFRESH_INTERVAL = 5 * 60_000;
 const usageCache = new Map<string, UsageSnapshot>();
 
@@ -667,6 +672,76 @@ function padPlain(text: string, width: number): string {
   return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
 }
 
+function parseThemeJsonFile(themePath: string): any | null {
+  try {
+    if (!themePath || !existsSync(themePath)) return null;
+    return JSON.parse(readFileSync(themePath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function resolveThemeVarValue(
+  vars: Record<string, string | number> | undefined,
+  value: string | number | undefined,
+  seen = new Set<string>()
+): string | number | undefined {
+  if (value === undefined || typeof value === "number" || value === "" || value.startsWith("#")) return value;
+  if (!vars || !(value in vars) || seen.has(value)) return value;
+  seen.add(value);
+  return resolveThemeVarValue(vars, vars[value], seen);
+}
+
+function getThemeVarColor(
+  theme: any,
+  varNames: string[],
+  fallback: string
+): string {
+  const themePath = typeof theme?.sourcePath === "string" ? theme.sourcePath : undefined;
+  const parsed = themePath ? parseThemeJsonFile(themePath) : null;
+  const vars = parsed?.vars as Record<string, string | number> | undefined;
+
+  for (const varName of varNames) {
+    const resolved = resolveThemeVarValue(vars, vars?.[varName]);
+    if (typeof resolved === "number" || typeof resolved === "string") return String(resolved);
+  }
+
+  return fallback;
+}
+
+function applyBgAnsi(value: string, text: string): string {
+  if (value === "") return `\x1b[49m${text}\x1b[49m`;
+  if (/^\d+$/.test(value)) return `\x1b[48;5;${value}m${text}\x1b[49m`;
+  if (/^#[0-9a-f]{6}$/i.test(value)) {
+    const hex = value.slice(1);
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `\x1b[48;2;${r};${g};${b}m${text}\x1b[49m`;
+  }
+  return text;
+}
+
+function applyFgAnsi(value: string, text: string): string {
+  if (value === "") return `\x1b[39m${text}\x1b[39m`;
+  if (/^\d+$/.test(value)) return `\x1b[38;5;${value}m${text}\x1b[39m`;
+  if (/^#[0-9a-f]{6}$/i.test(value)) {
+    const hex = value.slice(1);
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
+  }
+  return text;
+}
+
+function getFloatingComposerThemeTokens(theme: any): FloatingComposerThemeTokens {
+  return {
+    panelBg: getThemeVarColor(theme, ["floatingComposerBg", "composerPanelBg", "panelBg"], "#000000"),
+    shadowFg: getThemeVarColor(theme, ["floatingComposerShadow", "composerShadowFg", "panelShadowFg"], "#11111b"),
+  };
+}
+
 function paintFooterBand(line: string, width: number, theme: any): string {
   const safeWidth = Math.max(1, width);
   const padded = ` ${truncateToWidth(line, Math.max(0, safeWidth - 2))}`;
@@ -907,10 +982,11 @@ class FloatingComposerEditor extends CustomEditor {
 
     const bar = theme ? theme.fg("accent", "│") : "│";
     const foot = theme ? theme.fg("accent", "╹") : "╹";
+    const themeTokens = getFloatingComposerThemeTokens(theme);
     const panelBodyWidth = Math.max(0, cardWidth - borderWidth);
     const panelRow = (content: string) => {
       const padded = padPlain(content, panelBodyWidth);
-      return bar + (theme ? theme.bg("selectedBg", padded) : padded);
+      return bar + (theme ? applyBgAnsi(themeTokens.panelBg, padded) : padded);
     };
     const panelPad = () => panelRow("");
     const padBothSides = (content: string) =>
@@ -942,7 +1018,7 @@ class FloatingComposerEditor extends CustomEditor {
     // muted border color. Reads as a drop-shadow under the panel.
     if (panelBodyWidth > 0) {
       const shadeStr = "▀".repeat(panelBodyWidth);
-      const shade = theme ? theme.fg("borderMuted", shadeStr) : shadeStr;
+      const shade = theme ? applyFgAnsi(themeTokens.shadowFg, shadeStr) : shadeStr;
       lines.push(leftMargin + foot + shade);
     }
 

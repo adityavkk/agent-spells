@@ -4,7 +4,7 @@ Opencode-inspired composer surface for pi. Replaces the default editor + footer
 with a single dark panel:
 
 - single left accent bar (`│`) instead of a full rounded box
-- dark-grey (`selectedBg`) fill spanning the entire terminal width
+- theme-variable-driven panel fill spanning the entire terminal width
 - provider/model + context gauge rendered inline inside the panel
 - shadow-foot `╹▀▀▀…` under the panel (muted border color)
 - pwd · branch  |  provider usage printed on a plain row below the panel
@@ -41,6 +41,35 @@ Outside row:
 
 Usage data is provider-specific (Claude, Codex, Copilot, Gemini, MiniMax) and
 refreshes every 5 minutes while the session is live.
+
+## Theme vars
+
+`floating-composer` reads optional custom vars from the active theme JSON's
+`vars` object:
+
+- `floatingComposerBg` - composer panel background
+- `floatingComposerShadow` - `╹▀▀▀…` shadow row foreground
+
+Fallback aliases also supported for reuse across themes:
+
+- `composerPanelBg`
+- `panelBg`
+- `composerShadowFg`
+- `panelShadowFg`
+
+Example:
+
+```json
+{
+  "vars": {
+    "floatingComposerBg": "#000000",
+    "floatingComposerShadow": "#11111b"
+  }
+}
+```
+
+This avoids changing pi core theme tokens while still giving each theme its own
+composer-specific colors. Dark and light themes can set different values.
 
 ## Usage
 
