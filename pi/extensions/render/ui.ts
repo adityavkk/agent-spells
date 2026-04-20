@@ -2,7 +2,7 @@ import type { Theme } from "@mariozechner/pi-coding-agent";
 import { Text, Key, matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type TUI } from "@mariozechner/pi-tui";
 import { BlockType, EmbeddedContentType, QuestionType, type Block, type CollectionItem, type EmbeddedContent, type ListItem, type Question, type RenderDoc } from "./baml_client/types";
 import type { RenderRuntime, RenderSession } from "./core";
-import { getCurrentRenderRevision, getRenderSessionSummary, getRenderSessionTitle } from "./session";
+import { getCurrentRenderRevision, getRenderSessionTitle } from "./session";
 
 export interface RenderQuestionnaireSelection {
 	key: string;
@@ -25,8 +25,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function blockLabel(block: Block, index: number): string {
-	return block.title?.trim() || `${index + 1}. ${block.type.toLowerCase()}`;
+function defaultBlockLabel(block: Block): string {
+	if (block.type === BlockType.MARKDOWN) return "Notes";
+	if (block.type === BlockType.LIST) return "List";
+	if (block.type === BlockType.QUESTIONNAIRE) return "Questions";
+	return "Views";
+}
+
+function blockLabel(block: Block): string {
+	return block.title?.trim() || defaultBlockLabel(block);
 }
 
 function questionTypeLabel(type: QuestionType): string {
@@ -43,14 +50,17 @@ function questionTypeLabel(type: QuestionType): string {
 }
 
 function blockKindSummary(block: Block): string {
-	if (block.type === BlockType.MARKDOWN) return "markdown";
-	if (block.type === BlockType.LIST) return `list:${block.items.length}`;
-	if (block.type === BlockType.QUESTIONNAIRE) return `questions:${block.questions.length}`;
-	return `views:${block.collectionItems.length}`;
+	if (block.type === BlockType.MARKDOWN) return "notes";
+	if (block.type === BlockType.LIST) return `${block.items.length} item${block.items.length === 1 ? "" : "s"}`;
+	if (block.type === BlockType.QUESTIONNAIRE) return `${block.questions.length} question${block.questions.length === 1 ? "" : "s"}`;
+	return `${block.collectionItems.length} view${block.collectionItems.length === 1 ? "" : "s"}`;
 }
 
 function summarizeDoc(doc: RenderDoc): string {
-	return doc.blocks.map((block, index) => `${index + 1}:${blockKindSummary(block)}`).join(" • ");
+	if (doc.blocks.length <= 3) {
+		return doc.blocks.map((block) => blockLabel(block)).join(" • ");
+	}
+	return `${doc.blocks.length} sections`;
 }
 
 function getStoredAnswers(runtime: RenderRuntime): Record<string, StoredQuestionnaireAnswer> {
@@ -122,12 +132,8 @@ function pushWrapped(lines: string[], text: string, width: number, prefix = "", 
 	}
 }
 
-function pushSectionTitle(lines: string[], title: string, width: number, theme: Theme): void {
-	lines.push(truncateToWidth(theme.bold(theme.fg("accent", title)), width));
-}
-
-function pushQuestion(lines: string[], question: Question, index: number, width: number, theme: Theme): void {
-	pushWrapped(lines, `${index + 1}. ${question.question}`, width, theme.fg("text", ""));
+function pushQuestion(lines: string[], question: Question, _index: number, width: number, theme: Theme): void {
+	pushWrapped(lines, question.question, width, theme.fg("text", ""));
 	const meta = [questionTypeLabel(question.type)];
 	const constraints = questionConstraintSummary(question);
 	if (constraints) meta.push(constraints);
@@ -147,17 +153,15 @@ function pushQuestion(lines: string[], question: Question, index: number, width:
 }
 
 function pushListSelection(lines: string[], items: ListItem[], selectedIndex: number, width: number, theme: Theme): void {
-	pushSectionTitle(lines, "Items", width, theme);
 	for (const [index, item] of items.entries()) {
 		const selected = index === selectedIndex;
 		const label = item.navLabel ?? item.title ?? `Item ${index + 1}`;
-		const line = `${selected ? ">" : " "} ${index + 1}. ${label}`;
-		lines.push(truncateToWidth(selected ? theme.fg("accent", line) : theme.fg("text", line), width));
+		const line = `${selected ? ">" : " "} ${label}`;
+		lines.push(truncateToWidth(selected ? theme.fg("accent", line) : theme.fg("muted", line), width));
 	}
 	lines.push("");
 	const selected = items[selectedIndex];
 	if (!selected) return;
-	pushSectionTitle(lines, selected.title ?? selected.navLabel ?? `Item ${selectedIndex + 1}`, width, theme);
 	if (selected.summary) {
 		pushWrapped(lines, selected.summary, width, theme.fg("muted", ""));
 		lines.push("");
@@ -174,7 +178,6 @@ function pushEmbeddedContent(lines: string[], content: EmbeddedContent, selected
 		pushListSelection(lines, content.items, Math.min(selectedNestedIndex, Math.max(0, content.items.length - 1)), width, theme);
 		return;
 	}
-	pushSectionTitle(lines, "Questions", width, theme);
 	for (const [index, question] of content.questions.entries()) {
 		pushQuestion(lines, question, index, width, theme);
 		if (index < content.questions.length - 1) lines.push("");
@@ -182,17 +185,15 @@ function pushEmbeddedContent(lines: string[], content: EmbeddedContent, selected
 }
 
 function pushCollectionSelection(lines: string[], items: CollectionItem[], selectedIndex: number, nestedIndex: number, width: number, theme: Theme): void {
-	pushSectionTitle(lines, "Views", width, theme);
 	for (const [index, item] of items.entries()) {
 		const selected = index === selectedIndex;
 		const label = item.navLabel ?? item.title ?? `View ${index + 1}`;
-		const line = `${selected ? ">" : " "} ${index + 1}. ${label}`;
-		lines.push(truncateToWidth(selected ? theme.fg("accent", line) : theme.fg("text", line), width));
+		const line = `${selected ? ">" : " "} ${label}`;
+		lines.push(truncateToWidth(selected ? theme.fg("accent", line) : theme.fg("muted", line), width));
 	}
 	lines.push("");
 	const selected = items[selectedIndex];
 	if (!selected) return;
-	pushSectionTitle(lines, selected.title ?? selected.navLabel ?? `View ${selectedIndex + 1}`, width, theme);
 	if (selected.summary) {
 		pushWrapped(lines, selected.summary, width, theme.fg("muted", ""));
 		lines.push("");
@@ -202,7 +203,7 @@ function pushCollectionSelection(lines: string[], items: CollectionItem[], selec
 
 function pushStoredAnswer(lines: string[], answer: StoredQuestionnaireAnswer | undefined, width: number, theme: Theme): void {
 	if (!answer) return;
-	pushSectionTitle(lines, answer.title ? `Saved answer · ${answer.title}` : "Saved answer", width, theme);
+	lines.push(truncateToWidth(theme.fg("accent", "Saved answer"), width));
 	if (answer.transcript) {
 		pushWrapped(lines, answer.transcript, width, theme.fg("muted", ""));
 		return;
@@ -223,10 +224,11 @@ function countAnsweredCollectionItems(block: Block, runtime: RenderRuntime): num
 
 function blockStatusLabel(block: Block, runtime: RenderRuntime): string | undefined {
 	if (block.type === BlockType.QUESTIONNAIRE) {
-		return getStoredQuestionnaireAnswer(runtime, block.id) ? "answered" : undefined;
+		return getStoredQuestionnaireAnswer(runtime, block.id) ? "✓" : undefined;
 	}
 	if (block.type === BlockType.COLLECTION) {
-		return answeredCountLabel(countAnsweredCollectionItems(block, runtime));
+		const answered = countAnsweredCollectionItems(block, runtime);
+		return answered > 0 ? `✓ ${answered}` : undefined;
 	}
 	return undefined;
 }
@@ -401,24 +403,22 @@ export class RenderViewerComponent implements Component {
 		const nestedIndex = this.currentNestedIndex(current);
 		const safeWidth = Math.max(20, width);
 
-		lines.push(truncateToWidth(this.theme.fg("accent", "─".repeat(safeWidth)), safeWidth));
 		lines.push(truncateToWidth(this.theme.bold(this.theme.fg("text", this.title)), safeWidth));
 		const answeredSummary = answeredCountLabel(countStoredQuestionnaireAnswers(this.runtime));
-		lines.push(truncateToWidth(this.theme.fg("muted", `${this.doc.blocks.length} blocks • ${summarizeDoc(this.doc)}${answeredSummary ? ` • ${answeredSummary}` : ""}`), safeWidth));
+		const subtitle = `${summarizeDoc(this.doc)}${answeredSummary ? ` • ${answeredSummary}` : ""}`;
+		lines.push(truncateToWidth(this.theme.fg("dim", subtitle), safeWidth));
 		if (this.doc.introMarkdown) {
 			lines.push("");
 			pushWrapped(lines, this.doc.introMarkdown, safeWidth, this.theme.fg("muted", ""));
 		}
 		lines.push("");
-		pushSectionTitle(lines, "Blocks", safeWidth, this.theme);
 		for (const [index, block] of this.doc.blocks.entries()) {
 			const selected = index === this.currentBlockIndex;
 			const status = blockStatusLabel(block, this.runtime);
-			const line = `${selected ? ">" : " "} ${index + 1}. ${blockLabel(block, index)}${status ? ` [${status}]` : ""}`;
-			lines.push(truncateToWidth(selected ? this.theme.fg("accent", line) : this.theme.fg("text", line), safeWidth));
+			const line = `${selected ? ">" : " "} ${blockLabel(block)}${status ? `  ${status}` : ""}`;
+			lines.push(truncateToWidth(selected ? this.theme.fg("accent", line) : this.theme.fg("muted", line), safeWidth));
 		}
 		lines.push("");
-		pushSectionTitle(lines, blockLabel(current, this.currentBlockIndex), safeWidth, this.theme);
 		if (current.type === BlockType.MARKDOWN) {
 			pushWrapped(lines, current.markdown ?? "", safeWidth, this.theme.fg("text", ""));
 		} else if (current.type === BlockType.LIST) {
@@ -438,10 +438,9 @@ export class RenderViewerComponent implements Component {
 			pushStoredAnswer(lines, storedAnswer, safeWidth, this.theme);
 		}
 		lines.push("");
-		const hints = ["Tab/←→ blocks", "↑↓ items", "Enter/Esc close"];
+		const hints = ["Tab/←→ sections", "↑↓ move", "Enter/Esc close"];
 		if (this.currentQuestionnaire()) hints.splice(2, 0, "a answer");
 		lines.push(truncateToWidth(this.theme.fg("dim", hints.join(" • ")), safeWidth));
-		lines.push(truncateToWidth(this.theme.fg("accent", "─".repeat(safeWidth)), safeWidth));
 
 		this.cachedWidth = width;
 		this.cachedLines = lines;
@@ -452,28 +451,17 @@ export class RenderViewerComponent implements Component {
 export function buildRenderMessageText(session: RenderSession, theme: Theme, expanded: boolean): string {
 	const revision = getCurrentRenderRevision(session);
 	const answeredSummary = answeredCountLabel(countStoredQuestionnaireAnswers(revision.runtime));
-	const header = `${theme.fg("toolTitle", theme.bold("render "))}${theme.fg("text", getRenderSessionSummary(session))}`;
+	const header = `${theme.fg("toolTitle", theme.bold("render "))}${theme.fg("text", getRenderSessionTitle(session))}`;
+	const meta = `${summarizeDoc(revision.doc)}${answeredSummary ? ` • ${answeredSummary}` : ""}`;
 	if (!expanded) {
-		return `${header}\n${theme.fg("dim", `${summarizeDoc(revision.doc)}${answeredSummary ? ` • ${answeredSummary}` : ""}`)}`;
+		return `${header}\n${theme.fg("dim", meta)}`;
 	}
-	const parts = [header, theme.fg("muted", `source ${session.source.entryId} • revision ${revision.number}${answeredSummary ? ` • ${answeredSummary}` : ""}`)];
-	if (revision.doc.introMarkdown) parts.push(revision.doc.introMarkdown);
-	for (const [index, block] of revision.doc.blocks.entries()) {
-		parts.push(`${index + 1}. ${blockLabel(block, index)} • ${blockKindSummary(block)}`);
-		if (block.type === BlockType.MARKDOWN && block.markdown) {
-			parts.push(block.markdown);
-		}
-		if (block.type === BlockType.LIST) {
-			parts.push(...block.items.map((item, itemIndex) => `  - ${itemIndex + 1}. ${item.title ?? item.navLabel ?? item.bodyMarkdown}`));
-		}
-		if (block.type === BlockType.QUESTIONNAIRE) {
-			parts.push(...block.questions.map((question, questionIndex) => `  - Q${questionIndex + 1}: ${question.question}`));
-		}
-		if (block.type === BlockType.COLLECTION) {
-			parts.push(...block.collectionItems.map((item, itemIndex) => `  - ${itemIndex + 1}. ${item.title ?? item.navLabel ?? "View"}`));
-		}
+	const parts = [header, theme.fg("muted", meta)];
+	for (const block of revision.doc.blocks) {
+		const status = blockStatusLabel(block, revision.runtime);
+		parts.push(`${blockLabel(block)}${status ? `  ${status}` : ""}${block.type === BlockType.MARKDOWN ? "" : ` • ${blockKindSummary(block)}`}`);
 	}
-	return parts.join("\n\n");
+	return parts.join("\n");
 }
 
 export function createRenderMessageComponent(session: RenderSession, theme: Theme, expanded: boolean): Component {
