@@ -10,6 +10,13 @@ export interface RenderQuestionnaireSelection {
 	questions: Question[];
 }
 
+interface StoredQuestionnaireAnswer {
+	title?: string;
+	transcript?: string;
+	structuredAnswers?: Array<{ answered?: boolean }>;
+	submittedAt?: number;
+}
+
 export type RenderViewerResult =
 	| { type: "close"; runtime: RenderRuntime }
 	| { type: "answer"; runtime: RenderRuntime; questionnaire: RenderQuestionnaireSelection };
@@ -44,6 +51,36 @@ function blockKindSummary(block: Block): string {
 
 function summarizeDoc(doc: RenderDoc): string {
 	return doc.blocks.map((block, index) => `${index + 1}:${blockKindSummary(block)}`).join(" • ");
+}
+
+function getStoredAnswers(runtime: RenderRuntime): Record<string, StoredQuestionnaireAnswer> {
+	const answers = runtime.answers;
+	if (!isRecord(answers)) return {};
+	const result: Record<string, StoredQuestionnaireAnswer> = {};
+	for (const [key, value] of Object.entries(answers)) {
+		if (!isRecord(value)) continue;
+		result[key] = {
+			title: typeof value.title === "string" ? value.title : undefined,
+			transcript: typeof value.transcript === "string" ? value.transcript : undefined,
+			structuredAnswers: Array.isArray(value.structuredAnswers) ? value.structuredAnswers : undefined,
+			submittedAt: typeof value.submittedAt === "number" ? value.submittedAt : undefined,
+		};
+	}
+	return result;
+}
+
+function getStoredQuestionnaireAnswer(runtime: RenderRuntime, key: string | undefined): StoredQuestionnaireAnswer | undefined {
+	if (!key) return undefined;
+	return getStoredAnswers(runtime)[key];
+}
+
+function countStoredQuestionnaireAnswers(runtime: RenderRuntime): number {
+	return Object.keys(getStoredAnswers(runtime)).length;
+}
+
+function answeredCountLabel(count: number): string | undefined {
+	if (count <= 0) return undefined;
+	return `${count} answered`;
 }
 
 function questionConstraintSummary(question: Question): string | undefined {
@@ -161,6 +198,37 @@ function pushCollectionSelection(lines: string[], items: CollectionItem[], selec
 		lines.push("");
 	}
 	pushEmbeddedContent(lines, selected.content, nestedIndex, width, theme);
+}
+
+function pushStoredAnswer(lines: string[], answer: StoredQuestionnaireAnswer | undefined, width: number, theme: Theme): void {
+	if (!answer) return;
+	pushSectionTitle(lines, answer.title ? `Saved answer · ${answer.title}` : "Saved answer", width, theme);
+	if (answer.transcript) {
+		pushWrapped(lines, answer.transcript, width, theme.fg("muted", ""));
+		return;
+	}
+	const answered = answer.structuredAnswers?.filter((item) => item?.answered).length ?? 0;
+	pushWrapped(lines, answered > 0 ? `${answered} answer(s) saved.` : "Answer saved.", width, theme.fg("muted", ""));
+}
+
+function countAnsweredCollectionItems(block: Block, runtime: RenderRuntime): number {
+	if (block.type !== BlockType.COLLECTION) return 0;
+	let count = 0;
+	for (const item of block.collectionItems) {
+		if (item.content.type !== EmbeddedContentType.QUESTIONNAIRE) continue;
+		if (getStoredQuestionnaireAnswer(runtime, item.id)) count++;
+	}
+	return count;
+}
+
+function blockStatusLabel(block: Block, runtime: RenderRuntime): string | undefined {
+	if (block.type === BlockType.QUESTIONNAIRE) {
+		return getStoredQuestionnaireAnswer(runtime, block.id) ? "answered" : undefined;
+	}
+	if (block.type === BlockType.COLLECTION) {
+		return answeredCountLabel(countAnsweredCollectionItems(block, runtime));
+	}
+	return undefined;
 }
 
 function currentItemIdsFromSelections(selections: Record<string, unknown>): Record<string, string> {
@@ -335,7 +403,8 @@ export class RenderViewerComponent implements Component {
 
 		lines.push(truncateToWidth(this.theme.fg("accent", "─".repeat(safeWidth)), safeWidth));
 		lines.push(truncateToWidth(this.theme.bold(this.theme.fg("text", this.title)), safeWidth));
-		lines.push(truncateToWidth(this.theme.fg("muted", `${this.doc.blocks.length} blocks • ${summarizeDoc(this.doc)}`), safeWidth));
+		const answeredSummary = answeredCountLabel(countStoredQuestionnaireAnswers(this.runtime));
+		lines.push(truncateToWidth(this.theme.fg("muted", `${this.doc.blocks.length} blocks • ${summarizeDoc(this.doc)}${answeredSummary ? ` • ${answeredSummary}` : ""}`), safeWidth));
 		if (this.doc.introMarkdown) {
 			lines.push("");
 			pushWrapped(lines, this.doc.introMarkdown, safeWidth, this.theme.fg("muted", ""));
@@ -344,7 +413,8 @@ export class RenderViewerComponent implements Component {
 		pushSectionTitle(lines, "Blocks", safeWidth, this.theme);
 		for (const [index, block] of this.doc.blocks.entries()) {
 			const selected = index === this.currentBlockIndex;
-			const line = `${selected ? ">" : " "} ${index + 1}. ${blockLabel(block, index)}`;
+			const status = blockStatusLabel(block, this.runtime);
+			const line = `${selected ? ">" : " "} ${index + 1}. ${blockLabel(block, index)}${status ? ` [${status}]` : ""}`;
 			lines.push(truncateToWidth(selected ? this.theme.fg("accent", line) : this.theme.fg("text", line), safeWidth));
 		}
 		lines.push("");
@@ -361,6 +431,12 @@ export class RenderViewerComponent implements Component {
 		} else {
 			pushCollectionSelection(lines, current.collectionItems, clampIndex(nestedIndex, current.collectionItems.length), 0, safeWidth, this.theme);
 		}
+		const currentQuestionnaire = this.currentQuestionnaire();
+		const storedAnswer = getStoredQuestionnaireAnswer(this.runtime, currentQuestionnaire?.key);
+		if (storedAnswer) {
+			lines.push("");
+			pushStoredAnswer(lines, storedAnswer, safeWidth, this.theme);
+		}
 		lines.push("");
 		const hints = ["Tab/←→ blocks", "↑↓ items", "Enter/Esc close"];
 		if (this.currentQuestionnaire()) hints.splice(2, 0, "a answer");
@@ -375,11 +451,12 @@ export class RenderViewerComponent implements Component {
 
 export function buildRenderMessageText(session: RenderSession, theme: Theme, expanded: boolean): string {
 	const revision = getCurrentRenderRevision(session);
+	const answeredSummary = answeredCountLabel(countStoredQuestionnaireAnswers(revision.runtime));
 	const header = `${theme.fg("toolTitle", theme.bold("render "))}${theme.fg("text", getRenderSessionSummary(session))}`;
 	if (!expanded) {
-		return `${header}\n${theme.fg("dim", summarizeDoc(revision.doc))}`;
+		return `${header}\n${theme.fg("dim", `${summarizeDoc(revision.doc)}${answeredSummary ? ` • ${answeredSummary}` : ""}`)}`;
 	}
-	const parts = [header, theme.fg("muted", `source ${session.source.entryId} • revision ${revision.number}`)];
+	const parts = [header, theme.fg("muted", `source ${session.source.entryId} • revision ${revision.number}${answeredSummary ? ` • ${answeredSummary}` : ""}`)];
 	if (revision.doc.introMarkdown) parts.push(revision.doc.introMarkdown);
 	for (const [index, block] of revision.doc.blocks.entries()) {
 		parts.push(`${index + 1}. ${blockLabel(block, index)} • ${blockKindSummary(block)}`);
