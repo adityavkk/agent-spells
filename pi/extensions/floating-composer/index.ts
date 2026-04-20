@@ -1055,12 +1055,20 @@ class FloatingComposerEditor extends CustomEditor {
 
     const lines: string[] = [];
     const leftMargin = " ".repeat(outerMargin);
+    // blank panel row (same bar + bg fill, no content). Used for paddingY so
+    // text isn't flush against the editor's top/bottom edges.
+    const panelPad = () => leftMargin + panelRow("");
+
+    // top paddingY
+    lines.push(panelPad());
 
     for (const line of editorLines) {
       lines.push(leftMargin + panelRow(padBothSides(truncateToWidth(line, innerWidth))));
     }
 
     if (footer.inside.length > 0) {
+      // gap between editor body and inline status row
+      lines.push(panelPad());
       for (const rawLine of footer.inside) {
         const wrapped = wrapTextWithAnsi(rawLine, innerWidth);
         for (const wline of wrapped) {
@@ -1068,6 +1076,9 @@ class FloatingComposerEditor extends CustomEditor {
         }
       }
     }
+
+    // bottom paddingY
+    lines.push(panelPad());
 
     // shadow foot: accent ╹ tick + upper-half ▀ block extending right in a
     // muted border color. Reads as a drop-shadow under the panel.
