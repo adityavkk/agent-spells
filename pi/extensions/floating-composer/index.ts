@@ -980,7 +980,7 @@ class FloatingComposerEditor extends CustomEditor {
       ? this.footerRenderer(innerWidth, width)
       : { inside: [], outside: [] };
 
-    const bar = theme ? theme.fg("accent", "│") : "│";
+    const bar = theme ? theme.fg("accent", "┃") : "┃";
     const foot = theme ? theme.fg("accent", "╹") : "╹";
     const themeTokens = getFloatingComposerThemeTokens(theme);
     const panelBodyWidth = Math.max(0, cardWidth - borderWidth);
@@ -988,24 +988,17 @@ class FloatingComposerEditor extends CustomEditor {
       const padded = padPlain(content, panelBodyWidth);
       return bar + (theme ? applyBgAnsi(themeTokens.panelBg, padded) : padded);
     };
-    const panelPad = () => panelRow("");
     const padBothSides = (content: string) =>
       " ".repeat(padLeft) + content + " ".repeat(Math.max(0, padRight));
 
     const lines: string[] = [];
     const leftMargin = " ".repeat(outerMargin);
 
-    // paddingTop={1} above editor body.
-    lines.push(leftMargin + panelPad());
-
     for (const line of editorLines) {
       lines.push(leftMargin + panelRow(padBothSides(truncateToWidth(line, innerWidth))));
     }
 
     if (footer.inside.length > 0) {
-      // blank gap row between editor and inline status (opencode
-      // paddingTop={1} on the bottom row).
-      lines.push(leftMargin + panelPad());
       for (const rawLine of footer.inside) {
         const wrapped = wrapTextWithAnsi(rawLine, innerWidth);
         for (const wline of wrapped) {
