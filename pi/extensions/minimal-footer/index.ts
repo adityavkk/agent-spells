@@ -662,6 +662,24 @@ function wrapFooterSegments(segments: string[], width: number, sep: string): str
   return lines;
 }
 
+function joinFooterSides(left: string, right: string, width: number): string[] {
+  const safeWidth = Math.max(1, width);
+  const fittedLeft = truncateToWidth(left, safeWidth);
+  const fittedRight = truncateToWidth(right, safeWidth);
+
+  if (!fittedLeft) return [fittedRight];
+  if (!fittedRight) return [fittedLeft];
+
+  const leftWidth = visibleWidth(fittedLeft);
+  const rightWidth = visibleWidth(fittedRight);
+
+  if (leftWidth + 2 + rightWidth <= safeWidth) {
+    return [fittedLeft + " ".repeat(safeWidth - leftWidth - rightWidth) + fittedRight];
+  }
+
+  return [fittedLeft, fittedRight];
+}
+
 function renderUsageBar(usedPercent: number, barWidth: number, theme: any): string {
   const clamped = Math.max(0, Math.min(100, usedPercent));
   const filled = Math.round((clamped / 100) * barWidth);
@@ -980,17 +998,30 @@ export default function minimalFooterExtension(pi: ExtensionAPI) {
             statusBlocks.push(theme.fg("accent", latestResolution.logicalStatus));
           }
           statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, theme));
-          statusBlocks.push(fitFooterSegment(width, [
+          const statusLeft = wrapFooterSegments(statusBlocks, Math.max(1, width - indent.length), sep).join(sep);
+          const statusRight = fitFooterSegment(width, [
             renderContextGauge(percentage, theme, used, total, { barWidth: 12, includeCounts: true }),
             renderContextGauge(percentage, theme, used, total, { barWidth: 10, includeCounts: false }),
             renderContextGauge(percentage, theme, used, total, { barWidth: 8, includeCounts: false }),
             renderContextGauge(percentage, theme, used, total, { barWidth: 6, includeCounts: false }),
             renderContextGauge(percentage, theme, used, total, { barWidth: 4, includeCounts: false }),
-          ]));
-          lines.push(...wrapFooterSegments(statusBlocks, Math.max(1, width - indent.length), sep).map((line) => indent + line));
+          ]);
+          lines.push(...joinFooterSides(indent + statusLeft, indent + statusRight, width));
 
           if (latestUsage && latestUsage.windows.length > 0) {
-            lines.push(...renderUsageLine(latestUsage, width, theme, { indent }));
+            const usageLeft = indent + theme.fg("accent", latestUsage.provider);
+            const usageRight = wrapFooterSegments(
+              latestUsage.windows.map((window) => fitFooterSegment(width, [
+                renderUsageWindow(window, theme, { barWidth: 10, includeReset: true }),
+                renderUsageWindow(window, theme, { barWidth: 8, includeReset: true }),
+                renderUsageWindow(window, theme, { barWidth: 8, includeReset: false }),
+                renderUsageWindow(window, theme, { barWidth: 6, includeReset: false }),
+                renderUsageWindow(window, theme, { barWidth: 4, includeReset: false }),
+              ])),
+              Math.max(1, width - indent.length - visibleWidth(usageLeft) - 2),
+              sep
+            ).join(sep);
+            lines.push(...joinFooterSides(usageLeft, usageRight, width));
           }
 
           return lines.map((line) => truncateToWidth(line, width));
