@@ -1,7 +1,8 @@
 import type { ModelProfilesConfig } from "../model-profiles/types";
 
+export const DEFAULT_RENDER_MODEL_ROLE = "small";
 export const DEFAULT_RENDER_E2E_PROFILE = "render-e2e";
-export const DEFAULT_RENDER_E2E_ROLE = "small";
+export const DEFAULT_RENDER_E2E_ROLE = DEFAULT_RENDER_MODEL_ROLE;
 
 export function buildRenderTestProfilesConfig(includeLocalRole: boolean): ModelProfilesConfig {
 	return {

@@ -43,35 +43,42 @@ source text/message
 
 ## Main pieces
 
-1. `extract.ts`
+Current:
+
+1. `index.ts`
+   - live pi extension entrypoint
+   - `/render`
+   - `/render reopen`
+   - extractor orchestration
+   - persisted render-session messages
+
+2. `extract.ts`
    - second-model extraction
    - BAML prompt/schema
    - parse + fallback
 
-2. `normalize.ts`
+3. `normalize.ts`
    - repair parsed BAML output
    - IDs
    - defaults
    - validation
 
-3. `core.ts`
+4. `core.ts`
    - runtime/session/revision/action/surface types
 
-4. `runtime.ts`
-   - current doc revision
-   - interaction state
-   - actions: answer, select, edit, reopen, branch
+5. `session.ts`
+   - create/read persisted render sessions
+   - update current runtime selections
 
-5. `surfaces/`
-   - `tui.ts`
-   - `html.ts`
-   - `markdown.ts`
-   - same doc, different output
+6. `ui.ts`
+   - minimal TUI viewer
+   - custom message rendering
 
-6. `messages.ts`
-   - persist custom message details
-   - reopen latest render session
-   - map revisions to visible pi messages
+Planned next:
+- richer surface adapters
+- revision/edit actions
+- branch-backed mutation flow
+- HTML/Markdown exporters
 
 ## Message model
 
@@ -106,6 +113,21 @@ So v1 should model updates as revisions on a render session:
 - surfaces reopen latest revision for that branch/session
 
 If pi later exposes true historical message replacement, swap implementation behind runtime layer. Semantic grammar stays the same.
+
+## Current live behavior
+
+Today:
+- `/render` extracts the last assistant message into a normalized `RenderDoc`
+- opens a minimal TUI viewer
+- persists a `render-session` custom message with canonical session details
+- `/render reopen` reopens the latest persisted render session on the current branch
+
+Not done yet:
+- editing
+- branching new assistant revisions
+- questionnaire answer capture
+- HTML/Markdown export surfaces
+- full multi-surface runtime abstraction
 
 ## Scope for v1
 
