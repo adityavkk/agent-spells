@@ -676,6 +676,13 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+function stripBgAnsi(text: string): string {
+  return text
+    .replace(/\x1b\[48;2;[0-9;]+m/g, "")
+    .replace(/\x1b\[48;5;[0-9]+m/g, "")
+    .replace(/\x1b\[49m/g, "");
+}
+
 function isBlankRenderLine(text: string): boolean {
   return stripAnsi(text).trim().length === 0;
 }
@@ -998,7 +1005,7 @@ class FloatingComposerEditor extends CustomEditor {
     const cardWidth = Math.max(12, width - outerMargin * 2);
     const innerWidth = Math.max(4, cardWidth - borderWidth - padLeft - padRight);
 
-    const rawEditorLines = super.render(innerWidth).map((line) => truncateToWidth(line, innerWidth));
+    const rawEditorLines = super.render(innerWidth).map((line) => truncateToWidth(stripBgAnsi(line), innerWidth));
     const editorLines = rawEditorLines.slice();
     while (editorLines.length > 1 && isBlankRenderLine(editorLines[0])) editorLines.shift();
     while (editorLines.length > 1 && isBlankRenderLine(editorLines[editorLines.length - 1])) editorLines.pop();
