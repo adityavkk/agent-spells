@@ -1,6 +1,7 @@
 # floating-composer
 
-Opencode-inspired composer surface for pi. Replaces the default editor + footer
+Composer surface for pi inspired by [opencode](https://github.com/anomalyco/opencode)'s
+prompt component, though heavily modified. Replaces the default editor + footer
 with a single dark panel:
 
 - single left accent bar (`┃`) instead of a full rounded box
