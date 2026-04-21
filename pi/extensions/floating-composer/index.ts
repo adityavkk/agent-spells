@@ -48,7 +48,6 @@ interface FooterModelResolution {
 
 interface FloatingComposerThemeTokens {
   panelBg: string;
-  shadowFg: string;
 }
 
 const USAGE_REFRESH_INTERVAL = 5 * 60_000;
@@ -784,7 +783,6 @@ function applyFgAnsi(value: string, text: string): string {
 function getFloatingComposerThemeTokens(theme: any): FloatingComposerThemeTokens {
   return {
     panelBg: getThemeVarColor(theme, ["floatingComposerBg", "composerPanelBg", "panelBg"], "#000000"),
-    shadowFg: getThemeVarColor(theme, ["floatingComposerShadow", "composerShadowFg", "panelShadowFg"], "#11111b"),
   };
 }
 
@@ -837,29 +835,24 @@ function renderContextGauge(
   theme: any,
   used?: number,
   total?: number,
-  options?: { barWidth?: number; includeCounts?: boolean }
+  options?: { includeCounts?: boolean; barWidth?: number }
 ): string {
-  const barWidth = Math.max(4, options?.barWidth ?? 12);
   const clamped = Math.max(0, Math.min(100, percentage));
-  const filled = Math.round((clamped / 100) * barWidth);
-  const empty = barWidth - filled;
-  const BAR_FILLED = "━";
-  const BAR_EMPTY = "─";
 
+  // Color tiers match the old gauge bar: success -> accent -> warning -> error.
+  // We color the percentage with these so it replaces the bar's visual cue.
   let color: string;
   if (clamped >= 90) color = "error";
   else if (clamped >= 70) color = "warning";
   else if (clamped >= 50) color = "accent";
   else color = "success";
 
-  const bar = theme.fg(color, BAR_FILLED.repeat(filled)) + theme.fg("dim", BAR_EMPTY.repeat(empty));
-  const pct = `${Math.round(clamped)}%`;
-  const counts =
-    options?.includeCounts === false || used === undefined || !total
-      ? ""
-      : ` ${formatTokenCount(used)}/${formatTokenCount(total)}`;
+  const pct = theme.fg(color, `${Math.round(clamped)}%`);
+  const showCounts = options?.includeCounts !== false && used !== undefined && !!total;
+  if (!showCounts) return pct;
 
-  return theme.fg("dim", "ctx ") + bar + " " + theme.fg("dim", pct + counts);
+  const counts = theme.fg("dim", `(${formatTokenCount(used)}/${formatTokenCount(total)})`);
+  return `${pct} ${counts}`;
 }
 
 function renderUsageWindow(
@@ -1043,7 +1036,6 @@ class FloatingComposerEditor extends CustomEditor {
       : { inside: [], outside: [] };
 
     const bar = theme ? theme.fg("accent", "┃") : "┃";
-    const foot = theme ? theme.fg("accent", "╹") : "╹";
     const themeTokens = getFloatingComposerThemeTokens(theme);
     const panelBodyWidth = Math.max(0, cardWidth - borderWidth);
     const panelRow = (content: string) => {
@@ -1079,14 +1071,6 @@ class FloatingComposerEditor extends CustomEditor {
 
     // bottom paddingY
     lines.push(panelPad());
-
-    // shadow foot: accent ╹ tick + upper-half ▀ block extending right in a
-    // muted border color. Reads as a drop-shadow under the panel.
-    if (panelBodyWidth > 0) {
-      const shadeStr = "▀".repeat(panelBodyWidth);
-      const shade = theme ? applyFgAnsi(themeTokens.shadowFg, shadeStr) : shadeStr;
-      lines.push(leftMargin + foot + shade);
-    }
 
     // outside rows render on the plain terminal background.
     for (const rawLine of footer.outside) {
@@ -1237,21 +1221,10 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         const statusLeft = statusBlocks.join(sep);
 
         const ctxBudget = Math.max(8, innerWidth - visibleWidth(statusLeft) - 2);
-        const ctxVariants = innerWidth >= 100
-          ? [
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 12, includeCounts: true }),
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 10, includeCounts: true }),
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 10, includeCounts: false }),
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 8, includeCounts: false }),
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 6, includeCounts: false }),
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 4, includeCounts: false }),
-            ]
-          : [
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 10, includeCounts: false }),
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 8, includeCounts: false }),
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 6, includeCounts: false }),
-              renderContextGauge(percentage, footerTheme, used, total, { barWidth: 4, includeCounts: false }),
-            ];
+        const ctxVariants = [
+          renderContextGauge(percentage, footerTheme, used, total, { includeCounts: true }),
+          renderContextGauge(percentage, footerTheme, used, total, { includeCounts: false }),
+        ];
         const statusRight = fitFooterSegment(ctxBudget, ctxVariants);
         const inside = joinFooterSides(statusLeft, statusRight, innerWidth);
 

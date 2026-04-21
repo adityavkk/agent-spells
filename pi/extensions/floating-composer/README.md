@@ -3,34 +3,33 @@
 Opencode-inspired composer surface for pi. Replaces the default editor + footer
 with a single dark panel:
 
-- single left accent bar (`│`) instead of a full rounded box
+- single left accent bar (`┃`) instead of a full rounded box
 - theme-variable-driven panel fill spanning the entire terminal width
-- provider/model + context gauge rendered inline inside the panel
-- shadow-foot `╹▀▀▀…` under the panel (muted border color)
+- provider/model + context percentage rendered inline inside the panel
 - pwd · branch  |  provider usage printed on a plain row below the panel
 
 Sketch at width 100:
 
 ```
-│
-│  the quick brown fox jumps over the lazy dog 123
-│
-│  profiles/build:coder · anthropic/claude-sonnet-4-5-20250929   ctx ━━━━━━────── 45% 12k/200k
-╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+┃
+┃  the quick brown fox jumps over the lazy dog 123
+┃
+┃  profiles/build:coder · anthropic/claude-sonnet-4-5-20250929            45% (90k/200k)
  ~/dev/agent-spells · main                              Claude · 5h ━━━━────── 38% 3h
 ```
+
+## Context display
+
+- just `<pct>%` at narrow widths
+- `<pct>% (<used>/<total>)` at wider widths
+- percentage is color-coded (success → accent → warning → error) as the
+  context fills up
+- no "ctx" prefix, no bar
 
 ## Responsive behavior
 
 Panel fills the terminal width with a 0-column outer margin (1 column at
-terminal widths >= 160). Inside the panel:
-
-| width   | status row                         | ctx gauge                    |
-|---------|------------------------------------|------------------------------|
-| >= 100  | profile + provider/model + think   | bar 10-12 + counts           |
-| 70-99   | profile + provider/model + think   | bar 8-10, no counts          |
-| 50-69   | model truncated with `…`           | bar 6-8, no counts           |
-| < 50    | model may wrap/truncate            | bar 4-6, no counts           |
+terminal widths >= 160).
 
 Outside row:
 
@@ -47,29 +46,25 @@ refreshes every 5 minutes while the session is live.
 `floating-composer` reads optional custom vars from the active theme JSON's
 `vars` object:
 
-- `floatingComposerBg` - composer panel background
-- `floatingComposerShadow` - `╹▀▀▀…` shadow row foreground
+- `floatingComposerBg` — composer panel background
 
 Fallback aliases also supported for reuse across themes:
 
 - `composerPanelBg`
 - `panelBg`
-- `composerShadowFg`
-- `panelShadowFg`
 
 Example:
 
 ```json
 {
   "vars": {
-    "floatingComposerBg": "#000000",
-    "floatingComposerShadow": "#11111b"
+    "floatingComposerBg": "#11111b"
   }
 }
 ```
 
-This avoids changing pi core theme tokens while still giving each theme its own
-composer-specific colors. Dark and light themes can set different values.
+Dark and light themes can set different values. No pi core theme tokens are
+required.
 
 ## Usage
 
