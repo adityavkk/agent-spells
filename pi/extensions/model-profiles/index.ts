@@ -201,6 +201,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	function currentStatusInput(ctx: ExtensionContext): ModelProfilesStatusInput {
 		return {
 			state: activeState,
+			config: loadedConfig.mergedConfig,
 			resolved: lastResolved,
 			currentModel: ctx.model,
 			unresolved,

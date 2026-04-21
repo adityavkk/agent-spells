@@ -1,13 +1,16 @@
 import type { Model } from "@mariozechner/pi-ai";
-import { buildSyntheticProfileModelId } from "./provider";
+import { buildSyntheticProfileModelId, parseSyntheticProfileModelId } from "./provider";
+import { expandRoleCandidates, getRoleTargets } from "./resolve";
 import {
 	MODEL_PROFILES_PROVIDER,
 	MODEL_PROFILES_RUNTIME_STATE_CUSTOM_TYPE,
+	type ModelProfilesConfig,
 	type ModelProfilesRuntimeDiagnostics,
 	type ModelProfilesRuntimeSelectionState,
 	type ModelProfilesRuntimeState,
 	type ModelProfilesState,
 	type ModelProfilesThinkingLevel,
+	type ModelProfileConfig,
 	type ResolvedRoleResult,
 	type SessionEntryLike,
 } from "./types";
@@ -19,6 +22,7 @@ function modelLabel(model: Model<any> | undefined): string | undefined {
 
 export interface ModelProfilesStatusInput {
 	state: ModelProfilesState;
+	config?: ModelProfilesConfig;
 	resolved?: ResolvedRoleResult | null;
 	currentModel?: Model<any>;
 	unresolved?: boolean;
@@ -98,15 +102,53 @@ export function readModelProfilesRuntimeState(entries: ReadonlyArray<SessionEntr
 	return { selections: {} };
 }
 
-export function isRawOverride(resolved: ResolvedRoleResult | null | undefined, currentModel: Model<any> | undefined): boolean {
+function buildRolePolicy(profile: ModelProfileConfig | undefined, roleName: string | undefined) {
+	if (!profile || !roleName || !profile.roles[roleName]) return [];
+	const trace: string[] = [];
+	const orderedRoles = expandRoleCandidates(profile, roleName, trace);
+	return orderedRoles.flatMap((name) => getRoleTargets(profile.roles[name])).map((target) => ({
+		provider: target.provider,
+		model: target.model,
+		thinkingLevel: target.thinkingLevel,
+	}));
+}
+
+function sameRolePolicy(config: ModelProfilesConfig | undefined, profileName: string | undefined, leftRole: string | undefined, rightRole: string | undefined): boolean {
+	if (!config || !profileName || !leftRole || !rightRole) return false;
+	const profile = config.profiles[profileName];
+	if (!profile) return false;
+	const left = buildRolePolicy(profile, leftRole);
+	const right = buildRolePolicy(profile, rightRole);
+	if (left.length === 0 || right.length === 0 || left.length !== right.length) return false;
+	return left.every((target, index) => {
+		const other = right[index];
+		return target.provider === other?.provider && target.model === other?.model && target.thinkingLevel === other?.thinkingLevel;
+	});
+}
+
+export function isRawOverride(input: {
+	config?: ModelProfilesConfig;
+	resolved: ResolvedRoleResult | null | undefined;
+	currentModel: Model<any> | undefined;
+}): boolean {
+	const { config, resolved, currentModel } = input;
 	if (!resolved || !currentModel) return false;
 	if (
 		resolved.profile
 		&& resolved.role
 		&& currentModel.provider === MODEL_PROFILES_PROVIDER
-		&& currentModel.id === buildSyntheticProfileModelId(resolved.profile, resolved.role)
 	) {
-		return false;
+		if (currentModel.id === buildSyntheticProfileModelId(resolved.profile, resolved.role)) {
+			return false;
+		}
+		const currentSelection = parseSyntheticProfileModelId(currentModel.id);
+		if (
+			currentSelection
+			&& currentSelection.profile === resolved.profile
+			&& sameRolePolicy(config, resolved.profile, resolved.role, currentSelection.role)
+		) {
+			return false;
+		}
 	}
 	return resolved.ref.provider !== currentModel.provider || resolved.ref.model !== currentModel.id;
 }
@@ -121,7 +163,7 @@ export function formatModelProfilesStatus(input: ModelProfilesStatusInput): stri
 				: undefined;
 	if (!base) return undefined;
 	if (input.unresolved) return `${base} unresolved`;
-	if (isRawOverride(input.resolved, input.currentModel)) return `${base} raw-override`;
+	if (isRawOverride({ config: input.config, resolved: input.resolved, currentModel: input.currentModel })) return `${base} raw-override`;
 	return base;
 }
 

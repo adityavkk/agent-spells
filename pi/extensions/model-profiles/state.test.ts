@@ -45,9 +45,48 @@ const resolved: ResolvedRoleResult = {
 
 describe("isRawOverride", () => {
 	it("detects when current model drifts from resolved role target", () => {
-		expect(isRawOverride(resolved, makeModel("openai", "gpt-4.1"))).toBeTrue();
-		expect(isRawOverride(resolved, makeModel("openai-codex", "gpt-5.4-mini"))).toBeFalse();
-		expect(isRawOverride(resolved, makeModel(MODEL_PROFILES_PROVIDER, buildSyntheticProfileModelId("work", "small")))).toBeFalse();
+		expect(isRawOverride({ resolved, currentModel: makeModel("openai", "gpt-4.1") })).toBeTrue();
+		expect(isRawOverride({ resolved, currentModel: makeModel("openai-codex", "gpt-5.4-mini") })).toBeFalse();
+		expect(isRawOverride({ resolved, currentModel: makeModel(MODEL_PROFILES_PROVIDER, buildSyntheticProfileModelId("work", "small")) })).toBeFalse();
+	});
+
+	it("treats alias roles with identical policy as non-overrides", () => {
+		const config = {
+			profiles: {
+				personal: {
+					defaultRole: "workhorse",
+					roles: {
+						small: {
+							provider: "openai-codex",
+							model: "gpt-5.4-mini",
+							thinkingLevel: "minimal",
+							fallback: ["workhorse"],
+						},
+						smol: {
+							provider: "openai-codex",
+							model: "gpt-5.4-mini",
+							thinkingLevel: "minimal",
+							fallback: ["workhorse"],
+						},
+						workhorse: {
+							provider: "openai-codex",
+							model: "gpt-5.4",
+						},
+					},
+				},
+			},
+		};
+		const aliasResolved = {
+			...resolved,
+			profile: "personal",
+			role: "smol",
+			matchedRole: "smol",
+		};
+		expect(isRawOverride({
+			config,
+			resolved: aliasResolved,
+			currentModel: makeModel(MODEL_PROFILES_PROVIDER, buildSyntheticProfileModelId("personal", "small")),
+		})).toBeFalse();
 	});
 });
 
