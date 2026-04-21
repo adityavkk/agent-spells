@@ -667,11 +667,12 @@ function paintFooterBand(line: string, width: number, theme: any): string {
   const safeWidth = Math.max(1, width);
   const padded = ` ${truncateToWidth(line, Math.max(0, safeWidth - 2))}`;
   const filled = truncateToWidth(padded + " ".repeat(Math.max(0, safeWidth - visibleWidth(padded))), safeWidth);
-  return theme.bg("selectedBg", filled);
+  return theme.bg("selectedBg", theme.fg("borderMuted", filled));
 }
 
 function renderFooterDivider(width: number, theme: any): string {
-  return truncateToWidth(theme.fg("borderMuted", "▔".repeat(Math.max(1, width))), width);
+  const safeWidth = Math.max(1, width);
+  return theme.bg("selectedBg", theme.fg("borderMuted", " ".repeat(safeWidth)));
 }
 
 function joinFooterSides(left: string, right: string, width: number): string[] {
