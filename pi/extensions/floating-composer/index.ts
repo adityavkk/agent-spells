@@ -53,6 +53,21 @@ interface FloatingComposerThemeTokens {
 const USAGE_REFRESH_INTERVAL = 5 * 60_000;
 const usageCache = new Map<string, UsageSnapshot>();
 
+// Layout constants. None are terminal-pixel values; they're expressed in cells.
+// All widths elsewhere in the renderer are derived from these + the actual
+// visibleWidth of glyphs, so changing a glyph auto-propagates the layout.
+const COMPOSER_LAYOUT = {
+  // horizontal padding inside the left border + right edge
+  hPad: 2,
+  // terminal width at which the panel gets a 1-column outer margin so it
+  // doesn't feel stretched across ultrawide displays
+  ultrawideThreshold: 160,
+  // glyph for the left accent rail (opencode SplitBorder style)
+  borderChar: "┃",
+  // prompt indicator drawn before the first editor line
+  promptChar: ">",
+} as const;
+
 let gitCache: GitCache | null = null;
 
 function sanitizeStatusText(text: string | undefined): string | undefined {
@@ -767,19 +782,6 @@ function applyBgAnsi(value: string, text: string): string {
   return `${bgAnsi}${withReappliedBg}\x1b[49m`;
 }
 
-function applyFgAnsi(value: string, text: string): string {
-  if (value === "") return `\x1b[39m${text}\x1b[39m`;
-  if (/^\d+$/.test(value)) return `\x1b[38;5;${value}m${text}\x1b[39m`;
-  if (/^#[0-9a-f]{6}$/i.test(value)) {
-    const hex = value.slice(1);
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
-  }
-  return text;
-}
-
 function getFloatingComposerThemeTokens(theme: any): FloatingComposerThemeTokens {
   return {
     panelBg: getThemeVarColor(theme, ["floatingComposerBg", "composerPanelBg", "panelBg"], "#000000"),
@@ -1003,19 +1005,21 @@ class FloatingComposerEditor extends CustomEditor {
 
   render(width: number): string[] {
     const theme = this.footerTheme;
-    const padLeft = 2;
-    const padRight = 2;
-    const borderWidth = 1;
+    const { hPad, ultrawideThreshold, borderChar, promptChar } = COMPOSER_LAYOUT;
 
-    // opencode composer: panel is full-width with no outer margin. At very
-    // wide terminals leave one column of breathing room on each side so it
-    // doesn't feel stretched.
-    const outerMargin = width >= 160 ? 1 : 0;
-    const cardWidth = Math.max(12, width - outerMargin * 2);
-    const innerWidth = Math.max(4, cardWidth - borderWidth - padLeft - padRight);
-    // Reserve 2 columns for the `> ` prompt at the start of the editor body.
-    const promptWidth = 2;
-    const editorInnerWidth = Math.max(2, innerWidth - promptWidth);
+    const borderWidth = visibleWidth(borderChar);
+    const outerMargin = width >= ultrawideThreshold ? 1 : 0;
+    // Panel needs at least border + a single-cell gutter to be useful.
+    const minCardWidth = borderWidth + hPad * 2 + 2;
+    const cardWidth = Math.max(minCardWidth, width - outerMargin * 2);
+    const innerWidth = Math.max(1, cardWidth - borderWidth - hPad * 2);
+
+    const promptPrefix = (theme ? theme.fg("accent", promptChar) : promptChar) + " ";
+    // Continuation lines indent by the same visible width as the prompt so
+    // wrapped text stays aligned regardless of the chosen prompt glyph.
+    const promptIndent = visibleWidth(stripAnsi(promptPrefix));
+    const continuationPrefix = " ".repeat(promptIndent);
+    const editorInnerWidth = Math.max(1, innerWidth - promptIndent);
 
     const rawEditorLines = super
       .render(editorInnerWidth)
@@ -1040,48 +1044,48 @@ class FloatingComposerEditor extends CustomEditor {
       ? this.footerRenderer(innerWidth, width)
       : { inside: [], outside: [] };
 
-    const bar = theme ? theme.fg("accent", "┃") : "┃";
-    const promptGlyph = theme ? theme.fg("accent", ">") : ">";
-    const promptPrefix = `${promptGlyph} `;
-    const continuationPrefix = "  ";
+    const bar = theme ? theme.fg("accent", borderChar) : borderChar;
     const themeTokens = getFloatingComposerThemeTokens(theme);
     const panelBodyWidth = Math.max(0, cardWidth - borderWidth);
-    const panelRow = (content: string) => {
-      const padded = padPlain(content, panelBodyWidth);
-      return bar + (theme ? applyBgAnsi(themeTokens.panelBg, padded) : padded);
+    const leftMargin = " ".repeat(outerMargin);
+
+    // A panel row takes an inner content string, pads it with hPad on both
+    // sides, fills to panelBodyWidth, applies panel bg, and prepends the
+    // border bar + outer margin. Keeping this as the single panel primitive
+    // avoids scattered horizontal-math elsewhere.
+    const hPadding = " ".repeat(hPad);
+    const renderPanelRow = (content: string): string => {
+      const body = hPadding + content + hPadding;
+      const padded = padPlain(body, panelBodyWidth);
+      const bg = theme ? applyBgAnsi(themeTokens.panelBg, padded) : padded;
+      return leftMargin + bar + bg;
     };
-    const padBothSides = (content: string) =>
-      " ".repeat(padLeft) + content + " ".repeat(Math.max(0, padRight));
+    const blankPanelRow = () => renderPanelRow("");
 
     const lines: string[] = [];
-    const leftMargin = " ".repeat(outerMargin);
-    // blank panel row (same bar + bg fill, no content). Used for paddingY so
-    // text isn't flush against the editor's top/bottom edges.
-    const panelPad = () => leftMargin + panelRow("");
 
     // top paddingY
-    lines.push(panelPad());
+    lines.push(blankPanelRow());
 
     editorLines.forEach((line, idx) => {
       const prefix = idx === 0 ? promptPrefix : continuationPrefix;
       const fitted = truncateToWidth(line, editorInnerWidth);
-      const content = " ".repeat(padLeft) + prefix + fitted + " ".repeat(Math.max(0, padRight));
-      lines.push(leftMargin + panelRow(content));
+      lines.push(renderPanelRow(prefix + fitted));
     });
 
     if (footer.inside.length > 0) {
       // gap between editor body and inline status rows
-      lines.push(panelPad());
+      lines.push(blankPanelRow());
       for (const rawLine of footer.inside) {
         const wrapped = wrapTextWithAnsi(rawLine, innerWidth);
         for (const wline of wrapped) {
-          lines.push(leftMargin + panelRow(padBothSides(truncateToWidth(wline, innerWidth))));
+          lines.push(renderPanelRow(truncateToWidth(wline, innerWidth)));
         }
       }
     }
 
     // bottom paddingY
-    lines.push(panelPad());
+    lines.push(blankPanelRow());
 
     return lines.map((line) => truncateToWidth(line, width));
   }
@@ -1234,13 +1238,14 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         inside.push(...joinFooterSides(statusLeft, statusRight, innerWidth));
 
         // Row 2 (inside): pwd + branch on left, provider usage on right when
-        // available. Falls back to stacked rows on narrow widths.
+        // available. Falls back to pwd-only if there's not enough room for even
+        // a minimal usage rendering.
         const pwdLine = fitFooterSegment(innerWidth, branchStr ? [pwdStr + sep + branchStr, pwdStr] : [pwdStr]);
-        const showUsage = !!latestUsage && latestUsage.windows.length > 0 && innerWidth >= 58;
-        if (showUsage) {
+
+        const hasUsage = !!latestUsage && latestUsage.windows.length > 0;
+        if (hasUsage) {
           const usage = latestUsage!;
           const usageLabel = footerTheme.fg("accent", usage.provider);
-          const windowBudget = Math.max(12, innerWidth - visibleWidth(pwdLine) - visibleWidth(usageLabel) - 4);
           const windowVariants = (w: RateWindow) => [
             renderUsageWindow(w, footerTheme, { barWidth: 10, includeReset: true }),
             renderUsageWindow(w, footerTheme, { barWidth: 8, includeReset: true }),
@@ -1248,8 +1253,30 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
             renderUsageWindow(w, footerTheme, { barWidth: 6, includeReset: false }),
             renderUsageWindow(w, footerTheme, { barWidth: 4, includeReset: false }),
           ];
-          const usageRightRaw = [usageLabel, ...usage.windows.map((w) => fitFooterSegment(windowBudget, windowVariants(w)))].join(sep);
-          inside.push(...joinFooterSides(pwdLine, usageRightRaw, innerWidth));
+
+          // Minimum width to render the usage block: label + sep + smallest
+          // variant of the first window. If even that doesn't fit alongside the
+          // pwd line, drop the block entirely.
+          const minimalWindow = fitFooterSegment(
+            Number.MAX_SAFE_INTEGER,
+            windowVariants(usage.windows[0]).slice(-1),
+          );
+          const minUsageWidth = visibleWidth(usageLabel) + visibleWidth(sep) + visibleWidth(minimalWindow);
+          const usageFits = innerWidth >= visibleWidth(pwdLine) + visibleWidth(sep) + minUsageWidth;
+
+          if (usageFits) {
+            const windowBudget = Math.max(
+              visibleWidth(minimalWindow),
+              innerWidth - visibleWidth(pwdLine) - visibleWidth(usageLabel) - visibleWidth(sep) * 2,
+            );
+            const usageRightRaw = [
+              usageLabel,
+              ...usage.windows.map((w) => fitFooterSegment(windowBudget, windowVariants(w))),
+            ].join(sep);
+            inside.push(...joinFooterSides(pwdLine, usageRightRaw, innerWidth));
+          } else {
+            inside.push(truncateToWidth(pwdLine, innerWidth));
+          }
         } else {
           inside.push(truncateToWidth(pwdLine, innerWidth));
         }
