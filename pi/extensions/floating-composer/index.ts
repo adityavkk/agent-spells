@@ -1013,8 +1013,13 @@ class FloatingComposerEditor extends CustomEditor {
     const outerMargin = width >= 160 ? 1 : 0;
     const cardWidth = Math.max(12, width - outerMargin * 2);
     const innerWidth = Math.max(4, cardWidth - borderWidth - padLeft - padRight);
+    // Reserve 2 columns for the `> ` prompt at the start of the editor body.
+    const promptWidth = 2;
+    const editorInnerWidth = Math.max(2, innerWidth - promptWidth);
 
-    const rawEditorLines = super.render(innerWidth).map((line) => truncateToWidth(stripBgAnsi(line), innerWidth));
+    const rawEditorLines = super
+      .render(editorInnerWidth)
+      .map((line) => truncateToWidth(stripBgAnsi(line), editorInnerWidth));
     const editorLines = rawEditorLines.slice();
     // Drop pi-tui editor's built-in top/bottom horizontal border rows (and any
     // blank rows) so the composer panel frames the content directly.
@@ -1036,6 +1041,9 @@ class FloatingComposerEditor extends CustomEditor {
       : { inside: [], outside: [] };
 
     const bar = theme ? theme.fg("accent", "┃") : "┃";
+    const promptGlyph = theme ? theme.fg("accent", ">") : ">";
+    const promptPrefix = `${promptGlyph} `;
+    const continuationPrefix = "  ";
     const themeTokens = getFloatingComposerThemeTokens(theme);
     const panelBodyWidth = Math.max(0, cardWidth - borderWidth);
     const panelRow = (content: string) => {
@@ -1054,12 +1062,15 @@ class FloatingComposerEditor extends CustomEditor {
     // top paddingY
     lines.push(panelPad());
 
-    for (const line of editorLines) {
-      lines.push(leftMargin + panelRow(padBothSides(truncateToWidth(line, innerWidth))));
-    }
+    editorLines.forEach((line, idx) => {
+      const prefix = idx === 0 ? promptPrefix : continuationPrefix;
+      const fitted = truncateToWidth(line, editorInnerWidth);
+      const content = " ".repeat(padLeft) + prefix + fitted + " ".repeat(Math.max(0, padRight));
+      lines.push(leftMargin + panelRow(content));
+    });
 
     if (footer.inside.length > 0) {
-      // gap between editor body and inline status row
+      // gap between editor body and inline status rows
       lines.push(panelPad());
       for (const rawLine of footer.inside) {
         const wrapped = wrapTextWithAnsi(rawLine, innerWidth);
@@ -1071,14 +1082,6 @@ class FloatingComposerEditor extends CustomEditor {
 
     // bottom paddingY
     lines.push(panelPad());
-
-    // outside rows render on the plain terminal background.
-    for (const rawLine of footer.outside) {
-      const wrapped = wrapTextWithAnsi(rawLine, width);
-      for (const wline of wrapped) {
-        lines.push(truncateToWidth(wline, width));
-      }
-    }
 
     return lines.map((line) => truncateToWidth(line, width));
   }
@@ -1220,23 +1223,24 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, footerTheme));
         const statusLeft = statusBlocks.join(sep);
 
+        // Row 1 (inside): profile/model on left, ctx on right
         const ctxBudget = Math.max(8, innerWidth - visibleWidth(statusLeft) - 2);
         const ctxVariants = [
           renderContextGauge(percentage, footerTheme, used, total, { includeCounts: true }),
           renderContextGauge(percentage, footerTheme, used, total, { includeCounts: false }),
         ];
         const statusRight = fitFooterSegment(ctxBudget, ctxVariants);
-        const inside = joinFooterSides(statusLeft, statusRight, innerWidth);
+        const inside: string[] = [];
+        inside.push(...joinFooterSides(statusLeft, statusRight, innerWidth));
 
-        // OUTSIDE: pwd/branch on left, provider usage on right (when
-        // available). Falls over to two stacked rows on narrow widths.
-        const pwdLine = fitFooterSegment(outerWidth, branchStr ? [pwdStr + sep + branchStr, pwdStr] : [pwdStr]);
-        const outside: string[] = [];
-        const showUsage = !!latestUsage && latestUsage.windows.length > 0 && outerWidth >= 60;
+        // Row 2 (inside): pwd + branch on left, provider usage on right when
+        // available. Falls back to stacked rows on narrow widths.
+        const pwdLine = fitFooterSegment(innerWidth, branchStr ? [pwdStr + sep + branchStr, pwdStr] : [pwdStr]);
+        const showUsage = !!latestUsage && latestUsage.windows.length > 0 && innerWidth >= 58;
         if (showUsage) {
           const usage = latestUsage!;
           const usageLabel = footerTheme.fg("accent", usage.provider);
-          const windowBudget = Math.max(12, outerWidth - visibleWidth(pwdLine) - visibleWidth(usageLabel) - 4);
+          const windowBudget = Math.max(12, innerWidth - visibleWidth(pwdLine) - visibleWidth(usageLabel) - 4);
           const windowVariants = (w: RateWindow) => [
             renderUsageWindow(w, footerTheme, { barWidth: 10, includeReset: true }),
             renderUsageWindow(w, footerTheme, { barWidth: 8, includeReset: true }),
@@ -1245,12 +1249,12 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
             renderUsageWindow(w, footerTheme, { barWidth: 4, includeReset: false }),
           ];
           const usageRightRaw = [usageLabel, ...usage.windows.map((w) => fitFooterSegment(windowBudget, windowVariants(w)))].join(sep);
-          outside.push(...joinFooterSides(pwdLine, usageRightRaw, outerWidth));
+          inside.push(...joinFooterSides(pwdLine, usageRightRaw, innerWidth));
         } else {
-          outside.push(truncateToWidth(pwdLine, outerWidth));
+          inside.push(truncateToWidth(pwdLine, innerWidth));
         }
 
-        return { inside, outside };
+        return { inside, outside: [] };
       }, footerThemeRef);
       return editor;
     });

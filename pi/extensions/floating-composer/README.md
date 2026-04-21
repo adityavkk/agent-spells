@@ -12,11 +12,14 @@ Sketch at width 100:
 
 ```
 ┃
-┃  the quick brown fox jumps over the lazy dog 123
+┃  > the quick brown fox jumps over the lazy dog 123
 ┃
 ┃  profiles/build:coder · anthropic/claude-sonnet-4-5-20250929            45% (90k/200k)
- ~/dev/agent-spells · main                              Claude · 5h ━━━━────── 38% 3h
+┃  ~/dev/agent-spells · main                             Claude · 5h ━━━━────── 38% 3h
 ```
+
+Everything (editor, cwd, branch, provider subscription usage) lives inside the
+panel. The `>` is a colored prompt indicator at the start of the editor line.
 
 ## Context display
 
@@ -29,14 +32,13 @@ Sketch at width 100:
 ## Responsive behavior
 
 Panel fills the terminal width with a 0-column outer margin (1 column at
-terminal widths >= 160).
+terminal widths >= 160). The status rows collapse gracefully:
 
-Outside row:
-
-| width   | left            | right                                |
-|---------|-----------------|--------------------------------------|
-| >= 60   | pwd · branch    | provider usage (windows with bars)   |
-| < 60    | pwd · branch    | hidden                               |
+| width    | row 1 (model + ctx)       | row 2 (cwd + usage)                   |
+|----------|---------------------------|---------------------------------------|
+| >= 100   | model + ctx w/ counts     | pwd · branch  |  usage windows        |
+| 60–99    | model + ctx no counts     | pwd · branch  |  usage windows (tight)|
+| < 60     | model + ctx (pct only)    | pwd · branch only                     |
 
 Usage data is provider-specific (Claude, Codex, Copilot, Gemini, MiniMax) and
 refreshes every 5 minutes while the session is live.
