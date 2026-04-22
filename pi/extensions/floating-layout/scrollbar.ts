@@ -23,7 +23,12 @@ export function renderScrollbarColumn(input: ScrollbarInput): string[] {
   if (total <= viewSize || total <= 0) {
     return Array.from({ length: height }, () => tracked(track));
   }
-  const thumbH = Math.max(1, Math.round((height * viewSize) / total));
+  // Cap thumb at ~60% of track height so there's always visible track above
+  // AND below the thumb (so movement is perceptible even when the buffer is
+  // barely longer than the viewport).
+  const maxThumbFrac = 0.6;
+  const rawThumbH = Math.round((height * viewSize) / total);
+  const thumbH = Math.max(1, Math.min(Math.floor(height * maxThumbFrac), rawThumbH));
   const maxThumbStart = Math.max(0, height - thumbH);
   const maxScroll = Math.max(1, total - viewSize);
   const thumbStart = Math.min(maxThumbStart, Math.round((maxThumbStart * scrollTop) / maxScroll));

@@ -108,6 +108,11 @@ export class LayoutEditor extends CustomEditor {
     const visibleChat = chatLines.slice(this.scrollTop, this.scrollTop + chatHeight);
     while (visibleChat.length < chatHeight) visibleChat.push("");
 
+    // Debug line so we can see scroll state change in the sidebar while
+    // iterating. Remove once we trust the scrollbar math.
+    const pct = total <= chatHeight ? 100 : Math.round((this.scrollTop / Math.max(1, total - chatHeight)) * 100);
+    const dbg = `${this.scrollTop}/${total} ${pct}%${this.stickToBottom ? " stick" : ""}`;
+
     const sidebarLines = sidebarVisible
       ? renderSidebar({
           width: sidebarW,
@@ -120,6 +125,7 @@ export class LayoutEditor extends CustomEditor {
             "wheel / shift+↑↓ line",
             "alt+↑↓ page",
             "shift+home/end jump",
+            `dbg ${dbg}`,
           ],
         })
       : [];
