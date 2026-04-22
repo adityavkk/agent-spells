@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["bun"],
+    "paths": {
+      "@mariozechner/*": ["/Users/auk000v/.bun/install/global/node_modules/@mariozechner/*"]
+    }
+  },
+  "include": ["*.ts"]
+}
