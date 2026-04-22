@@ -27,11 +27,29 @@ import { LayoutEditor } from "./layout-editor.js";
 const STATUS_KEY = "floating-layout";
 const DEFAULT_LABEL = "pi";
 
+// Xterm SGR mouse protocol enable/disable sequences.
+//   1002 = button + motion events (includes wheel)
+//   1006 = SGR extended coordinates (modern; required for coords > 223)
+const MOUSE_ENABLE = "\x1b[?1002h\x1b[?1006h";
+const MOUSE_DISABLE = "\x1b[?1002l\x1b[?1006l";
+
 export default function floatingLayoutExtension(pi: ExtensionAPI) {
   const buffer = new ChatBuffer();
   let editorRef: LayoutEditor | null = null;
   let active = false;
+  let mouseActive = false;
   let ctxRef: ExtensionContext | null = null;
+
+  const enableMouse = () => {
+    if (mouseActive) return;
+    process.stdout.write(MOUSE_ENABLE);
+    mouseActive = true;
+  };
+  const disableMouse = () => {
+    if (!mouseActive) return;
+    process.stdout.write(MOUSE_DISABLE);
+    mouseActive = false;
+  };
 
   const requestRender = () => {
     ctxRef?.ui && (ctxRef.ui as any).tui?.requestRender?.();
@@ -66,15 +84,20 @@ export default function floatingLayoutExtension(pi: ExtensionAPI) {
       editorRef = editor;
       return editor;
     });
+    // Enable mouse wheel capture by default; terminal scrollback via mouse
+    // wheel is disabled while active but the user gets in-app scroll that
+    // actually pins the composer. Toggle with /layout mouse off if annoying.
+    enableMouse();
     active = true;
     ctx.ui.setStatus(STATUS_KEY, theme_fg(ctx, "accent", "layout:on"));
-    ctx.ui.notify("Layout mode enabled", "info");
+    ctx.ui.notify("Layout mode enabled (mouse wheel captured)", "info");
     requestRender();
   }
 
   function deactivate(ctx: ExtensionContext): void {
     if (!active) return;
     ctx.ui.setEditorComponent(undefined as any);
+    disableMouse();
     active = false;
     editorRef = null;
     ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -94,6 +117,8 @@ export default function floatingLayoutExtension(pi: ExtensionAPI) {
         { value: "on", label: "on" },
         { value: "off", label: "off" },
         { value: "toggle", label: "toggle (default)" },
+        { value: "mouse on", label: "mouse on (capture wheel)" },
+        { value: "mouse off", label: "mouse off (release wheel to terminal)" },
       ];
       const filtered = items.filter((i) => i.value.startsWith(prefix.trim().toLowerCase()));
       return filtered.length > 0 ? filtered : null;
@@ -103,7 +128,13 @@ export default function floatingLayoutExtension(pi: ExtensionAPI) {
       const verb = (args || "").trim().toLowerCase();
       if (verb === "on") activate(ctx);
       else if (verb === "off") deactivate(ctx);
-      else toggle(ctx);
+      else if (verb === "mouse on") {
+        enableMouse();
+        ctx.ui.notify("Mouse wheel captured by layout", "info");
+      } else if (verb === "mouse off") {
+        disableMouse();
+        ctx.ui.notify("Mouse wheel released to terminal", "info");
+      } else toggle(ctx);
     },
   });
 
@@ -117,10 +148,26 @@ export default function floatingLayoutExtension(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     if (active) ctx.ui.setEditorComponent(undefined as any);
+    disableMouse();
     active = false;
     editorRef = null;
     ctxRef = null;
   });
+
+  // Defensive cleanup on process exit (ctrl+C, etc.) so the user's terminal
+  // doesn't stay in mouse-tracking mode after pi dies.
+  const cleanupOnExit = () => {
+    if (mouseActive) {
+      try {
+        process.stdout.write(MOUSE_DISABLE);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  process.once("exit", cleanupOnExit);
+  process.once("SIGINT", cleanupOnExit);
+  process.once("SIGTERM", cleanupOnExit);
 
   // Insertion strategy:
   //   user:       once on message_start (dedupe on message_end)

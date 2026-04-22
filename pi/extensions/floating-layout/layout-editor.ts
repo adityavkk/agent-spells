@@ -28,8 +28,13 @@ import { padPlain, stripAnsi } from "./util.js";
 const SIDEBAR_WIDTH = 24;
 const SIDEBAR_MIN_TERM_WIDTH = 100;
 const MIN_CHAT_HEIGHT = 3;
+const SCROLL_LINE_STEP = 3;
 const SCROLL_PAGE_STEP = 10;
-const SCROLL_LINE_STEP = 1;
+const SCROLL_BIGPAGE_STEP = 30;
+
+// Mouse SGR wheel sequence: `\x1b[<B;X;Y(M|m)` with B=64 (up) / B=65 (down).
+// Modifiers OR into B: shift=+4, alt=+8, ctrl=+16 (see xterm mouse SGR spec).
+const MOUSE_WHEEL_RE = /\x1b\[<(6[45])(?:;\d+){2}[Mm]/g;
 
 export interface LayoutEditorConfig {
   chatBuffer: ChatBuffer;
@@ -111,7 +116,11 @@ export class LayoutEditor extends CustomEditor {
           label: this.config.getLabel(),
           sessionLabel: this.config.getSessionLabel?.(),
           modelLabel: this.config.getModelLabel?.(),
-          hints: ["PgUp/PgDn scroll", "End stick to bottom", "Esc clear / exit"],
+          hints: [
+            "wheel / shift+↑↓ line",
+            "alt+↑↓ page",
+            "shift+home/end jump",
+          ],
         })
       : [];
 
@@ -144,8 +153,44 @@ export class LayoutEditor extends CustomEditor {
   }
 
   override handleInput(data: string): void {
-    // Scroll keys: only when the composer is empty-ish OR when scroll modifier
-    // is present? For MVP, always handle scroll keys here first.
+    // Mouse wheel (SGR) — captured when mouse mode is enabled by the
+    // extension. Each wheel tick fires once. Process first; wheel sequences
+    // must not leak into the composer as printable text.
+    if (data.includes("\x1b[<")) {
+      let consumed = false;
+      const matches = data.matchAll(MOUSE_WHEEL_RE);
+      for (const m of matches) {
+        consumed = true;
+        if (m[1] === "64") this.scrollBy(-SCROLL_LINE_STEP);
+        else this.scrollBy(SCROLL_LINE_STEP);
+      }
+      if (consumed) {
+        // Strip any mouse sequences out before forwarding remainder to editor.
+        const remainder = data.replace(MOUSE_WHEEL_RE, "").replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, "");
+        if (remainder.length > 0) super.handleInput(remainder);
+        return;
+      }
+    }
+
+    // Keyboard scroll keys. Chosen to avoid pi-tui editor bindings:
+    //   editor uses bare Up/Down/Home/End/PageUp/PageDown for cursor / paging.
+    //   we use the Shift- and Alt- modified variants for viewport scroll.
+    if (matchesKey(data, Key.shift("up"))) {
+      this.scrollBy(-SCROLL_LINE_STEP);
+      return;
+    }
+    if (matchesKey(data, Key.shift("down"))) {
+      this.scrollBy(SCROLL_LINE_STEP);
+      return;
+    }
+    if (matchesKey(data, Key.alt("up"))) {
+      this.scrollBy(-SCROLL_PAGE_STEP);
+      return;
+    }
+    if (matchesKey(data, Key.alt("down"))) {
+      this.scrollBy(SCROLL_PAGE_STEP);
+      return;
+    }
     if (matchesKey(data, Key.pageUp)) {
       this.scrollBy(-SCROLL_PAGE_STEP);
       return;
@@ -155,20 +200,20 @@ export class LayoutEditor extends CustomEditor {
       return;
     }
     if (matchesKey(data, Key.shift("pageUp"))) {
-      this.scrollBy(-SCROLL_PAGE_STEP * 3);
+      this.scrollBy(-SCROLL_BIGPAGE_STEP);
       return;
     }
     if (matchesKey(data, Key.shift("pageDown"))) {
-      this.scrollBy(SCROLL_PAGE_STEP * 3);
+      this.scrollBy(SCROLL_BIGPAGE_STEP);
       return;
     }
-    if (matchesKey(data, Key.ctrl("home"))) {
+    if (matchesKey(data, Key.shift("home")) || matchesKey(data, Key.ctrl("home"))) {
       this.scrollTop = 0;
       this.stickToBottom = false;
       this.invalidate();
       return;
     }
-    if (matchesKey(data, Key.ctrl("end")) || matchesKey(data, Key.end)) {
+    if (matchesKey(data, Key.shift("end")) || matchesKey(data, Key.ctrl("end"))) {
       this.stickToBottom = true;
       this.invalidate();
       return;
@@ -177,9 +222,10 @@ export class LayoutEditor extends CustomEditor {
   }
 
   private scrollBy(delta: number): void {
-    this.scrollTop += delta;
-    this.stickToBottom = delta > 0 ? false : false;
-    // Re-clamp on next render (we don't know total here).
+    this.scrollTop = Math.max(0, this.scrollTop + delta);
+    // Any upward scroll un-sticks; downward scroll only re-sticks when the
+    // next render clamps us back to the tail (handled in render()).
+    if (delta < 0) this.stickToBottom = false;
     this.invalidate();
   }
 
