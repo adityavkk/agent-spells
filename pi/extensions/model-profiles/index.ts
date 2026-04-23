@@ -52,6 +52,10 @@ function getFlagString(pi: ExtensionAPI, name: string): string | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
+function hasExplicitRawModelSelection(pi: ExtensionAPI): boolean {
+	return !!getFlagString(pi, "model") || !!getFlagString(pi, "provider");
+}
+
 function uniqueSorted(values: string[]): string[] {
 	return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
@@ -63,6 +67,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	let lastResolved: ResolvedRoleResult | null = null;
 	let lastRuntimeDiagnostics: ModelProfilesRuntimeDiagnostics | null = null;
 	let unresolved = false;
+	let suppressProfileStatus = false;
 	let inFlightAttemptModel: Model<any> | undefined;
 	let displayModel: Model<any> | undefined;
 	let latestCtx: ExtensionContext | undefined;
@@ -200,12 +205,12 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 
 	function currentStatusInput(ctx: ExtensionContext): ModelProfilesStatusInput {
 		return {
-			state: activeState,
+			state: suppressProfileStatus ? {} : activeState,
 			config: loadedConfig.mergedConfig,
-			resolved: lastResolved,
+			resolved: suppressProfileStatus ? null : lastResolved,
 			currentModel: ctx.model,
-			unresolved,
-			runtimeDiagnostics: lastRuntimeDiagnostics,
+			unresolved: suppressProfileStatus ? false : unresolved,
+			runtimeDiagnostics: suppressProfileStatus ? null : lastRuntimeDiagnostics,
 		};
 	}
 
@@ -281,6 +286,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		refreshConfig(ctx.cwd);
 		latestModelRegistry = ctx.modelRegistry;
 		refreshSyntheticProvider();
+		suppressProfileStatus = false;
 		inFlightAttemptModel = undefined;
 		displayModel = getDisplayModel(ctx);
 
@@ -429,12 +435,21 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 
 		const profileFlag = getFlagString(pi, "profile");
 		const roleFlag = getFlagString(pi, "role");
-		const shouldResolve = !!profileFlag || !!roleFlag || !!activeState.activeProfile || !!activeState.activeRole || !!loadedConfig.mergedConfig.activeProfile;
+		const explicitRawModelSelection = hasExplicitRawModelSelection(pi) && !syntheticSelection;
+		const hasProfileIntent = !!profileFlag || !!roleFlag || !!syntheticSelection;
+		suppressProfileStatus = explicitRawModelSelection && !hasProfileIntent;
+		const hasPersistedOrConfiguredProfile = !!activeState.activeProfile || !!activeState.activeRole || !!loadedConfig.mergedConfig.activeProfile;
+		const shouldResolve = hasProfileIntent || (!explicitRawModelSelection && hasPersistedOrConfiguredProfile);
 		if (shouldResolve) {
 			await applySelection(ctx, {
 				profile: profileFlag ? { value: profileFlag, source: "flag" } : undefined,
 				role: roleFlag ? { value: roleFlag, source: "flag" } : undefined,
 			}, { notify: false, persist: false });
+		} else {
+			lastResolved = null;
+			lastRuntimeDiagnostics = null;
+			unresolved = false;
+			displayModel = getDisplayModel(ctx);
 		}
 		updateStatus(ctx);
 	});
@@ -445,6 +460,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		inFlightAttemptModel = undefined;
 		const syntheticSelection = parseSyntheticProfileModelId(event.model.provider === MODEL_PROFILES_PROVIDER ? event.model.id : "");
 		if (syntheticSelection) {
+			suppressProfileStatus = false;
 			activeState = normalizeModelProfilesState({
 				activeProfile: syntheticSelection.profile,
 				activeRole: syntheticSelection.role,
@@ -460,7 +476,10 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
 			unresolved = !lastResolved;
 		} else {
+			suppressProfileStatus = true;
+			lastResolved = null;
 			lastRuntimeDiagnostics = null;
+			unresolved = false;
 		}
 		displayModel = getDisplayModel(ctx);
 		updateStatus(ctx);
@@ -485,6 +504,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 
 			switch (action.kind) {
 				case "interactive": {
+					suppressProfileStatus = false;
 					await handleInteractiveProfileCommand(ctx);
 					return;
 				}
@@ -525,6 +545,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 						ctx.ui.notify(`Unknown profile "${action.profile}"`, "warning");
 						return;
 					}
+					suppressProfileStatus = false;
 					await applySelection(ctx, buildProfileCommandSelection(action.profile));
 					return;
 				}
@@ -538,6 +559,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 						ctx.ui.notify(`Unknown role "${action.role}" in profile "${profileName}"`, "warning");
 						return;
 					}
+					suppressProfileStatus = false;
 					await applySelection(ctx, {
 						profile: { value: profileName, source: "session" },
 						role: { value: action.role, source: "session" },
@@ -553,6 +575,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 						ctx.ui.notify(`Unknown role "${action.role}" in profile "${action.profile}"`, "warning");
 						return;
 					}
+					suppressProfileStatus = false;
 					await applySelection(ctx, {
 						profile: { value: action.profile, source: "session" },
 						role: { value: action.role, source: "session" },
