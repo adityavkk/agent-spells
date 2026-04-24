@@ -68,8 +68,9 @@ function collectRoleTargets(profile: ModelProfileConfig, roleName: string): Mode
 	return targets;
 }
 
-function collectResolvedModels(targets: ModelRoleConfigTarget[], modelRegistry: ModelRegistryLike): Array<Model<any>> {
+function collectResolvedModels(targets: ModelRoleConfigTarget[], modelRegistry: ModelRegistryLike | undefined): Array<Model<any>> {
 	const models: Array<Model<any>> = [];
+	if (!modelRegistry) return models;
 	for (const target of targets) {
 		if (!target.provider || !target.model) continue;
 		const model = modelRegistry.find(target.provider, target.model);
@@ -83,14 +84,22 @@ function collectResolvedModels(targets: ModelRoleConfigTarget[], modelRegistry: 
 function intersectInputTypes(models: Array<Model<any>>): Array<"text" | "image"> {
 	if (models.length === 0) return ["text"];
 	const supported: Array<"text" | "image"> = ["text", "image"];
-	const intersection = supported.filter((inputType) => models.every((model) => model.input.includes(inputType)));
+	const intersection = supported.filter((inputType) => models.every((model) => {
+		const input = Array.isArray(model.input) ? model.input : ["text"];
+		return input.includes(inputType);
+	}));
 	return intersection.length > 0 ? intersection : ["text"];
+}
+
+function minNumeric(values: unknown[], fallback: number): number {
+	const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+	return numbers.length > 0 ? Math.min(...numbers) : fallback;
 }
 
 function buildSyntheticRoleModel(
 	selection: SyntheticProfileModelSelection,
 	profile: ModelProfileConfig,
-	modelRegistry: ModelRegistryLike,
+	modelRegistry?: ModelRegistryLike,
 ): ProviderModelConfig {
 	const targets = collectRoleTargets(profile, selection.role);
 	const resolvedModels = collectResolvedModels(targets, modelRegistry);
@@ -105,12 +114,8 @@ function buildSyntheticRoleModel(
 		reasoning,
 		input: intersectInputTypes(resolvedModels),
 		cost: primaryModel?.cost ?? ZERO_COST,
-		contextWindow: resolvedModels.length > 0
-			? Math.min(...resolvedModels.map((model) => model.contextWindow))
-			: DEFAULT_CONTEXT_WINDOW,
-		maxTokens: resolvedModels.length > 0
-			? Math.min(...resolvedModels.map((model) => model.maxTokens))
-			: DEFAULT_MAX_TOKENS,
+		contextWindow: minNumeric(resolvedModels.map((model) => model.contextWindow), DEFAULT_CONTEXT_WINDOW),
+		maxTokens: minNumeric(resolvedModels.map((model) => model.maxTokens), DEFAULT_MAX_TOKENS),
 	};
 }
 
@@ -166,7 +171,7 @@ export function isSyntheticProfileModel(model: Pick<Model<any>, "provider" | "id
 
 export function buildSyntheticProfileProviderModels(
 	config: ModelProfilesConfig,
-	modelRegistry: ModelRegistryLike,
+	modelRegistry?: ModelRegistryLike,
 ): ProviderModelConfig[] {
 	const models: ProviderModelConfig[] = [];
 

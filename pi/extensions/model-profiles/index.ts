@@ -172,7 +172,6 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	}
 
 	function refreshSyntheticProvider(): void {
-		if (!latestModelRegistry) return;
 		const models = buildSyntheticProfileProviderModels(loadedConfig.mergedConfig, latestModelRegistry);
 		if (models.length === 0) {
 			pi.unregisterProvider(MODEL_PROFILES_PROVIDER);
@@ -402,6 +401,8 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			role: { value: target.role, source: "session" },
 		});
 	}
+
+	refreshSyntheticProvider();
 
 	pi.registerFlag("profile", {
 		description: "Model profile to activate",

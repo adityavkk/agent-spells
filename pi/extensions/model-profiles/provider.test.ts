@@ -69,6 +69,30 @@ describe("rotateResolvedRoleCandidates", () => {
 });
 
 describe("buildSyntheticProfileProviderModels", () => {
+	it("registers roles before a model registry is available", () => {
+		const config: ModelProfilesConfig = {
+			profiles: {
+				work: {
+					defaultRole: "smart",
+					roles: {
+						smart: {
+							targets: [
+								{ provider: "code-puppy", model: "gpt-5.4", thinkingLevel: "high" },
+							],
+						},
+					},
+				},
+			},
+		};
+
+		const models = buildSyntheticProfileProviderModels(config);
+		expect(models.map((model) => model.id)).toEqual(["work:smart"]);
+		expect(models[0]?.reasoning).toBeTrue();
+		expect(models[0]?.input).toEqual(["text"]);
+		expect(models[0]?.contextWindow).toBe(128_000);
+		expect(models[0]?.maxTokens).toBe(16_384);
+	});
+
 	it("registers roles using concrete targets across fallback chains", () => {
 		const registry = makeRegistry([
 			makeModel("code-puppy", "gpt-5.4", { reasoning: true, input: ["text", "image"], contextWindow: 150_000, maxTokens: 10_000 }),
