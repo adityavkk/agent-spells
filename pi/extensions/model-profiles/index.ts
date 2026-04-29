@@ -52,8 +52,16 @@ function getFlagString(pi: ExtensionAPI, name: string): string | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
+function hasCliArg(name: string): boolean {
+	const flag = `--${name}`;
+	return process.argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+
 function hasExplicitRawModelSelection(pi: ExtensionAPI): boolean {
-	return !!getFlagString(pi, "model") || !!getFlagString(pi, "provider");
+	return !!getFlagString(pi, "model")
+		|| !!getFlagString(pi, "provider")
+		|| hasCliArg("model")
+		|| hasCliArg("provider");
 }
 
 function uniqueSorted(values: string[]): string[] {
