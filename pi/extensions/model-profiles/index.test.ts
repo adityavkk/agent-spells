@@ -110,6 +110,29 @@ describe("model-profiles session_start", () => {
 		expect(harness.setModelCalls).toEqual([]);
 		expect(harness.statusCalls.at(-1)).toEqual({ key: "model-profiles", value: undefined });
 	});
+
+	it("does not override explicit raw model selection when built-in flags are only present in argv", async () => {
+		const originalArgv = [...process.argv];
+		process.argv = ["node", "pi", "--provider", "openai-codex", "--model", "gpt-5.5"];
+		try {
+			const harness = buildHarness({
+				flags: {},
+				persistedProfileState: { activeProfile: "personal", activeRole: "workhorse" },
+			});
+			modelProfilesExtension(harness.pi);
+
+			const sessionStartHandlers = harness.handlers.get("session_start") ?? [];
+			expect(sessionStartHandlers.length).toBeGreaterThan(0);
+			for (const handler of sessionStartHandlers) {
+				await handler({}, harness.ctx);
+			}
+
+			expect(harness.setModelCalls).toEqual([]);
+			expect(harness.statusCalls.at(-1)).toEqual({ key: "model-profiles", value: undefined });
+		} finally {
+			process.argv = originalArgv;
+		}
+	});
 });
 
 describe("model-profiles model_select", () => {
