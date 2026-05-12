@@ -66,6 +66,16 @@ PI_PROVIDER_TOOL_PROFILE=claude   # force claude|codex|gemini|off
 
 Default decision: GPT `gpt-*` models from OpenAI get the Codex profile. Reason: issue goal explicitly says OpenAI / Codex / GPT.
 
+## model-profiles integration
+
+This extension understands the sibling `model-profiles` extension's synthetic provider:
+
+- `profiles/<profile>:<role>` is resolved through `model-profiles.json` before family detection.
+- Sticky runtime winners from `model-profiles-runtime-state` win when present.
+- Otherwise the current sticky cursor/first resolved target decides the tool profile.
+
+Caveat: if one profile role mixes model families and runtime fallback jumps from one family to another inside the same request, Pi has already built the provider payload with the initially selected tool schema. Prefer same-family targets within one role for strongest native-tool matching.
+
 ## Letta snapshot
 
 Schemas/descriptions are vendored from Letta Code for source-of-truth comparison and refreshability:

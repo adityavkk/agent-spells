@@ -16,6 +16,8 @@ function harness(model: { provider: string; id: string }) {
 	const ctx = {
 		cwd: "/tmp/provider-tool-profiles-index-test",
 		model,
+		modelRegistry: { find() {}, getAvailable() { return []; }, async getApiKeyAndHeaders() { return { ok: false, error: "none" }; } },
+		sessionManager: { getBranch() { return []; } },
 		hasUI: true,
 		ui: {
 			setStatus(key: string, value: string | undefined) { statusCalls.push({ key, value }); },

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { loadProviderToolProfilesConfig } from "./config";
 import { detectProviderToolProfile } from "./provider-detect";
+import { resolveProfileBackedModel } from "./profile-model-resolver";
 import { buildProviderToolActivation, getProfilePromptAppendix, type ToolActivationState } from "./tool-activation";
 import { PROVIDER_TOOL_PROFILES_STATUS_KEY, type LoadedProviderToolProfilesConfig, type ProviderToolProfile } from "./types";
 import { registerClaudeTools } from "./tools/claude";
@@ -24,8 +25,14 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 		loadedConfig = loadProviderToolProfilesConfig(cwd);
 	}
 
-	function syncTools(ctx: ExtensionContext, model = ctx.model): void {
-		const profile = detectProviderToolProfile(model, loadedConfig.mergedConfig);
+	async function syncTools(ctx: ExtensionContext, model = ctx.model): Promise<void> {
+		const concreteModel = await resolveProfileBackedModel({
+			cwd: ctx.cwd,
+			model,
+			modelRegistry: ctx.modelRegistry,
+			entries: ctx.sessionManager.getBranch(),
+		});
+		const profile = detectProviderToolProfile(concreteModel, loadedConfig.mergedConfig);
 		const result = buildProviderToolActivation(pi.getActiveTools(), profile, loadedConfig.mergedConfig, activationState);
 		activationState = result.state;
 		activeProfile = result.profile;
@@ -47,7 +54,7 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
 			return;
 		}
-		syncTools(ctx);
+		await syncTools(ctx);
 	});
 
 	pi.on("model_select", async (event, ctx) => {
@@ -56,7 +63,7 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
 			return;
 		}
-		syncTools(ctx, event.model);
+		await syncTools(ctx, event.model);
 	});
 
 	pi.on("before_agent_start", async (event) => {
