@@ -90,6 +90,10 @@ bun pi/extensions/provider-tool-profiles/scripts/update-from-letta.ts
 - `read_many_files`, `glob`, and grep wrappers rely on `rg`.
 - No Letta memory/task/skill/approval system included.
 
+## Smoke prompts
+
+See `docs/smoke-prompts.md` for manual A/B prompts across Claude, Codex/GPT, and Gemini.
+
 ## Tests
 
 ```bash
