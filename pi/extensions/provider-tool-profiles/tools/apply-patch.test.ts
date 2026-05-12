@@ -17,6 +17,25 @@ describe("parseApplyPatch", () => {
 *** End Patch`);
 		expect(ops.map((op) => op.kind)).toEqual(["add", "update", "delete"]);
 	});
+
+	it("parses update move directives", () => {
+		const ops = parseApplyPatch(`*** Begin Patch
+*** Update File: old.txt
+*** Move to: new.txt
+@@
+-old
++new
+*** End Patch`);
+		expect(ops[0]).toMatchObject({ kind: "update", path: "old.txt", moveTo: "new.txt" });
+	});
+
+	it("rejects move directives outside update blocks", () => {
+		expect(() => parseApplyPatch(`*** Begin Patch
+*** Add File: foo.txt
+*** Move to: bar.txt
++content
+*** End Patch`)).toThrow("Move to");
+	});
 });
 
 describe("applyPatch", () => {
@@ -41,5 +60,24 @@ describe("applyPatch", () => {
 		expect(readFileSync(join(root, "add.txt"), "utf8")).toBe("hello\nworld");
 		expect(readFileSync(join(root, "update.txt"), "utf8")).toBe("alpha\nnew\nomega\n");
 		expect(existsSync(join(root, "delete.txt"))).toBe(false);
+	});
+
+	it("updates and moves files", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-patch-move-"));
+		writeFileSync(join(root, "old.txt"), "alpha\nold\nomega\n");
+
+		const result = await applyPatch(root, `*** Begin Patch
+*** Update File: old.txt
+*** Move to: nested/new.txt
+@@
+ alpha
+-old
++new
+ omega
+*** End Patch`);
+
+		expect(existsSync(join(root, "old.txt"))).toBe(false);
+		expect(readFileSync(join(root, "nested", "new.txt"), "utf8")).toBe("alpha\nnew\nomega\n");
+		expect(result.content[0]?.text).toContain("moved old.txt -> nested/new.txt");
 	});
 });

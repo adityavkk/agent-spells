@@ -1,14 +1,19 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { applyExactEditsToText, resolveToolPath, textResult, withPathQueue, type ToolTextResult } from "./shared";
 
 type PatchOperation =
 	| { kind: "add"; path: string; content: string }
 	| { kind: "delete"; path: string }
-	| { kind: "update"; path: string; hunks: Array<{ oldText: string; newText: string }> };
+	| { kind: "update"; path: string; hunks: Array<{ oldText: string; newText: string }>; moveTo?: string };
 
 function cleanLine(line: string): string {
 	return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+
+function parseMoveTo(line: string): string | undefined {
+	const match = cleanLine(line).match(/^\*\*\* Move to: (.+)$/);
+	return match?.[1]?.trim();
 }
 
 function parseHunks(lines: string[]): Array<{ oldText: string; newText: string }> {
@@ -68,6 +73,7 @@ export function parseApplyPatch(input: string): PatchOperation[] {
 		const add = line.match(/^\*\*\* Add File: (.+)$/);
 		const del = line.match(/^\*\*\* Delete File: (.+)$/);
 		const upd = line.match(/^\*\*\* Update File: (.+)$/);
+		if (parseMoveTo(line)) throw new Error("*** Move to: is only supported after *** Update File:");
 		if (add) {
 			const body: string[] = [];
 			i += 1;
@@ -86,12 +92,19 @@ export function parseApplyPatch(input: string): PatchOperation[] {
 		}
 		if (upd) {
 			const body: string[] = [];
+			let moveTo: string | undefined;
 			i += 1;
+			while (i < last && !cleanLine(lines[i] ?? "").trim()) i += 1;
+			const nextMove = i < last ? parseMoveTo(lines[i] ?? "") : undefined;
+			if (nextMove) {
+				moveTo = nextMove;
+				i += 1;
+			}
 			while (i < last && !cleanLine(lines[i] ?? "").startsWith("*** ")) {
 				body.push(lines[i] ?? "");
 				i += 1;
 			}
-			ops.push({ kind: "update", path: upd[1]!.trim(), hunks: parseHunks(body) });
+			ops.push({ kind: "update", path: upd[1]!.trim(), hunks: parseHunks(body), moveTo });
 			continue;
 		}
 		throw new Error(`Unsupported patch directive: ${line}`);
@@ -122,6 +135,17 @@ export async function applyPatch(cwd: string, input: string): Promise<ToolTextRe
 				new_string: hunk.newText,
 			})));
 			await writeFile(path, text, "utf8");
+			if (op.moveTo) {
+				const targetPath = resolveToolPath(cwd, op.moveTo);
+				if (targetPath !== path) {
+					await withPathQueue(targetPath, async () => {
+						await mkdir(dirname(targetPath), { recursive: true });
+						await rename(path, targetPath);
+					});
+				}
+				changed.push(`moved ${op.path} -> ${op.moveTo}`);
+				return;
+			}
 			changed.push(`updated ${op.path} (${replacements.reduce((sum, count) => sum + count, 0)} hunk replacement(s))`);
 		});
 	}
