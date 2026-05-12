@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@boundaryml/baml": "^0.220.0",
-    "@mariozechner/pi-ai": "^0.66.1"
+    "@mariozechner/pi-ai": "^0.66.1",
+    "typebox": "^1.1.38"
   }
 }
