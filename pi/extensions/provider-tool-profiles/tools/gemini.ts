@@ -2,12 +2,12 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	geminiGlobParams,
 	listDirectoryParams,
+	readFileParams,
 	readManyFilesParams,
-	readParams,
 	replaceParams,
 	runShellCommandParams,
 	searchFileContentParams,
-	writeParams,
+	writeFileParams,
 } from "./schemas";
 import { applyExactEdits, globFiles, grepFiles, listDirectory, readTextFile, resolveToolPath, runShell, textResult, writeTextFile } from "./shared";
 
@@ -51,7 +51,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		label: "read_file",
 		description: "Read a file using Gemini CLI-style 0-based offset arguments.",
 		promptSnippet: "Read a file",
-		parameters: readParams,
+		parameters: readFileParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return readTextFile(resolveToolPath(ctx.cwd, params.file_path), { offset: params.offset, limit: params.limit, offsetBase: 0 });
 		},
@@ -129,7 +129,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		label: "write_file",
 		description: "Create or overwrite a file using Gemini CLI-style arguments.",
 		promptSnippet: "Create or overwrite a file",
-		parameters: writeParams,
+		parameters: writeFileParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return writeTextFile(resolveToolPath(ctx.cwd, params.file_path), params.content);
 		},
