@@ -29,8 +29,7 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 		promptSnippet: "Run a shell command",
 		parameters: shellCommandParams,
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const cwd = params.workdir ? resolveToolPath(ctx.cwd, params.workdir) : ctx.cwd;
-			return runShell(params.command, cwd, { timeoutMs: params.timeout_ms, signal });
+			return runShell({ pi, ctx, command: params.command, workdir: params.workdir, timeoutMs: params.timeout_ms, signal });
 		},
 	});
 

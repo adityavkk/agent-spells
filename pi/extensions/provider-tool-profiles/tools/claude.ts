@@ -57,7 +57,7 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 			if (params.run_in_background) {
 				return { content: [{ type: "text", text: "run_in_background is not supported by provider-tool-profiles v1. Run a foreground command instead." }], details: { unsupported: "run_in_background" } };
 			}
-			return runShell(params.command, ctx.cwd, { timeoutMs: params.timeout, signal });
+			return runShell({ pi, ctx, command: params.command, timeoutMs: params.timeout, signal });
 		},
 	});
 

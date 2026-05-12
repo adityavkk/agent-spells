@@ -41,8 +41,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		promptSnippet: "Run a shell command",
 		parameters: runShellCommandParams,
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const cwd = params.dir_path ? resolveToolPath(ctx.cwd, params.dir_path) : ctx.cwd;
-			return runShell(params.command, cwd, { signal });
+			return runShell({ pi, ctx, command: params.command, workdir: params.dir_path, signal });
 		},
 	});
 

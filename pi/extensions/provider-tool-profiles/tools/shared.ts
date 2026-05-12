@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 export const MAX_BYTES = 50 * 1024;
 export const MAX_LINES = 2000;
@@ -208,11 +209,44 @@ export function runProcess(command: string, args: string[], options: { cwd: stri
 	});
 }
 
-export async function runShell(command: string, cwd: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ToolTextResult> {
-	const result = await runProcess("bash", ["-lc", command], { cwd, timeoutMs: options.timeoutMs, signal: options.signal });
-	const output = [result.stdout, result.stderr].filter(Boolean).join(result.stdout && result.stderr ? "\n" : "");
-	const truncated = truncateTail(output || `(exit ${result.code ?? "unknown"})`);
-	return textResult(truncated.text, { code: result.code, timedOut: result.timedOut, aborted: result.aborted, truncated: truncated.truncated });
+export interface RunShellInput {
+	pi: Pick<ExtensionAPI, "exec">;
+	ctx: Pick<ExtensionContext, "cwd">;
+	command: string;
+	workdir?: string;
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}
+
+export async function runShell(input: RunShellInput): Promise<ToolTextResult> {
+	const timeoutMs = Math.min(Math.max(input.timeoutMs ?? 120_000, 1), MAX_TIMEOUT_MS);
+	const cwd = input.workdir ? resolveToolPath(input.ctx.cwd, input.workdir) : input.ctx.cwd;
+	let timedOut = false;
+	let aborted = input.signal?.aborted ?? false;
+	const onAbort = () => { aborted = true; };
+	input.signal?.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(() => { timedOut = true; }, timeoutMs);
+	timer.unref();
+	try {
+		const result = await input.pi.exec("bash", ["-lc", input.command], { cwd, timeout: timeoutMs, signal: input.signal });
+		const output = [result.stdout, result.stderr].filter(Boolean).join(result.stdout && result.stderr ? "\n" : "");
+		const exit = `(exit ${result.code ?? "unknown"})`;
+		const combined = output ? `${output}${output.endsWith("\n") ? "" : "\n"}${exit}` : exit;
+		const truncated = truncateTail(combined);
+		return textResult(truncated.text, {
+			code: result.code,
+			timedOut: result.killed && timedOut,
+			aborted: aborted || (result.killed && input.signal?.aborted),
+			killed: result.killed,
+			truncated: truncated.truncated,
+		});
+	} catch (error) {
+		if (!aborted && !input.signal?.aborted) throw error;
+		return textResult("Command aborted", { code: null, timedOut: false, aborted: true, killed: true, truncated: false });
+	} finally {
+		clearTimeout(timer);
+		input.signal?.removeEventListener("abort", onAbort);
+	}
 }
 
 function globToRegExp(pattern: string): RegExp {

@@ -6,12 +6,18 @@ function harness(model: { provider: string; id: string }) {
 	const handlers = new Map<string, Function[]>();
 	let activeTools = ["read", "bash", "edit", "write", "answer"];
 	const registered: string[] = [];
+	const tools = new Map<string, any>();
+	const execCalls: Array<{ command: string; args: string[]; options: unknown }> = [];
 	const statusCalls: Array<{ key: string; value: string | undefined }> = [];
 	const pi = {
-		registerTool(tool: { name: string }) { registered.push(tool.name); },
+		registerTool(tool: { name: string }) { registered.push(tool.name); tools.set(tool.name, tool); },
 		on(event: string, handler: Function) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
 		getActiveTools() { return activeTools; },
 		setActiveTools(tools: string[]) { activeTools = tools; },
+		async exec(command: string, args: string[], options: unknown) {
+			execCalls.push({ command, args, options });
+			return { stdout: "ok", stderr: "", code: 0, killed: false };
+		},
 	} as any;
 	const ctx = {
 		cwd: "/tmp/provider-tool-profiles-index-test",
@@ -25,7 +31,7 @@ function harness(model: { provider: string; id: string }) {
 		},
 	} as any;
 	providerToolProfilesExtension(pi);
-	return { handlers, registered, statusCalls, get activeTools() { return activeTools; }, ctx };
+	return { handlers, registered, tools, execCalls, statusCalls, get activeTools() { return activeTools; }, ctx };
 }
 
 describe("providerToolProfilesExtension", () => {
@@ -47,5 +53,13 @@ describe("providerToolProfilesExtension", () => {
 		expect(first.systemPrompt).toContain("Provider tool profile: Claude");
 		const second = await handler({ systemPrompt: first.systemPrompt }, h.ctx);
 		expect(second).toBeUndefined();
+	});
+
+	it("provider shell tools execute through pi.exec", async () => {
+		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
+		const signal = new AbortController().signal;
+		const result = await h.tools.get("Bash").execute("1", { command: "pwd", timeout: 1234 }, signal, () => {}, h.ctx);
+		expect(h.execCalls).toEqual([{ command: "bash", args: ["-lc", "pwd"], options: { cwd: h.ctx.cwd, timeout: 1234, signal } }]);
+		expect(result.content[0]?.text).toContain("ok");
 	});
 });
