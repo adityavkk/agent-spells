@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { LoadedProviderToolProfilesConfig, ProviderToolProfilesConfig } from "./types";
+import type { LoadedProviderToolProfilesConfig, ProviderProfileToggleConfig, ProviderToolProfileName, ProviderToolProfilesConfig } from "./types";
 
 export const PROVIDER_TOOL_PROFILES_FILENAME = "provider-tool-profiles.json";
 
@@ -19,6 +19,13 @@ export const DEFAULT_PROVIDER_TOOL_PROFILES_CONFIG: ProviderToolProfilesConfig =
 		gemini: ["google", "gemini"],
 	},
 };
+
+type ProviderToolProfilesConfigPatch =
+	& Partial<Pick<ProviderToolProfilesConfig, "enabled" | "fallbackTools">>
+	& {
+		profiles?: Partial<ProviderProfileToggleConfig>;
+		modelMatchers?: Partial<Record<ProviderToolProfileName, string[]>>;
+	};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -43,30 +50,35 @@ function normalizeStringArray(value: unknown, fallback: string[]): string[] {
 }
 
 export function normalizeProviderToolProfilesConfig(input: unknown): ProviderToolProfilesConfig {
-	if (!isRecord(input)) return DEFAULT_PROVIDER_TOOL_PROFILES_CONFIG;
+	return mergeProviderToolProfilesConfig(DEFAULT_PROVIDER_TOOL_PROFILES_CONFIG, normalizeProviderToolProfilesConfigPatch(input));
+}
+
+function normalizeProviderToolProfilesConfigPatch(input: unknown): ProviderToolProfilesConfigPatch {
+	if (!isRecord(input)) return {};
 	const defaults = DEFAULT_PROVIDER_TOOL_PROFILES_CONFIG;
 	const profiles = isRecord(input.profiles) ? input.profiles : {};
 	const modelMatchers = isRecord(input.modelMatchers) ? input.modelMatchers : {};
+	const patch: ProviderToolProfilesConfigPatch = {};
 
-	return {
-		enabled: normalizeBoolean(input.enabled, defaults.enabled),
-		profiles: {
-			claude: normalizeBoolean(profiles.claude, defaults.profiles.claude),
-			codex: normalizeBoolean(profiles.codex, defaults.profiles.codex),
-			gemini: normalizeBoolean(profiles.gemini, defaults.profiles.gemini),
-		},
-		fallbackTools: normalizeStringArray(input.fallbackTools, defaults.fallbackTools),
-		modelMatchers: {
-			claude: normalizeStringArray(modelMatchers.claude, defaults.modelMatchers.claude ?? []),
-			codex: normalizeStringArray(modelMatchers.codex, defaults.modelMatchers.codex ?? []),
-			gemini: normalizeStringArray(modelMatchers.gemini, defaults.modelMatchers.gemini ?? []),
-		},
-	};
+	if ("enabled" in input) patch.enabled = normalizeBoolean(input.enabled, defaults.enabled);
+	if ("fallbackTools" in input) patch.fallbackTools = normalizeStringArray(input.fallbackTools, defaults.fallbackTools);
+	for (const profile of ["claude", "codex", "gemini"] as const) {
+		if (profile in profiles) {
+			patch.profiles = { ...(patch.profiles ?? {}), [profile]: normalizeBoolean(profiles[profile], defaults.profiles[profile]) };
+		}
+		if (profile in modelMatchers) {
+			patch.modelMatchers = {
+				...(patch.modelMatchers ?? {}),
+				[profile]: normalizeStringArray(modelMatchers[profile], defaults.modelMatchers[profile] ?? []),
+			};
+		}
+	}
+	return patch;
 }
 
 export function mergeProviderToolProfilesConfig(
 	base: ProviderToolProfilesConfig,
-	override: Partial<ProviderToolProfilesConfig>,
+	override: ProviderToolProfilesConfigPatch,
 ): ProviderToolProfilesConfig {
 	return {
 		enabled: override.enabled ?? base.enabled,
@@ -102,10 +114,10 @@ function readConfigFile(path: string, errors: Array<{ path: string; message: str
 	}
 }
 
-function readOptionalConfigFile(path: string, errors: Array<{ path: string; message: string }>): Partial<ProviderToolProfilesConfig> {
+function readOptionalConfigFile(path: string, errors: Array<{ path: string; message: string }>): ProviderToolProfilesConfigPatch {
 	if (!existsSync(path)) return {};
 	try {
-		return normalizeProviderToolProfilesConfig(JSON.parse(readFileSync(path, "utf-8")));
+		return normalizeProviderToolProfilesConfigPatch(JSON.parse(readFileSync(path, "utf-8")));
 	} catch (error) {
 		errors.push({ path, message: error instanceof Error ? error.message : String(error) });
 		return {};
