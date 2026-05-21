@@ -1234,20 +1234,24 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         const statusBlocks: string[] = [];
         if (latestResolution?.logicalStatus) statusBlocks.push(footerTheme.fg("accent", latestResolution.logicalStatus));
         statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, footerTheme));
-        for (const extra of collectExtraStatuses(footerData, ["model-profiles"])) {
-          statusBlocks.push(footerTheme.fg("dim", extra));
-        }
-        const statusLeft = statusBlocks.join(sep);
+        const modelLineRaw = statusBlocks.join(sep);
+        const extras = collectExtraStatuses(footerData, ["model-profiles"]);
+        const extrasLineRaw = extras.length ? extras.map((extra) => footerTheme.fg("dim", extra)).join(sep) : "";
 
         // Row 1 (inside): profile/model on left, ctx on right
-        const ctxBudget = Math.max(8, innerWidth - visibleWidth(statusLeft) - 2);
+        const ctxBudget = Math.max(8, innerWidth - visibleWidth(modelLineRaw) - 2);
         const ctxVariants = [
           renderContextGauge(percentage, footerTheme, used, total, { includeCounts: true }),
           renderContextGauge(percentage, footerTheme, used, total, { includeCounts: false }),
         ];
         const statusRight = fitFooterSegment(ctxBudget, ctxVariants);
         const inside: string[] = [];
-        inside.push(...joinFooterSides(statusLeft, statusRight, innerWidth));
+        inside.push(...joinFooterSides(modelLineRaw, statusRight, innerWidth));
+
+        // Row 1b (inside, optional): extra extension statuses on their own line
+        if (extrasLineRaw) {
+          inside.push(truncateToWidth(extrasLineRaw, innerWidth));
+        }
 
         // Row 2 (inside): pwd + branch on left, provider usage on right when
         // available. Falls back to pwd-only if there's not enough room for even
