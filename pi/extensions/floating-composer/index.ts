@@ -1315,6 +1315,15 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
       refreshModelState(ctx, initialStatus, { forceUsageRefresh: true });
       editorRef?.setFooterRenderer(editorRef["footerRenderer"], theme);
 
+      const snapshotStatuses = (): string => {
+        try {
+          return JSON.stringify(Array.from(footerData.getExtensionStatuses().entries()).sort());
+        } catch {
+          return "";
+        }
+      };
+      let lastStatusSnapshot = snapshotStatuses();
+
       return {
         dispose: () => {
           unsub();
@@ -1323,6 +1332,11 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         },
         invalidate() {},
         render(_width: number): string[] {
+          const current = snapshotStatuses();
+          if (current !== lastStatusSnapshot) {
+            lastStatusSnapshot = current;
+            tuiRef?.requestRender();
+          }
           return [];
         },
       };
