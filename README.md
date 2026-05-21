@@ -10,6 +10,9 @@ Not a framework. Just a spellbook.
   - interactive answer flow for agent-generated questions
   - free-form, single-choice, multiple-choice, and ranking support
   - tests for normalization, extraction, and live integration
+- `pi/extensions/provider-tool-profiles/`
+  - provider-native core tool profiles for Claude, Codex/GPT, and Gemini
+  - preserves unrelated Pi extension tools while swapping core file/shell tools
 
 More spells over time.
 

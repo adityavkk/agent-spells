@@ -1,0 +1,80 @@
+import { extname } from "node:path";
+import { readFile } from "node:fs/promises";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { applyPatchParams, shellCommandParams, updatePlanParams, viewImageParams } from "./schemas";
+import { applyPatch } from "./apply-patch";
+import { resolveToolPath, runShell, textResult } from "./shared";
+
+type PlanItem = { step: string; status: string };
+
+const IMAGE_TYPES: Record<string, string> = {
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+};
+
+function planSummary(plan: PlanItem[]): string {
+	return plan.map((item) => `- [${item.status}] ${item.step}`).join("\n");
+}
+
+export function registerCodexTools(pi: ExtensionAPI): void {
+	let currentPlan: PlanItem[] = [];
+
+	pi.registerTool({
+		name: "shell_command",
+		label: "shell_command",
+		description: "Run a shell command using Codex CLI-style arguments. Output is truncated.",
+		promptSnippet: "Run a shell command",
+		parameters: shellCommandParams,
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return runShell({ pi, ctx, command: params.command, workdir: params.workdir, timeoutMs: params.timeout_ms, signal });
+		},
+	});
+
+	pi.registerTool({
+		name: "apply_patch",
+		label: "apply_patch",
+		description: "Apply a Codex-style patch with *** Begin Patch / *** End Patch markers.",
+		promptSnippet: "Apply a Codex-style patch to files",
+		parameters: applyPatchParams,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			return applyPatch(ctx.cwd, params.input);
+		},
+	});
+
+	pi.registerTool({
+		name: "update_plan",
+		label: "update_plan",
+		description: "Record the current plan using Codex CLI-style plan items.",
+		promptSnippet: "Update the visible task plan",
+		parameters: updatePlanParams,
+		async execute(_id, params) {
+			currentPlan = params.plan;
+			const summary = [params.explanation, planSummary(currentPlan)].filter(Boolean).join("\n\n");
+			return textResult(summary || "Plan updated", { plan: currentPlan });
+		},
+	});
+
+	pi.registerTool({
+		name: "view_image",
+		label: "view_image",
+		description: "Load a local image file for the model.",
+		promptSnippet: "View a local image file",
+		parameters: viewImageParams,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const path = resolveToolPath(ctx.cwd, params.path);
+			const mediaType = IMAGE_TYPES[extname(path).toLowerCase()];
+			if (!mediaType) return textResult(`Unsupported image type for ${path}`, { path, unsupported: true });
+			const data = await readFile(path, "base64");
+			return {
+				content: [
+					{ type: "text", text: `Loaded image ${path}` },
+					{ type: "image", source: { type: "base64", mediaType, data } },
+				] as any,
+				details: { path, mediaType },
+			};
+		},
+	});
+}
