@@ -59,6 +59,7 @@ export interface ModelProfilesRuntimeSelectionState {
 	cursor?: number;
 	lastWinner?: ResolvedModelRef;
 	lastAttempts?: ModelProfilesRuntimeAttempt[];
+	thinkingOverride?: ModelProfilesThinkingLevel;
 	updatedAt?: number;
 }
 

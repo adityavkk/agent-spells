@@ -66,11 +66,13 @@ function normalizeRuntimeSelectionState(value: unknown): ModelProfilesRuntimeSel
 	const lastAttempts = Array.isArray(value.lastAttempts)
 		? value.lastAttempts.map(normalizeRuntimeAttempt).filter((attempt): attempt is NonNullable<ReturnType<typeof normalizeRuntimeAttempt>> => !!attempt)
 		: undefined;
+	const thinkingOverride = normalizeString(value.thinkingOverride) as ModelProfilesRuntimeSelectionState["thinkingOverride"];
 	const updatedAt = typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) ? value.updatedAt : undefined;
 	return {
 		cursor,
 		lastWinner: lastWinner?.provider && lastWinner.model ? lastWinner : undefined,
 		lastAttempts: lastAttempts && lastAttempts.length > 0 ? lastAttempts : undefined,
+		thinkingOverride,
 		updatedAt,
 	};
 }

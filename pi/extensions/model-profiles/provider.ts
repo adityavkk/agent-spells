@@ -9,6 +9,7 @@ import {
 	type ModelProfileConfig,
 	type ModelProfilesConfig,
 	type ModelProfilesRuntimeDiagnostics,
+	type ModelProfilesThinkingLevel,
 	type ModelRegistryLike,
 	type ModelRoleConfigTarget,
 	type ResolvedRoleCandidate,
@@ -18,6 +19,7 @@ import {
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+const XHIGH_THINKING_LEVEL_MAP = { xhigh: "xhigh" } as const;
 
 export interface SyntheticProfileModelSelection {
 	profile: string;
@@ -116,6 +118,7 @@ function buildSyntheticRoleModel(
 		cost: primaryModel?.cost ?? ZERO_COST,
 		contextWindow: minNumeric(resolvedModels.map((model) => model.contextWindow), DEFAULT_CONTEXT_WINDOW),
 		maxTokens: minNumeric(resolvedModels.map((model) => model.maxTokens), DEFAULT_MAX_TOKENS),
+		thinkingLevelMap: reasoning ? XHIGH_THINKING_LEVEL_MAP : undefined,
 	};
 }
 
@@ -185,10 +188,30 @@ export function buildSyntheticProfileProviderModels(
 	return models;
 }
 
+export function resolveCandidateReasoningLevel(
+	candidate: ResolvedRoleCandidate,
+	thinkingOverride?: ModelProfilesThinkingLevel,
+): ModelProfilesThinkingLevel | undefined {
+	const level = thinkingOverride ?? candidate.ref.thinkingLevel;
+	return level && level !== "off" ? level : undefined;
+}
+
+function withReasoningLevelSupport(model: Model<any>, reasoningLevel: ModelProfilesThinkingLevel | undefined): Model<any> {
+	if (reasoningLevel !== "xhigh") return model;
+	return {
+		...model,
+		thinkingLevelMap: {
+			...(model as any).thinkingLevelMap,
+			...XHIGH_THINKING_LEVEL_MAP,
+		},
+	};
+}
+
 export function createModelProfilesProviderStream(getState: () => {
 	config: ModelProfilesConfig;
 	modelRegistry?: ModelRegistryLike;
 	getCursor?: (profile: string, role: string, candidateCount: number) => number;
+	getThinkingOverride?: (profile: string, role: string) => ModelProfilesThinkingLevel | undefined;
 	onAttemptStart?: (profile: string, role: string, candidate: ResolvedRoleCandidate) => void;
 	onRuntimeDiagnostics?: (diagnostics: ModelProfilesRuntimeDiagnostics) => void;
 }) {
@@ -217,9 +240,20 @@ export function createModelProfilesProviderStream(getState: () => {
 			}
 
 			const startedCursor = state.getCursor?.(selection.profile, selection.role, resolved.candidates.length) ?? 0;
+			const thinkingOverride = state.getThinkingOverride?.(selection.profile, selection.role);
 			const rotatedResolved = rotateResolvedRoleCandidates(resolved, startedCursor);
+			const executionResolved: ResolvedRoleResult = {
+				...rotatedResolved,
+				candidates: rotatedResolved.candidates.map((candidate) => {
+					const reasoningLevel = resolveCandidateReasoningLevel(candidate, thinkingOverride);
+					return {
+						...candidate,
+						model: withReasoningLevelSupport(candidate.model, reasoningLevel),
+					};
+				}),
+			};
 			const realStream = streamWithModelRoleFallback({
-				resolved: rotatedResolved,
+				resolved: executionResolved,
 				modelRegistry: state.modelRegistry,
 				context,
 				options,
@@ -233,8 +267,9 @@ export function createModelProfilesProviderStream(getState: () => {
 							...(auth.headers ?? {}),
 						},
 					};
-					if (candidate.ref.thinkingLevel && candidate.ref.thinkingLevel !== "off") {
-						candidateOptions.reasoning = candidate.ref.thinkingLevel;
+					const reasoningLevel = resolveCandidateReasoningLevel(candidate, thinkingOverride);
+					if (reasoningLevel) {
+						candidateOptions.reasoning = reasoningLevel;
 					} else {
 						delete candidateOptions.reasoning;
 					}
