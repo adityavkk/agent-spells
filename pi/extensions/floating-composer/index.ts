@@ -44,6 +44,7 @@ interface GitCache {
 interface FooterModelResolution {
   logicalStatus?: string;
   actualModel?: Model<any>;
+  actualThinkingLevel?: string;
 }
 
 interface FloatingComposerThemeTokens {
@@ -902,7 +903,10 @@ function renderUsageLine(usage: UsageSnapshot, width: number, theme: any, option
     .map((line) => indent + line);
 }
 
-function getThinkingLevel(ctx: ExtensionContext): string {
+function getThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext): string {
+  const activeLevel = (pi as any).getThinkingLevel?.();
+  if (typeof activeLevel === "string" && activeLevel.length > 0) return activeLevel;
+
   const entries = ctx.sessionManager.getEntries();
   const leafId = ctx.sessionManager.getLeafId();
   const context = buildSessionContext(entries, leafId);
@@ -935,7 +939,11 @@ function getSessionBranchEntries(ctx: ExtensionContext): any[] {
   return Array.isArray(branch) ? branch : ctx.sessionManager.getEntries();
 }
 
-function getConfiguredProfileModel(ctx: ExtensionContext, profile: string, role: string): Model<any> | undefined {
+function getConfiguredProfileTarget(
+  ctx: ExtensionContext,
+  profile: string,
+  role: string
+): { model: Model<any>; thinkingLevel?: string } | undefined {
   const loaded = loadModelProfilesConfig(ctx.cwd);
   const profileConfig = loaded.mergedConfig.profiles[profile];
   if (!profileConfig) return undefined;
@@ -946,7 +954,7 @@ function getConfiguredProfileModel(ctx: ExtensionContext, profile: string, role:
     const targets = getRoleTargets(profileConfig.roles[candidateRole]);
     for (const target of targets) {
       const model = ctx.modelRegistry.find(target.provider, target.model);
-      if (model) return model;
+      if (model) return { model, thinkingLevel: target.thinkingLevel };
     }
   }
 
@@ -969,13 +977,20 @@ function resolveFooterModel(ctx: ExtensionContext, logicalStatus?: string): Foot
 
   const runtimeState = readModelProfilesRuntimeState(getSessionBranchEntries(ctx));
   const selectionKey = getModelProfilesSelectionKey(selection.profile, selection.role);
-  const winner = selectionKey ? runtimeState.selections[selectionKey]?.lastWinner : undefined;
+  const runtimeSelection = selectionKey ? runtimeState.selections[selectionKey] : undefined;
+  const winner = runtimeSelection?.lastWinner;
   const winnerModel = winner ? ctx.modelRegistry.find(winner.provider, winner.model) : undefined;
-  const configuredModel = getConfiguredProfileModel(ctx, selection.profile, selection.role);
+  const configuredTarget = getConfiguredProfileTarget(ctx, selection.profile, selection.role);
 
   return {
     logicalStatus: cleanStatus ?? buildSyntheticProfileModelId(selection.profile, selection.role),
-    actualModel: winnerModel ?? configuredModel ?? currentModel,
+    actualModel: winnerModel ?? configuredTarget?.model ?? currentModel,
+    actualThinkingLevel: runtimeSelection?.thinkingOverride
+      ?? (winner
+        ? winner.thinkingLevel ?? "off"
+        : configuredTarget
+          ? configuredTarget.thinkingLevel ?? "off"
+          : undefined),
   };
 }
 
@@ -1111,6 +1126,19 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
   let footerDataRef: any = null;
   let editorRef: FloatingComposerEditor | null = null;
 
+  function isStaleExtensionContextError(error: unknown): boolean {
+    return error instanceof Error && error.message.includes("This extension instance is stale");
+  }
+
+  function clearSessionBoundRefs(): void {
+    latestCtx = null;
+    latestResolution = null;
+    footerDataRef = null;
+    editorRef?.setFooterRenderer(null, footerThemeRef);
+    editorRef = null;
+    stopRefreshTimer();
+  }
+
   function refreshGitFooter(): void {
     if (refreshGitCache()) tuiRef?.requestRender();
   }
@@ -1178,9 +1206,14 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
   }
 
   function refreshModelState(ctx: ExtensionContext, logicalStatus?: string, options?: { forceUsageRefresh?: boolean }): void {
-    refreshResolution(ctx, logicalStatus);
-    applyUsageProvider(latestResolution?.actualModel ?? ctx.model, { force: options?.forceUsageRefresh });
-    startRefreshTimer();
+    try {
+      refreshResolution(ctx, logicalStatus);
+      applyUsageProvider(latestResolution?.actualModel ?? ctx.model, { force: options?.forceUsageRefresh });
+      startRefreshTimer();
+    } catch (error) {
+      if (!isStaleExtensionContextError(error)) throw error;
+      clearSessionBoundRefs();
+    }
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -1195,109 +1228,115 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
       editorRef = editor;
       footerThemeRef = ctx.ui.theme ?? theme;
       editor.setFooterRenderer((innerWidth: number, outerWidth: number) => {
-        // Use the live theme ref so theme changes during a session are
-        // picked up without remounting the editor. Falls back to the theme
-        // captured at component construction.
-        const footerTheme = footerThemeRef ?? ctx.ui.theme ?? theme;
-        const footerData = footerDataRef;
-        const safeCtx = latestCtx ?? ctx;
-        const logicalStatus = sanitizeStatusText(footerData?.getExtensionStatuses?.().get("model-profiles"));
-        refreshResolution(safeCtx, logicalStatus);
+        try {
+          // Use the live theme ref so theme changes during a session are
+          // picked up without remounting the editor. Falls back to the theme
+          // captured at component construction.
+          const footerTheme = footerThemeRef ?? ctx.ui.theme ?? theme;
+          const footerData = footerDataRef;
+          const safeCtx = latestCtx ?? ctx;
+          const logicalStatus = sanitizeStatusText(footerData?.getExtensionStatuses?.().get("model-profiles"));
+          refreshResolution(safeCtx, logicalStatus);
 
-        const actualModel = latestResolution?.actualModel ?? safeCtx.model;
-        const thinkingLevel = getThinkingLevel(safeCtx);
-        const { percentage, used, total } = getContextInfo(safeCtx, actualModel ?? undefined);
+          const actualModel = latestResolution?.actualModel ?? safeCtx.model;
+          const thinkingLevel = latestResolution?.actualThinkingLevel ?? getThinkingLevel(pi, safeCtx);
+          const { percentage, used, total } = getContextInfo(safeCtx, actualModel ?? undefined);
 
-        // pwd + branch (outside row, below the panel)
-        let pwd = process.cwd();
-        const home = process.env.HOME || process.env.USERPROFILE;
-        if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
-        const normalizedPwd = pwd || ".";
-        const lastSlash = normalizedPwd.lastIndexOf("/");
-        const pwdParent = lastSlash >= 0 ? normalizedPwd.slice(0, lastSlash + 1) : "";
-        const pwdBase = lastSlash >= 0 ? normalizedPwd.slice(lastSlash + 1) : normalizedPwd;
+          // pwd + branch (outside row, below the panel)
+          let pwd = process.cwd();
+          const home = process.env.HOME || process.env.USERPROFILE;
+          if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
+          const normalizedPwd = pwd || ".";
+          const lastSlash = normalizedPwd.lastIndexOf("/");
+          const pwdParent = lastSlash >= 0 ? normalizedPwd.slice(0, lastSlash + 1) : "";
+          const pwdBase = lastSlash >= 0 ? normalizedPwd.slice(lastSlash + 1) : normalizedPwd;
 
-        let branchStr = "";
-        if (gitCache?.branch) {
-          const branchColor = gitCache.dirty ? "warning" : "success";
-          branchStr = footerTheme.fg(branchColor, gitCache.branch);
-          if (gitCache.dirty) branchStr += footerTheme.fg("warning", " *");
-          if (gitCache.ahead) branchStr += footerTheme.fg("success", ` ↑${gitCache.ahead}`);
-          if (gitCache.behind) branchStr += footerTheme.fg("error", ` ↓${gitCache.behind}`);
-        }
+          let branchStr = "";
+          if (gitCache?.branch) {
+            const branchColor = gitCache.dirty ? "warning" : "success";
+            branchStr = footerTheme.fg(branchColor, gitCache.branch);
+            if (gitCache.dirty) branchStr += footerTheme.fg("warning", " *");
+            if (gitCache.ahead) branchStr += footerTheme.fg("success", ` ↑${gitCache.ahead}`);
+            if (gitCache.behind) branchStr += footerTheme.fg("error", ` ↓${gitCache.behind}`);
+          }
 
-        const sep = " " + footerTheme.fg("dim", "·") + " ";
-        const pwdStr = `${footerTheme.fg("muted", pwdParent)}${footerTheme.fg("accent", pwdBase || normalizedPwd)}`;
+          const sep = " " + footerTheme.fg("dim", "·") + " ";
+          const pwdStr = `${footerTheme.fg("muted", pwdParent)}${footerTheme.fg("accent", pwdBase || normalizedPwd)}`;
 
-        // INSIDE: single inline row. Left = profile status + provider/model
-        // (+ thinking). Right = ctx gauge, width-aware.
-        const statusBlocks: string[] = [];
-        if (latestResolution?.logicalStatus) statusBlocks.push(footerTheme.fg("accent", latestResolution.logicalStatus));
-        statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, footerTheme));
-        const modelLineRaw = statusBlocks.join(sep);
-        const extras = collectExtraStatuses(footerData, ["model-profiles"]);
-        const extrasLineRaw = extras.length ? extras.map((extra) => footerTheme.fg("dim", extra)).join(sep) : "";
+          // INSIDE: single inline row. Left = profile status + provider/model
+          // (+ thinking). Right = ctx gauge, width-aware.
+          const statusBlocks: string[] = [];
+          if (latestResolution?.logicalStatus) statusBlocks.push(footerTheme.fg("accent", latestResolution.logicalStatus));
+          statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, footerTheme));
+          const modelLineRaw = statusBlocks.join(sep);
+          const extras = collectExtraStatuses(footerData, ["model-profiles"]);
+          const extrasLineRaw = extras.length ? extras.map((extra) => footerTheme.fg("dim", extra)).join(sep) : "";
 
-        // Row 1 (inside): profile/model on left, ctx on right
-        const ctxBudget = Math.max(8, innerWidth - visibleWidth(modelLineRaw) - 2);
-        const ctxVariants = [
-          renderContextGauge(percentage, footerTheme, used, total, { includeCounts: true }),
-          renderContextGauge(percentage, footerTheme, used, total, { includeCounts: false }),
-        ];
-        const statusRight = fitFooterSegment(ctxBudget, ctxVariants);
-        const inside: string[] = [];
-        inside.push(...joinFooterSides(modelLineRaw, statusRight, innerWidth));
-
-        // Row 1b (inside, optional): extra extension statuses on their own line
-        if (extrasLineRaw) {
-          inside.push(truncateToWidth(extrasLineRaw, innerWidth));
-        }
-
-        // Row 2 (inside): pwd + branch on left, provider usage on right when
-        // available. Falls back to pwd-only if there's not enough room for even
-        // a minimal usage rendering.
-        const pwdLine = fitFooterSegment(innerWidth, branchStr ? [pwdStr + sep + branchStr, pwdStr] : [pwdStr]);
-
-        const hasUsage = !!latestUsage && latestUsage.windows.length > 0;
-        if (hasUsage) {
-          const usage = latestUsage!;
-          const usageLabel = footerTheme.fg("accent", usage.provider);
-          const windowVariants = (w: RateWindow) => [
-            renderUsageWindow(w, footerTheme, { barWidth: 10, includeReset: true }),
-            renderUsageWindow(w, footerTheme, { barWidth: 8, includeReset: true }),
-            renderUsageWindow(w, footerTheme, { barWidth: 8, includeReset: false }),
-            renderUsageWindow(w, footerTheme, { barWidth: 6, includeReset: false }),
-            renderUsageWindow(w, footerTheme, { barWidth: 4, includeReset: false }),
+          // Row 1 (inside): profile/model on left, ctx on right
+          const ctxBudget = Math.max(8, innerWidth - visibleWidth(modelLineRaw) - 2);
+          const ctxVariants = [
+            renderContextGauge(percentage, footerTheme, used, total, { includeCounts: true }),
+            renderContextGauge(percentage, footerTheme, used, total, { includeCounts: false }),
           ];
+          const statusRight = fitFooterSegment(ctxBudget, ctxVariants);
+          const inside: string[] = [];
+          inside.push(...joinFooterSides(modelLineRaw, statusRight, innerWidth));
 
-          // Minimum width to render the usage block: label + sep + smallest
-          // variant of the first window. If even that doesn't fit alongside the
-          // pwd line, drop the block entirely.
-          const minimalWindow = fitFooterSegment(
-            Number.MAX_SAFE_INTEGER,
-            windowVariants(usage.windows[0]).slice(-1),
-          );
-          const minUsageWidth = visibleWidth(usageLabel) + visibleWidth(sep) + visibleWidth(minimalWindow);
-          const usageFits = innerWidth >= visibleWidth(pwdLine) + visibleWidth(sep) + minUsageWidth;
+          // Row 1b (inside, optional): extra extension statuses on their own line
+          if (extrasLineRaw) {
+            inside.push(truncateToWidth(extrasLineRaw, innerWidth));
+          }
 
-          if (usageFits) {
-            const windowBudget = Math.max(
-              visibleWidth(minimalWindow),
-              innerWidth - visibleWidth(pwdLine) - visibleWidth(usageLabel) - visibleWidth(sep) * 2,
+          // Row 2 (inside): pwd + branch on left, provider usage on right when
+          // available. Falls back to pwd-only if there's not enough room for even
+          // a minimal usage rendering.
+          const pwdLine = fitFooterSegment(innerWidth, branchStr ? [pwdStr + sep + branchStr, pwdStr] : [pwdStr]);
+
+          const hasUsage = !!latestUsage && latestUsage.windows.length > 0;
+          if (hasUsage) {
+            const usage = latestUsage!;
+            const usageLabel = footerTheme.fg("accent", usage.provider);
+            const windowVariants = (w: RateWindow) => [
+              renderUsageWindow(w, footerTheme, { barWidth: 10, includeReset: true }),
+              renderUsageWindow(w, footerTheme, { barWidth: 8, includeReset: true }),
+              renderUsageWindow(w, footerTheme, { barWidth: 8, includeReset: false }),
+              renderUsageWindow(w, footerTheme, { barWidth: 6, includeReset: false }),
+              renderUsageWindow(w, footerTheme, { barWidth: 4, includeReset: false }),
+            ];
+
+            // Minimum width to render the usage block: label + sep + smallest
+            // variant of the first window. If even that doesn't fit alongside the
+            // pwd line, drop the block entirely.
+            const minimalWindow = fitFooterSegment(
+              Number.MAX_SAFE_INTEGER,
+              windowVariants(usage.windows[0]).slice(-1),
             );
-            const usageRightRaw = [
-              usageLabel,
-              ...usage.windows.map((w) => fitFooterSegment(windowBudget, windowVariants(w))),
-            ].join(sep);
-            inside.push(...joinFooterSides(pwdLine, usageRightRaw, innerWidth));
+            const minUsageWidth = visibleWidth(usageLabel) + visibleWidth(sep) + visibleWidth(minimalWindow);
+            const usageFits = innerWidth >= visibleWidth(pwdLine) + visibleWidth(sep) + minUsageWidth;
+
+            if (usageFits) {
+              const windowBudget = Math.max(
+                visibleWidth(minimalWindow),
+                innerWidth - visibleWidth(pwdLine) - visibleWidth(usageLabel) - visibleWidth(sep) * 2,
+              );
+              const usageRightRaw = [
+                usageLabel,
+                ...usage.windows.map((w) => fitFooterSegment(windowBudget, windowVariants(w))),
+              ].join(sep);
+              inside.push(...joinFooterSides(pwdLine, usageRightRaw, innerWidth));
+            } else {
+              inside.push(truncateToWidth(pwdLine, innerWidth));
+            }
           } else {
             inside.push(truncateToWidth(pwdLine, innerWidth));
           }
-        } else {
-          inside.push(truncateToWidth(pwdLine, innerWidth));
-        }
 
-        return { inside, outside: [] };
+          return { inside, outside: [] };
+        } catch (error) {
+          if (!isStaleExtensionContextError(error)) throw error;
+          clearSessionBoundRefs();
+          return { inside: [], outside: [] };
+        }
       }, footerThemeRef);
       return editor;
     });
@@ -1328,7 +1367,7 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         dispose: () => {
           unsub();
           tuiRef = null;
-          stopRefreshTimer();
+          clearSessionBoundRefs();
         },
         invalidate() {},
         render(_width: number): string[] {
@@ -1350,5 +1389,14 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
 
   pi.on("model_select", async (_event, ctx) => {
     refreshModelState(ctx, undefined, { forceUsageRefresh: true });
+  });
+
+  pi.on("thinking_level_select", async (_event, ctx) => {
+    latestCtx = ctx;
+    tuiRef?.requestRender();
+  });
+
+  pi.on("session_shutdown", async () => {
+    clearSessionBoundRefs();
   });
 }

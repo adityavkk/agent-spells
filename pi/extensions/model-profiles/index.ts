@@ -34,6 +34,7 @@ import {
 	type ModelProfilesRuntimeState,
 	type ModelProfilesSelection,
 	type ModelProfilesState,
+	type ModelProfilesThinkingLevel,
 	type ModelRegistryLike,
 	type ResolvedRoleResult,
 } from "./types";
@@ -52,8 +53,16 @@ function getFlagString(pi: ExtensionAPI, name: string): string | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
+function hasCliArg(name: string): boolean {
+	const flag = `--${name}`;
+	return process.argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+
 function hasExplicitRawModelSelection(pi: ExtensionAPI): boolean {
-	return !!getFlagString(pi, "model") || !!getFlagString(pi, "provider");
+	return !!getFlagString(pi, "model")
+		|| !!getFlagString(pi, "provider")
+		|| hasCliArg("model")
+		|| hasCliArg("provider");
 }
 
 function uniqueSorted(values: string[]): string[] {
@@ -72,6 +81,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	let displayModel: Model<any> | undefined;
 	let latestCtx: ExtensionContext | undefined;
 	let latestModelRegistry: ModelRegistryLike | undefined;
+	let suppressProfileThinkingEventsUntil = 0;
 
 	function refreshConfig(cwd: string): void {
 		loadedConfig = loadModelProfilesConfig(cwd);
@@ -80,6 +90,10 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	function getRuntimeSelectionState(profile: string | undefined, role: string | undefined): ModelProfilesRuntimeSelectionState | undefined {
 		const key = getModelProfilesSelectionKey(profile, role);
 		return key ? runtimeState.selections[key] : undefined;
+	}
+
+	function getThinkingOverride(profile: string | undefined, role: string | undefined): ModelProfilesThinkingLevel | undefined {
+		return getRuntimeSelectionState(profile, role)?.thinkingOverride;
 	}
 
 	function getDisplayModel(ctx: ExtensionContext): Model<any> | undefined {
@@ -134,10 +148,12 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 
 	function applyRuntimeDiagnostics(diagnostics: ModelProfilesRuntimeDiagnostics, persist = true): void {
 		inFlightAttemptModel = undefined;
+		const previousSelection = runtimeState.selections[diagnostics.selectionKey];
 		setRuntimeState({
 			selections: {
 				...runtimeState.selections,
 				[diagnostics.selectionKey]: {
+					...previousSelection,
 					cursor: diagnostics.nextCursor,
 					lastWinner: diagnostics.winner,
 					lastAttempts: diagnostics.attempts,
@@ -171,6 +187,37 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		return true;
 	}
 
+	function setRuntimeThinkingOverride(
+		profile: string | undefined,
+		role: string | undefined,
+		thinkingOverride: ModelProfilesThinkingLevel | undefined,
+		persist = true,
+	): void {
+		const key = getModelProfilesSelectionKey(profile, role);
+		if (!key) return;
+
+		const previousSelection = runtimeState.selections[key];
+		if (thinkingOverride === undefined) {
+			if (!previousSelection || previousSelection.thinkingOverride === undefined) return;
+			const { thinkingOverride: _removed, ...nextSelection } = previousSelection;
+			const nextSelections = { ...runtimeState.selections };
+			if (Object.keys(nextSelection).length > 0) nextSelections[key] = nextSelection;
+			else delete nextSelections[key];
+			setRuntimeState({ selections: nextSelections }, persist);
+			return;
+		}
+
+		setRuntimeState({
+			selections: {
+				...runtimeState.selections,
+				[key]: {
+					...previousSelection,
+					thinkingOverride,
+				},
+			},
+		}, persist);
+	}
+
 	function refreshSyntheticProvider(): void {
 		const models = buildSyntheticProfileProviderModels(loadedConfig.mergedConfig, latestModelRegistry);
 		if (models.length === 0) {
@@ -189,6 +236,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 					const cursor = getRuntimeSelectionState(profile, role)?.cursor ?? 0;
 					return candidateCount > 0 ? cursor % candidateCount : 0;
 				},
+				getThinkingOverride,
 				onAttemptStart: (profile, role, candidate) => applyRuntimeAttemptStart(profile, role, candidate.model),
 				onRuntimeDiagnostics: applyRuntimeDiagnostics,
 			})),
@@ -306,6 +354,9 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			activeProfile: nextState.activeProfile ?? resolved?.profile,
 			activeRole: nextState.activeRole ?? resolved?.role,
 		}, options.persist ?? true);
+		if (options.persist !== false) {
+			setRuntimeThinkingOverride(activeState.activeProfile, activeState.activeRole, undefined);
+		}
 		lastResolved = resolved;
 		lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
 		unresolved = !!activeState.activeRole && (!resolved || resolved.source === "current-model" || resolved.source === "first-available");
@@ -323,6 +374,8 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 		}
 
 		const managedModel = getManagedModel(resolved, ctx);
+		const managedThinkingLevel = getAppliedThinkingLevel(resolved);
+		suppressProfileThinkingEventsUntil = Date.now() + 250;
 		const changedModel = modelLabel(ctx.model) !== modelLabel(managedModel);
 		if (changedModel) {
 			const success = await pi.setModel(managedModel);
@@ -334,7 +387,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 				return false;
 			}
 		}
-		pi.setThinkingLevel(getAppliedThinkingLevel(resolved));
+		pi.setThinkingLevel(managedThinkingLevel);
 		displayModel = getDisplayModel(ctx) ?? managedModel;
 		updateStatus(ctx);
 		if (options.notify !== false) {
@@ -482,6 +535,23 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			lastRuntimeDiagnostics = null;
 			unresolved = false;
 		}
+		displayModel = getDisplayModel(ctx);
+		updateStatus(ctx);
+	});
+
+	pi.on("thinking_level_select", async (event, ctx) => {
+		latestCtx = ctx;
+		if (Date.now() < suppressProfileThinkingEventsUntil) return;
+
+		const syntheticSelection = parseSyntheticProfileModelId(ctx.model?.provider === MODEL_PROFILES_PROVIDER ? ctx.model.id : "");
+		if (!syntheticSelection) return;
+
+		activeState = normalizeModelProfilesState({
+			activeProfile: syntheticSelection.profile,
+			activeRole: syntheticSelection.role,
+		});
+		setRuntimeThinkingOverride(syntheticSelection.profile, syntheticSelection.role, event.level as ModelProfilesThinkingLevel);
+		lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
 		displayModel = getDisplayModel(ctx);
 		updateStatus(ctx);
 	});

@@ -43,6 +43,7 @@ interface GitCache {
 interface FooterModelResolution {
   logicalStatus?: string;
   actualModel?: Model<any>;
+  actualThinkingLevel?: string;
 }
 
 const USAGE_REFRESH_INTERVAL = 5 * 60_000;
@@ -770,7 +771,10 @@ function renderUsageLine(usage: UsageSnapshot, width: number, theme: any, option
     .map((line) => indent + line);
 }
 
-function getThinkingLevel(ctx: ExtensionContext): string {
+function getThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext): string {
+  const activeLevel = (pi as any).getThinkingLevel?.();
+  if (typeof activeLevel === "string" && activeLevel.length > 0) return activeLevel;
+
   const entries = ctx.sessionManager.getEntries();
   const leafId = ctx.sessionManager.getLeafId();
   const context = buildSessionContext(entries, leafId);
@@ -803,7 +807,11 @@ function getSessionBranchEntries(ctx: ExtensionContext): any[] {
   return Array.isArray(branch) ? branch : ctx.sessionManager.getEntries();
 }
 
-function getConfiguredProfileModel(ctx: ExtensionContext, profile: string, role: string): Model<any> | undefined {
+function getConfiguredProfileTarget(
+  ctx: ExtensionContext,
+  profile: string,
+  role: string
+): { model: Model<any>; thinkingLevel?: string } | undefined {
   const loaded = loadModelProfilesConfig(ctx.cwd);
   const profileConfig = loaded.mergedConfig.profiles[profile];
   if (!profileConfig) return undefined;
@@ -814,7 +822,7 @@ function getConfiguredProfileModel(ctx: ExtensionContext, profile: string, role:
     const targets = getRoleTargets(profileConfig.roles[candidateRole]);
     for (const target of targets) {
       const model = ctx.modelRegistry.find(target.provider, target.model);
-      if (model) return model;
+      if (model) return { model, thinkingLevel: target.thinkingLevel };
     }
   }
 
@@ -837,13 +845,20 @@ function resolveFooterModel(ctx: ExtensionContext, logicalStatus?: string): Foot
 
   const runtimeState = readModelProfilesRuntimeState(getSessionBranchEntries(ctx));
   const selectionKey = getModelProfilesSelectionKey(selection.profile, selection.role);
-  const winner = selectionKey ? runtimeState.selections[selectionKey]?.lastWinner : undefined;
+  const runtimeSelection = selectionKey ? runtimeState.selections[selectionKey] : undefined;
+  const winner = runtimeSelection?.lastWinner;
   const winnerModel = winner ? ctx.modelRegistry.find(winner.provider, winner.model) : undefined;
-  const configuredModel = getConfiguredProfileModel(ctx, selection.profile, selection.role);
+  const configuredTarget = getConfiguredProfileTarget(ctx, selection.profile, selection.role);
 
   return {
     logicalStatus: cleanStatus ?? buildSyntheticProfileModelId(selection.profile, selection.role),
-    actualModel: winnerModel ?? configuredModel ?? currentModel,
+    actualModel: winnerModel ?? configuredTarget?.model ?? currentModel,
+    actualThinkingLevel: runtimeSelection?.thinkingOverride
+      ?? (winner
+        ? winner.thinkingLevel ?? "off"
+        : configuredTarget
+          ? configuredTarget.thinkingLevel ?? "off"
+          : undefined),
   };
 }
 
@@ -973,7 +988,7 @@ export default function minimalFooterExtension(pi: ExtensionAPI) {
           refreshResolution(safeCtx, logicalStatus);
 
           const actualModel = latestResolution?.actualModel ?? safeCtx.model;
-          const thinkingLevel = getThinkingLevel(safeCtx);
+          const thinkingLevel = latestResolution?.actualThinkingLevel ?? getThinkingLevel(pi, safeCtx);
           const { percentage, used, total } = getContextInfo(safeCtx, actualModel ?? undefined);
 
           let pwd = process.cwd();
@@ -1049,5 +1064,10 @@ export default function minimalFooterExtension(pi: ExtensionAPI) {
 
   pi.on("model_select", async (_event, ctx) => {
     refreshModelState(ctx, undefined, { forceUsageRefresh: true });
+  });
+
+  pi.on("thinking_level_select", async (_event, ctx) => {
+    latestCtx = ctx;
+    tuiRef?.requestRender();
   });
 }

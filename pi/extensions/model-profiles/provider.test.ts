@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Model } from "@mariozechner/pi-ai";
-import { buildSyntheticProfileModelId, buildSyntheticProfileProviderModels, isSyntheticProfileModel, parseSyntheticProfileModelId, rotateResolvedRoleCandidates } from "./provider";
+import { buildSyntheticProfileModelId, buildSyntheticProfileProviderModels, isSyntheticProfileModel, parseSyntheticProfileModelId, resolveCandidateReasoningLevel, rotateResolvedRoleCandidates } from "./provider";
 import type { ModelProfilesConfig, ModelRegistryLike, ResolvedRoleResult } from "./types";
 
 function makeModel(provider: string, id: string, overrides: Partial<Model<any>> = {}): Model<any> {
@@ -42,6 +42,21 @@ describe("synthetic profile model ids", () => {
 		expect(parseSyntheticProfileModelId("missing-separator")).toBeNull();
 		expect(isSyntheticProfileModel({ provider: "profiles", id })).toBeTrue();
 		expect(isSyntheticProfileModel({ provider: "openai", id })).toBeFalse();
+	});
+});
+
+describe("resolveCandidateReasoningLevel", () => {
+	it("uses target thinking by default and lets explicit overrides win", () => {
+		const model = makeModel("code-puppy", "gpt-5.4");
+		const candidate = {
+			model,
+			ref: { provider: model.provider, model: model.id, thinkingLevel: "high" as const },
+		};
+
+		expect(resolveCandidateReasoningLevel(candidate)).toBe("high");
+		expect(resolveCandidateReasoningLevel(candidate, "low")).toBe("low");
+		expect(resolveCandidateReasoningLevel(candidate, "off")).toBeUndefined();
+		expect(resolveCandidateReasoningLevel({ ...candidate, ref: { provider: model.provider, model: model.id } })).toBeUndefined();
 	});
 });
 
@@ -91,6 +106,7 @@ describe("buildSyntheticProfileProviderModels", () => {
 		expect(models[0]?.input).toEqual(["text"]);
 		expect(models[0]?.contextWindow).toBe(128_000);
 		expect(models[0]?.maxTokens).toBe(16_384);
+		expect((models[0] as any)?.thinkingLevelMap?.xhigh).toBe("xhigh");
 	});
 
 	it("registers roles using concrete targets across fallback chains", () => {
