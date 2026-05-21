@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { Model } from "@mariozechner/pi-ai";
 import { buildSyntheticProfileModelId } from "./provider";
-import { formatModelProfilesStateSummary, formatModelProfilesStatus, getAppliedThinkingLevel, isRawOverride } from "./state";
-import { MODEL_PROFILES_PROVIDER, type ResolvedRoleResult } from "./types";
+import { formatModelProfilesStateSummary, formatModelProfilesStatus, getAppliedThinkingLevel, isRawOverride, readModelProfilesRuntimeState } from "./state";
+import { MODEL_PROFILES_PROVIDER, MODEL_PROFILES_RUNTIME_STATE_CUSTOM_TYPE, type ResolvedRoleResult } from "./types";
 
 function makeModel(provider: string, id: string): Model<any> {
 	return {
@@ -110,6 +110,23 @@ describe("formatModelProfilesStatus", () => {
 			state: { activeProfile: "work", activeRole: "small" },
 			unresolved: true,
 		})).toBe("work:small unresolved");
+	});
+});
+
+describe("readModelProfilesRuntimeState", () => {
+	it("keeps per-selection thinking overrides", () => {
+		expect(readModelProfilesRuntimeState([{
+			type: "custom",
+			customType: MODEL_PROFILES_RUNTIME_STATE_CUSTOM_TYPE,
+			data: {
+				selections: {
+					"work:smart": {
+						thinkingOverride: "low",
+						lastWinner: { provider: "code-puppy", model: "gpt-5.4", thinkingLevel: "high" },
+					},
+				},
+			},
+		}]).selections["work:smart"]?.thinkingOverride).toBe("low");
 	});
 });
 
