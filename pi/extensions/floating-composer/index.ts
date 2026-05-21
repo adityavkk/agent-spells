@@ -76,6 +76,15 @@ function sanitizeStatusText(text: string | undefined): string | undefined {
   return clean.length > 0 ? clean : undefined;
 }
 
+function collectExtraStatuses(footerData: any, exclude: string[] = []): string[] {
+  const skip = new Set(exclude);
+  return Array.from(footerData?.getExtensionStatuses?.()?.entries?.() ?? [])
+    .filter(([key]) => !skip.has(key))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, text]) => sanitizeStatusText(text as string | undefined))
+    .filter((text): text is string => !!text);
+}
+
 function parseGitStatus(output: string): GitCache {
   let branch: string | null = null;
   let dirty = false;
@@ -1225,6 +1234,9 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         const statusBlocks: string[] = [];
         if (latestResolution?.logicalStatus) statusBlocks.push(footerTheme.fg("accent", latestResolution.logicalStatus));
         statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, footerTheme));
+        for (const extra of collectExtraStatuses(footerData, ["model-profiles"])) {
+          statusBlocks.push(footerTheme.fg("dim", extra));
+        }
         const statusLeft = statusBlocks.join(sep);
 
         // Row 1 (inside): profile/model on left, ctx on right

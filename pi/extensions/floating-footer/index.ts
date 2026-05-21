@@ -57,6 +57,15 @@ function sanitizeStatusText(text: string | undefined): string | undefined {
   return clean.length > 0 ? clean : undefined;
 }
 
+function collectExtraStatuses(footerData: any, exclude: string[] = []): string[] {
+  const skip = new Set(exclude);
+  return Array.from(footerData.getExtensionStatuses?.()?.entries?.() ?? [])
+    .filter(([key]) => !skip.has(key))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, text]) => sanitizeStatusText(text as string | undefined))
+    .filter((text): text is string => !!text);
+}
+
 function parseGitStatus(output: string): GitCache {
   let branch: string | null = null;
   let dirty = false;
@@ -1011,6 +1020,9 @@ export default function minimalFooterExtension(pi: ExtensionAPI) {
             statusBlocks.push(theme.fg("accent", latestResolution.logicalStatus));
           }
           statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, theme));
+          for (const extra of collectExtraStatuses(footerData, ["model-profiles"])) {
+            statusBlocks.push(theme.fg("dim", extra));
+          }
           const statusLeft = wrapFooterSegments(statusBlocks, Math.max(1, width - indent.length), sep).join(sep);
           const statusRight = fitFooterSegment(width, [
             renderContextGauge(percentage, theme, used, total, { barWidth: 12, includeCounts: true }),
