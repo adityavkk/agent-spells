@@ -77,6 +77,15 @@ function sanitizeStatusText(text: string | undefined): string | undefined {
   return clean.length > 0 ? clean : undefined;
 }
 
+function collectExtraStatuses(footerData: any, exclude: string[] = []): string[] {
+  const skip = new Set(exclude);
+  return Array.from(footerData?.getExtensionStatuses?.()?.entries?.() ?? [])
+    .filter(([key]) => !skip.has(key))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, text]) => sanitizeStatusText(text as string | undefined))
+    .filter((text): text is string => !!text);
+}
+
 function parseGitStatus(output: string): GitCache {
   let branch: string | null = null;
   let dirty = false;
@@ -1259,17 +1268,24 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
           const statusBlocks: string[] = [];
           if (latestResolution?.logicalStatus) statusBlocks.push(footerTheme.fg("accent", latestResolution.logicalStatus));
           statusBlocks.push(formatModelSegment(actualModel, thinkingLevel, footerTheme));
-          const statusLeft = statusBlocks.join(sep);
+          const modelLineRaw = statusBlocks.join(sep);
+          const extras = collectExtraStatuses(footerData, ["model-profiles"]);
+          const extrasLineRaw = extras.length ? extras.map((extra) => footerTheme.fg("dim", extra)).join(sep) : "";
 
           // Row 1 (inside): profile/model on left, ctx on right
-          const ctxBudget = Math.max(8, innerWidth - visibleWidth(statusLeft) - 2);
+          const ctxBudget = Math.max(8, innerWidth - visibleWidth(modelLineRaw) - 2);
           const ctxVariants = [
             renderContextGauge(percentage, footerTheme, used, total, { includeCounts: true }),
             renderContextGauge(percentage, footerTheme, used, total, { includeCounts: false }),
           ];
           const statusRight = fitFooterSegment(ctxBudget, ctxVariants);
           const inside: string[] = [];
-          inside.push(...joinFooterSides(statusLeft, statusRight, innerWidth));
+          inside.push(...joinFooterSides(modelLineRaw, statusRight, innerWidth));
+
+          // Row 1b (inside, optional): extra extension statuses on their own line
+          if (extrasLineRaw) {
+            inside.push(truncateToWidth(extrasLineRaw, innerWidth));
+          }
 
           // Row 2 (inside): pwd + branch on left, provider usage on right when
           // available. Falls back to pwd-only if there's not enough room for even
@@ -1338,6 +1354,15 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
       refreshModelState(ctx, initialStatus, { forceUsageRefresh: true });
       editorRef?.setFooterRenderer(editorRef["footerRenderer"], theme);
 
+      const snapshotStatuses = (): string => {
+        try {
+          return JSON.stringify(Array.from(footerData.getExtensionStatuses().entries()).sort());
+        } catch {
+          return "";
+        }
+      };
+      let lastStatusSnapshot = snapshotStatuses();
+
       return {
         dispose: () => {
           unsub();
@@ -1346,6 +1371,11 @@ export default function floatingComposerExtension(pi: ExtensionAPI) {
         },
         invalidate() {},
         render(_width: number): string[] {
+          const current = snapshotStatuses();
+          if (current !== lastStatusSnapshot) {
+            lastStatusSnapshot = current;
+            tuiRef?.requestRender();
+          }
           return [];
         },
       };
