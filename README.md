@@ -13,6 +13,9 @@ Not a framework. Just a spellbook.
 - `pi/extensions/provider-tool-profiles/`
   - provider-native core tool profiles for Claude, Codex/GPT, and Gemini
   - preserves unrelated Pi extension tools while swapping core file/shell tools
+- `pi/extensions/vim-modal-editor/`
+  - Vim-style modal editing for Pi's prompt box
+  - wraps existing custom editors like floating-composer
 
 More spells over time.
 
