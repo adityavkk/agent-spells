@@ -55,6 +55,23 @@ describe("providerToolProfilesExtension", () => {
 		expect(second).toBeUndefined();
 	});
 
+	it("does not switch tools inside pi-subagents children", async () => {
+		const previous = process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_SUBAGENT_CHILD = "1";
+		try {
+			const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
+			for (const handler of h.handlers.get("session_start") ?? []) await handler({}, h.ctx);
+			expect(h.activeTools).toEqual(["read", "bash", "edit", "write", "answer"]);
+			expect(h.statusCalls.at(-1)).toEqual({ key: "provider-tools", value: undefined });
+
+			const handler = (h.handlers.get("before_agent_start") ?? [])[0]!;
+			expect(await handler({ systemPrompt: "base" }, h.ctx)).toBeUndefined();
+		} finally {
+			if (previous === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = previous;
+		}
+	});
+
 	it("provider shell tools execute through pi.exec", async () => {
 		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
 		const signal = new AbortController().signal;

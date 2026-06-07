@@ -12,6 +12,10 @@ function status(profile: ProviderToolProfile | undefined): string | undefined {
 	return profile ? `tools:${profile}` : undefined;
 }
 
+function isSubagentChild(): boolean {
+	return process.env.PI_SUBAGENT_CHILD === "1";
+}
+
 export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 	let loadedConfig: LoadedProviderToolProfilesConfig = loadProviderToolProfilesConfig(process.cwd());
 	let activationState: ToolActivationState = {};
@@ -50,6 +54,11 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		refreshConfig(ctx.cwd);
 		notifyConfigErrors(ctx);
+		if (isSubagentChild()) {
+			activeProfile = undefined;
+			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
+			return;
+		}
 		if (!loadedConfig.mergedConfig.enabled) {
 			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
 			return;
@@ -59,6 +68,11 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 
 	pi.on("model_select", async (event, ctx) => {
 		refreshConfig(ctx.cwd);
+		if (isSubagentChild()) {
+			activeProfile = undefined;
+			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
+			return;
+		}
 		if (!loadedConfig.mergedConfig.enabled) {
 			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
 			return;
