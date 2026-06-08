@@ -229,6 +229,8 @@ function maybeStatusWarning(details: Record<string, unknown> | undefined, theme:
 	if (details?.aborted) notices.push("aborted");
 	if (details?.killed) notices.push("killed");
 	if (details?.truncated) notices.push("truncated");
+	if (details?.capped) notices.push("capped");
+	if (details?.geminiIgnoreDiscoveryTruncated) notices.push("ignore discovery truncated");
 	if (notices.length === 0) return undefined;
 	return warning(theme, `[${notices.join(", ")}]`);
 }

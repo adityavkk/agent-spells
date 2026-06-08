@@ -194,6 +194,17 @@ describe("provider tool rendering", () => {
 		}
 	});
 
+	it("surfaces capped search/list metadata in preview results", () => {
+		const component = renderPreviewResult(
+			{ content: [{ type: "text", text: "a.ts" }], details: { capped: true, geminiIgnoreDiscoveryTruncated: true } },
+			{ expanded: false },
+			plainTheme,
+			{ showImages: true },
+		);
+
+		expect(component.render(120).join("\n")).toContain("[capped, ignore discovery truncated]");
+	});
+
 	it("does not throw when pi renders partial or missing tool call arguments", () => {
 		for (const [name, tool] of collectTools()) {
 			for (const args of [undefined, {}]) {
