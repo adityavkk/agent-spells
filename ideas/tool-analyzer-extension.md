@@ -230,41 +230,81 @@ All inputs/outputs shown are redacted and truncated; cards are collapsed by defa
 
 ## Persistence model
 
-### Current Pi-compatible v1
+### Hard constraint: sessions are append-only
 
-Default (Option B): the inline card is a context-stripped `custom_message` carrying typed `details`; the `context` hook removes these from the LLM message list. Optionally also write a hidden `custom` entry via `pi.appendEntry()` for a non-context audit trail. Both use the same versioned payload shape.
+Verified in `core/session-manager.d.ts`: the only mutating APIs are `append*` and `setLabel`. There is no API to edit/replace/patch an existing entry's `content` or `details`. So a record written at tool-start cannot be backfilled with the outcome. The data model must treat every persisted entry as immutable once written.
 
-Example shape:
+Second verified fact: a `custom_message`'s `content` enters LLM context (we strip it in the `context` hook), but its `details` never enters context. So all analysis text lives in `details`, and `content` stays near-empty. This keeps analysis out of the model even if the strip is ever bypassed.
+
+### Anchor + store + audit model (decided)
+
+Three coordinated pieces, keyed by `toolCallId`:
+
+1. Anchor (`custom_message`, one per tool call): appended so it renders directly under the tool row. `content` is a near-empty placeholder; `details` holds only `{ schema, toolCallId, turnIndex }`. The anchor is a stable, positioned render slot. It is never rewritten.
+2. Store (in-memory `Map<toolCallId, ToolLensRecordV1>`): the live source of truth. Intent and outcome stream into it. The card renderer reads the store by `toolCallId` (resolved from anchor `details`), so the frozen anchor content does not matter.
+3. Audit (`custom` entries via `pi.appendEntry`): durable, never in context, never rendered in the transcript. Appended per phase so the store can be rebuilt after reload/fork.
+
+Lifecycle:
+
+- `tool_execution_start`: append the anchor; seed the store record in `observed`/`intent_streaming`.
+- intent completes: append a hidden `custom` audit entry `{ phase: "intent", ... }`; update store; force repaint.
+- `tool_result` -> outcome completes: append a hidden `custom` audit entry `{ phase: "outcome", ... }`; update store; force repaint.
+- `session_start`: replay `custom` audit entries on the current branch, rebuild the store, so anchors re-render with their analysis.
+
+Why append-per-phase (decided): it survives a mid-tool crash and shows intent immediately on reload, at the cost of up to two audit entries per tool call. Latest phase wins on reconstruction.
+
+### Versioned payload
 
 ```ts
-interface ToolLensEntryV1 {
-  schema: "tool-lens.analysis.v1";
-  sessionId?: string;
-  turnIndex?: number;
+type ToolLensVisibility = "full" | "compact" | "hidden";
+
+interface ToolLensAnchorV1 {
+  schema: "tool-lens.anchor.v1";
   toolCallId: string;
-  toolName: string;
-  canonicalToolName?: string;
-  assistantEntryId?: string;
-  toolResultEntryId?: string;
-  order: number;
+  turnIndex: number;
+}
+
+interface ToolLensAuditEntryV1 {
+  schema: "tool-lens.analysis.v1";
+  toolCallId: string;         // correlation key
+  turnIndex: number;
+  toolName: string;           // as called
+  canonicalToolName?: string; // alias-normalized (shell_command -> bash, etc.)
+  phase: "intent" | "outcome";
   startedAt: number;
-  endedAt?: number;
-  input: RedactedPayload;
-  output?: RedactedPayload;
-  intent?: ToolLensIntent;
-  outcome?: ToolLensOutcome;
+  completedAt: number;
+  // Tiered capture (decided): intent/outcome text + redacted input snapshot +
+  // redacted output summary by default; tool details only for edit/apply_patch.
+  input?: RedactedPayload;          // redacted/truncated args snapshot
+  outputSummary?: RedactedPayload;  // redacted/truncated visible content summary
+  toolDetails?: RedactedPayload;    // only for edit/apply_patch: diff stats, file lists, counts
+  intent?: ToolLensIntent;          // present on phase "intent"
+  outcome?: ToolLensOutcome;        // present on phase "outcome"
   status: "observed" | "intent_streaming" | "executing" | "outcome_streaming" | "done" | "error";
   errors?: string[];
 }
 ```
 
-Notes:
+- `toolCallId` is the only correlation key required (decided); no assistant/toolResult entry-id scanning in v1.
+- A tolerant `normalize()` (same pattern as `render`/`answer`) ignores unknown fields and renders missing fields as `unknown`.
+- Reconstruction walks only the current branch (`getBranch`); off-branch tool calls show no lens (decided).
 
-- Primary persisted artifact is one context-stripped `custom_message` per tool call, updated/replaced as intent then outcome land, keyed by `toolCallId` in `details`.
-- The `context` hook MUST drop every `tool-lens` custom message from the copy sent to the LLM, so analysis never pollutes model context.
-- Optionally mirror final state into a hidden `custom` entry for audit; reconstruct latest by `toolCallId` on `session_start`.
-- Do not store raw secrets or unredacted long outputs.
-- Do not mutate existing tool result `details`.
+Rules:
+
+- The `context` hook MUST drop every `tool-lens` anchor message from the copy sent to the LLM.
+- All analysis text stays in `details`/audit entries, never in `content`.
+- Never store raw secrets or unredacted long outputs.
+- Never mutate existing tool result `details`; lens data is separate.
+- Retention is session-embedded only in v1; no separate cross-session disk log (a disk log is a distinct future consent from send-to-analyzer).
+
+### Open decision: anchor timing
+
+One genuine tradeoff remains. Append the anchor at:
+
+- `tool_execution_start` (recommended): anchor lands right under the tool row, correct position even under parallel/fast tools. Risk: if a tool never resolves, a near-empty anchor is left behind (renders as a one-line stub).
+- `tool_result`: anchor only exists for completed calls, but position can drift after sibling output in parallel mode.
+
+Recommendation: `tool_execution_start`, accept the rare orphan stub.
 
 ### Desired Pi core support
 
@@ -358,11 +398,23 @@ Suggested schema:
     "includePriorToolResults": true,
     "includeAssistantTextAroundToolCall": true
   },
+  "capture": {
+    "input": "redacted-snapshot",
+    "output": "redacted-summary",
+    "toolDetails": "edit-and-apply_patch-only"
+  },
   "redaction": {
     "enabled": true,
     "redactEnvLikeValues": true,
     "redactPaths": false,
+    "onFailure": "skip",
     "extraPatterns": []
+  },
+  "persistence": {
+    "anchorTiming": "tool_execution_start",
+    "auditEntries": "per-phase",
+    "reconstructFrom": "current-branch",
+    "crossSessionLog": false
   },
   "limits": {
     "maxInputChars": 4000,
@@ -402,6 +454,11 @@ Config notes:
 - `rendering.stripFromContext`: must stay true so analysis is removed in the `context` hook before the LLM call.
 - `rendering.defaultVisibility` / `visibilityCycle` / `toggleShortcut`: drive the global show/hide toggle (`full | compact | hidden`).
 - `rendering.wrapTools`: deferred Option C list of wrappable tool names; ignored in v1.
+- `capture.*`: per-tier persistence; `toolDetails` captured only for `edit`/`apply_patch` by default.
+- `redaction.onFailure`: `skip` renders a "redaction failed, not analyzed" card and skips the model call.
+- `persistence.anchorTiming`: `tool_execution_start` (default) positions cards correctly under each tool row.
+- `persistence.auditEntries`: `per-phase` appends intent then outcome `custom` entries; latest phase wins on reload.
+- `persistence.crossSessionLog`: must stay false in v1; a disk log is a separate future consent.
 - A generic same-row toggle for all tools needs the core annotation/view-mode API (separate issue).
 - Analyzer model should receive no tools in its context.
 
@@ -429,18 +486,18 @@ Create `pi/extensions/tool-lens/`:
 
 Use Pi extension events documented in `docs/extensions.md`:
 
-- `session_start`: load config, register `registerMessageRenderer("tool-lens", ...)`, register the visibility shortcut and `/tool-lens` command, restore visibility state, initialize footer status.
-- `context`: remove every `tool-lens` custom message from the deep-copied message list so analysis never reaches the LLM. This is mandatory.
+- `session_start`: load config, register `registerMessageRenderer("tool-lens", ...)`, register the visibility shortcut and `/tool-lens` command, restore visibility state, initialize footer status, and rebuild the store by replaying `tool-lens` `custom` audit entries on the current branch (`getBranch`); latest phase per `toolCallId` wins.
+- `context`: remove every `tool-lens` anchor message from the deep-copied message list so analysis never reaches the LLM. This is mandatory.
 - `before_agent_start`: capture current user prompt and optional context metadata summary, not full system prompt by default.
 - `turn_start`: initialize per-turn state.
-- `tool_execution_start` (preferred) or `tool_call`: create the `toolCallId` record (tool name, args, source order, timestamp); append the inline lens card via `sendMessage({ customType: "tool-lens", display: true, details })` in `observed` state.
-  - If hooking `tool_call`, return immediately; never await the analyzer model there because `tool_call` can block execution.
-  - Kick off intent analysis with `void queueIntentAnalysis(...)`.
+- `tool_execution_start` (anchor timing default): seed the store record; append the anchor `custom_message` (near-empty `content`, `details = {schema, toolCallId, turnIndex}`) so the card renders under the tool row; kick off intent analysis with `void queueIntentAnalysis(...)`.
+  - If instead hooking `tool_call`, return immediately; never await the analyzer model there because `tool_call` can block execution.
+  - On intent completion: append a hidden `custom` audit entry `{phase: "intent"}`, update store, force repaint.
 - `tool_execution_update`: update store partial state only.
-- `tool_result`: capture final content/details/isError and kick off outcome analysis; return `undefined`, never patch result.
+- `tool_result`: capture redacted input/output/details and kick off outcome analysis; on completion append a hidden `custom` audit entry `{phase: "outcome"}`, update store, force repaint; return `undefined`, never patch result.
 - `tool_execution_end`: finalize duration/error metadata.
 - On any analysis delta/finish: update the store and call `ctx.ui.setStatus("tool-lens", ...)` to force a repaint of the card.
-- `turn_end`/`agent_end`: optionally write audit entries / digest if enabled.
+- `turn_end`/`agent_end`: optional digest only if enabled (per-call audit entries are already written per phase).
 - `session_shutdown`: abort pending analyzer streams and clear footer status.
 
 ### State machine
@@ -580,7 +637,12 @@ Expected:
 - [ ] Inline lens cards render per tool call, update as analysis streams, and are stripped from LLM context via the `context` hook.
 - [ ] A global visibility toggle (shortcut + `/tool-lens`) cycles full/compact/hidden for all cards without mutating the session, and persists the choice for the session.
 - [ ] Per-card expand/collapse works and reacts to global ctrl+o.
-- [ ] Optional audit entry and optional per-turn digest persist only when enabled.
+- [ ] Anchor + store + per-phase `custom` audit model: cards survive reload/fork by replaying current-branch audit entries; latest phase per `toolCallId` wins.
+- [ ] Treats sessions as append-only: no attempt to edit/replace an existing entry; outcome arrives via a new audit entry, not a rewrite.
+- [ ] All analysis text lives in `details`/audit entries; anchor `content` stays near-empty so nothing leaks even if the context strip is bypassed.
+- [ ] Capture tiers honored: intent/outcome + redacted input + redacted output summary by default; tool `details` only for `edit`/`apply_patch`.
+- [ ] Redaction failure skips the model call and renders a "not analyzed" card.
+- [ ] Retention is session-embedded only; no cross-session disk log in v1.
 - [ ] Configurable model selection supports explicit provider/model and cheap model-profile roles (`tool-lens`, `smol`).
 - [ ] Default context is recent visible conversation; system prompt/context files/tool descriptions are opt-in.
 - [ ] Inputs/outputs are redacted and truncated before analyzer model calls and before persistence.
