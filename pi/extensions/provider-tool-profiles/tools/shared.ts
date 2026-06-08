@@ -3,33 +3,19 @@ import { dirname, isAbsolute, relative } from "node:path";
 import { spawn } from "node:child_process";
 import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "./pi-compat";
 import { requireResolvedPath, resolveClaudePath } from "./path";
+import { textResult, truncateTextHead, truncateTextTail, type TextResultDetails, type ToolTextResult } from "./results";
+
+export { textResult, type TextResultDetails, type ToolTextResult } from "./results";
 
 export const MAX_BYTES = 50 * 1024;
 export const MAX_LINES = 2000;
 const MAX_TIMEOUT_MS = 600_000;
-
-export interface TextResultDetails {
-	path?: string;
-	truncated?: boolean;
-	lineCount?: number;
-	bytes?: number;
-	[key: string]: unknown;
-}
-
-export interface ToolTextResult {
-	content: Array<{ type: "text"; text: string }>;
-	details?: TextResultDetails;
-}
 
 export interface ExactEdit {
 	old_string: string;
 	new_string: string;
 	replace_all?: boolean;
 	expected_replacements?: number;
-}
-
-export function textResult(text: string, details: TextResultDetails = {}): ToolTextResult {
-	return { content: [{ type: "text", text }], details };
 }
 
 export function resolveToolPath(cwd: string, input: string): string {
@@ -46,34 +32,22 @@ export async function withPathQueue<T>(path: string, fn: () => Promise<T>): Prom
 }
 
 export function truncateHead(text: string, maxLines = MAX_LINES, maxBytes = MAX_BYTES): { text: string; truncated: boolean; lineCount: number; bytes: number } {
-	const lines = text.split("\n");
-	let selected = lines.slice(0, maxLines).join("\n");
-	let truncated = lines.length > maxLines;
-	if (Buffer.byteLength(selected, "utf8") > maxBytes) {
-		selected = selected.slice(0, maxBytes);
-		truncated = true;
-	}
+	const applied = truncateTextHead(text, { maxLines, maxBytes });
 	return {
-		text: truncated ? `${selected}\n\n[Output truncated to ${maxLines} lines or ${maxBytes} bytes]` : selected,
-		truncated,
-		lineCount: lines.length,
-		bytes: Buffer.byteLength(text, "utf8"),
+		text: applied.text,
+		truncated: applied.truncated,
+		lineCount: applied.truncation.totalLines,
+		bytes: applied.truncation.totalBytes,
 	};
 }
 
 export function truncateTail(text: string, maxLines = MAX_LINES, maxBytes = MAX_BYTES): { text: string; truncated: boolean; lineCount: number; bytes: number } {
-	const lines = text.split("\n");
-	let selected = lines.slice(-maxLines).join("\n");
-	let truncated = lines.length > maxLines;
-	if (Buffer.byteLength(selected, "utf8") > maxBytes) {
-		selected = selected.slice(Math.max(0, selected.length - maxBytes));
-		truncated = true;
-	}
+	const applied = truncateTextTail(text, { maxLines, maxBytes });
 	return {
-		text: truncated ? `[Output truncated to last ${maxLines} lines or ${maxBytes} bytes]\n\n${selected}` : selected,
-		truncated,
-		lineCount: lines.length,
-		bytes: Buffer.byteLength(text, "utf8"),
+		text: applied.text,
+		truncated: applied.truncated,
+		lineCount: applied.truncation.totalLines,
+		bytes: applied.truncation.totalBytes,
 	};
 }
 
