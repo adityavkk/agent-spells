@@ -54,7 +54,7 @@ Pi's current public extension API supports live widgets/status updates and persi
 
 So there are two implementation tracks:
 
-1. Extension-only v1: live sidecar widget/status + versioned `appendEntry()` metadata keyed by `toolCallId` + optional visible final custom message.
+1. Extension-only v1: inline context-stripped `custom_message` card per tool call (Option B), optional Option C wrapper for built-ins/provider-profile tools, optional live ticker/digest.
 2. Pi core-enhanced v1: add a first-class tool annotation/streaming custom-entry API so `tool-lens` can render inside each tool block and persist typed metadata alongside tool calls without mutating tool results.
 
 If the requirement is literally "toggle this exact tool block between raw and analysis", we likely need the Pi core-enhanced track.
@@ -74,168 +74,137 @@ If the requirement is literally "toggle this exact tool block between raw and an
 - Do not require BAML for v1 unless structured extraction becomes necessary.
 - Do not replace built-in/provider-profile tools just to change rendering.
 
+## Rendering constraints (verified against Pi source)
+
+Checked `modes/interactive/components/tool-execution.js`, `interactive-mode.js`, `core/session-manager.js`, `core/extensions/types.d.ts`:
+
+- A tool row is drawn by exactly one renderer: `toolDefinition.renderResult ?? builtInToolDefinition.renderResult`. The only way to draw inside a tool row is to be that tool's `renderResult`.
+- `getAllTools()` returns `ToolInfo` (`name|description|parameters|promptGuidelines` + sourceInfo) only. It does not expose other tools' `execute`/`renderResult`, so arbitrary third-party tools cannot be generically wrapped.
+- A tool row has one view toggle only: `expanded` (ctrl+o/ctrl+e). No second view-mode axis exists today.
+- `custom_message` entries with `display:true` render inline via the registered message renderer, but they also enter LLM context unless removed in the `context` hook.
+- `custom` entries (`appendEntry`) never enter context and never render in the transcript (tree-selector only).
+- Widgets are global single-slot panels docked above/below the editor; not per-tool, not in scrollback.
+
+Implication: "stack on another tool's renderer without overriding it" is not directly possible for arbitrary tools. The viable Pi-compatible paths are below.
+
 ## UX options
 
 ### Option A: live sidecar widget below editor
 
-Use `ctx.ui.setWidget("tool-lens", ..., { placement: "belowEditor" })`.
+`ctx.ui.setWidget("tool-lens", ..., { placement: "belowEditor" })`.
+
+Pros: extension-only, streams live, no renderer conflict.
+Cons: fixed panel near editor, not in scrollback, shows only current/last N, analysis detached from the call. Weak as a primary surface.
+
+Best for: optional live ticker, not default.
+
+### Option B: inline adjacent card per tool, stripped from context (recommended default)
+
+After each tool result, append a `custom_message` rendered by `registerMessageRenderer("tool-lens", ...)`, and drop those entries in the `context` hook so the LLM never sees them.
 
 Pros:
 
-- Extension-only with current Pi API.
-- Streams while the main agent continues.
-- Does not compete with raw tool rendering.
-- Good for quick v1.
+- Renders inline directly under the tool row.
+- Own look; own expand/collapse state.
+- Persists in session (scrollback, reload, fork).
+- Context-safe: `context` hook filters them before the model call.
+- No tool re-registration, so no conflict with `provider-tool-profiles`; works for every tool.
 
 Cons:
 
-- Analysis is separated from the tool block.
-- Less useful when transcript is scrolled back later unless persisted separately.
-- Limited screen real estate.
+- It is an adjacent card, not the same row, so there is no true "hide raw, show only analysis" swap.
+- Adds one transcript block per analyzed tool call (mitigate with collapsed-by-default and density config).
 
-Best for: first implementation, low-risk proof of value.
+Toggle: expand/collapse the lens card; optional `/tool-lens hide|show` flips a module flag and re-renders.
 
-### Option B: right sidebar / docked lens pane
+### Option C: renderResult wrapper for wrappable tools (opt-in, true raw/lens toggle)
 
-A persistent pane showing the active/recent tool calls with intent/outcome cards.
+For built-ins (reconstructable via `createReadTool`/`createBashTool`/`createEditTool`/`createWriteTool`) and the in-repo `provider-tool-profiles` tools, register a wrapper that delegates `execute` to the original and composes `renderResult`.
 
 Pros:
 
-- Strong operator-console feel.
-- Keeps transcript raw while providing continuous analysis.
-- Good for parallel calls and long-running sessions.
+- True raw/lens in the same tool row.
+- Reuses `expanded`, or capture `context.invalidate` per `toolCallId` and add `/tool-lens toggle` for a dedicated mode flip.
 
-Cons:
+Cons / caveat:
 
-- Pi extension API does not appear to expose a stable docked sidebar layout today.
-- Likely needs core/TUI layout support, or an overlay approximation.
-- More design work for terminal widths.
+- Co-owning a tool name means last registration wins; tool-lens must import and wrap the profile/built-in tool and coordinate load order. Fragile and does not generalize to unknown third-party tools.
 
-Best for: follow-up once core layout primitives exist.
+Best for: opt-in enhancement on common tools, not the generic path.
 
-### Option C: per-tool raw/analysis toggle
+### Option D: per-turn digest message
 
-Each tool block can render either raw call/result or `tool-lens` analysis, similar spirit to `ctrl+o` expansion but with a second mode.
+At `turn_end`/`agent_end`, persist one `tool-lens` summary (also context-stripped). Low noise, good archive, but not per-tool streaming.
 
-Possible states:
+## Async update mechanism
 
-- collapsed raw summary
-- expanded raw input/output
-- collapsed lens summary
-- expanded lens intent/outcome
+Both B and C update after the row already exists:
 
-Pros:
+- `tool_call`/`tool_execution_start`: start intent analysis; never await in `tool_call` (it can block execution).
+- `tool_result`: start outcome analysis; return `undefined`, never patch the result.
+- On stream progress/finish: update the `toolCallId`-keyed store, then trigger a redraw.
+  - Option B: re-render the custom message component.
+  - Option C: call the captured `context.invalidate()` for that `toolCallId` (same pattern edit tools use to fill in diffs).
 
-- Best mental model: analysis lives exactly where the tool call lives.
-- Perfect for scrollback: replay a session and inspect each tool's why/result.
-- Avoids separate sidecar state.
-
-Cons:
-
-- Needs renderer integration with existing built-in and provider-profile tool renderers.
-- Tool-lens analysis may arrive after the tool result is already persisted/rendered.
-- Current extension API can override tool renderers only by re-registering tools, which conflicts with other tool-profile extensions and is too invasive.
-
-Best for: target UX, but should be backed by a Pi tool-annotation renderer API.
-
-### Option D: inline transcript analysis message after each tool
-
-Persist a custom message after each tool result, rendered compactly and collapsible.
-
-Pros:
-
-- Mostly compatible with current session format via `custom_message`.
-- Easy to search and persist.
-- Avoids mutating tool results.
-
-Cons:
-
-- Adds transcript noise.
-- Custom messages participate in LLM context, unless Pi adds a display-only/custom-entry render path.
-- Harder to pair visually with the exact tool block.
-
-Best for: optional/debug mode, not default.
-
-### Option E: final per-turn analysis digest
-
-At `turn_end`/`agent_end`, persist one `tool-lens` summary message for all tool calls in that turn.
-
-Pros:
-
-- Low transcript noise.
-- Easy to implement with current custom message renderer.
-- Useful post-hoc summary.
-
-Cons:
-
-- Does not satisfy per-tool streaming UX by itself.
-- Less precise than per-tool metadata.
-
-Best for: optional archive/summarize mode.
+`renderResult` is synchronous, so analysis is read from the store on each render pass; never block rendering on the model.
 
 ## Recommended UX path
 
-Implement in layers:
-
-1. Extension-only v1:
-   - live sidecar widget below editor
-   - compact status counts in footer
-   - versioned hidden `custom` entries keyed by `toolCallId`
-   - optional final per-turn visible custom message
-2. Core API follow-up:
-   - first-class tool annotations keyed by `toolCallId`
-   - renderer context can read annotations
-   - tool blocks gain a raw/lens toggle
-3. Later:
-   - docked sidebar if/when Pi TUI exposes stable layout primitives
-
-This keeps v1 compatible with Pi evolution while leaving a clear path to the desired raw/analysis toggle.
+1. Default: Option B inline adjacent card, context-stripped, collapsed by default.
+2. Opt-in: Option C wrapper for built-ins + provider-tool-profiles to get a real raw/lens toggle on common tools.
+3. Optional: Option A live ticker and Option D digest behind config.
+4. Core follow-up for the generic same-row toggle: add a Pi annotation API so `renderResult` context exposes annotations keyed by `toolCallId` plus a raw/lens view mode, removing the need to co-own tool names.
 
 ## UX sketch
 
-Live widget, below editor by default:
+Option B inline adjacent card (default), collapsed then expanded:
 
 ```text
-Tool lens
+● apply_patch  config.ts  +12 -3                      (real tool row, untouched)
 
-[1] shell_command  running  2.1s
-Input: bun test pi/extensions/render/config.test.ts
-Intent: Verify the render config parser after changing merge behavior.
-Expected: Tests pass, or failures point at normalization/merge regressions.
-Watch: Unit-only; does not verify live model selection.
-
-Outcome: Passed. Confirms config behavior for the edited cases. No runtime smoke yet.
-
-[2] apply_patch  done
-Input: pi/extensions/render/config.ts
-Intent: Update config defaults while preserving project-over-global precedence.
-Outcome: Patch applied cleanly. Likely changed only normalization/merge code.
+  lens  apply_patch                                    (adjacent custom card, ctrl+o to expand)
+  intent: update defaults, keep project-over-global precedence
+  outcome: applied; only normalize/merge changed; matched intent
 ```
-
-Target per-tool toggle:
 
 ```text
-shell_command  done  3.4s  [raw] [lens]
+● bash  bun test render/config.test.ts  done           (real tool row)
 
-Lens
-Intent: Verify tests after config changes.
-Expected: pass or identify changed failing assertions.
-Outcome: Passed. No follow-up needed beyond broader smoke if desired.
+  lens  bash                                            (expanded)
+  intent: verify config parser after merge change
+  why now: parser/merge just edited in this session
+  expected: pass, or failures pinpoint normalize/merge regressions
+  outcome: passed; confirms edited cases; no runtime smoke yet
+  implication: optional broader smoke before shipping
 ```
 
-Persisted per-turn message, if enabled:
+Option C same-row toggle (opt-in, wrappable tools only):
+
+```text
+● read  README.md  42 lines                    [▸ raw | lens]
+  lens: confirm repo layout before editing; expecting extension list
+```
+
+Option A live ticker (optional, belowEditor widget):
+
+```text
+tool-lens
+[2] apply_patch  running 0.4s   intent: keep project>global precedence
+```
+
+Option D per-turn digest message (optional, context-stripped):
 
 ```text
 Tool lens: 4 calls, 4 analyzed, 1 partial match, 0 errors
 ```
 
-Expanded message shows per-tool intent/outcome details with redacted inputs and output summaries.
+All inputs/outputs shown are redacted and truncated; cards are collapsed by default.
 
 ## Persistence model
 
 ### Current Pi-compatible v1
 
-Use versioned `custom` entries via `pi.appendEntry()` because they do not participate in LLM context.
+Default (Option B): the inline card is a context-stripped `custom_message` carrying typed `details`; the `context` hook removes these from the LLM message list. Optionally also write a hidden `custom` entry via `pi.appendEntry()` for a non-context audit trail. Both use the same versioned payload shape.
 
 Example shape:
 
@@ -263,10 +232,11 @@ interface ToolLensEntryV1 {
 
 Notes:
 
-- Store one final custom entry per tool call, or append phase entries (`intent`, `outcome`) and reconstruct latest by `toolCallId`.
+- Primary persisted artifact is one context-stripped `custom_message` per tool call, updated/replaced as intent then outcome land, keyed by `toolCallId` in `details`.
+- The `context` hook MUST drop every `tool-lens` custom message from the copy sent to the LLM, so analysis never pollutes model context.
+- Optionally mirror final state into a hidden `custom` entry for audit; reconstruct latest by `toolCallId` on `session_start`.
 - Do not store raw secrets or unredacted long outputs.
-- Do not mutate existing tool result `details` in v1.
-- Optional visible digest uses `custom_message`, but hidden metadata uses `custom`.
+- Do not mutate existing tool result `details`.
 
 ### Desired Pi core support
 
@@ -313,7 +283,7 @@ Config files:
 Project overrides global. Env escape hatches:
 
 - `PI_TOOL_LENS=0` disables
-- `PI_TOOL_LENS_RENDER=widget|toggle|digest|off` overrides render surface where supported
+- `PI_TOOL_LENS_RENDER=inline-card|ticker|digest|off` overrides render surface where supported
 
 Suggested schema:
 
@@ -373,14 +343,15 @@ Suggested schema:
     "maxPersistedCalls": 50
   },
   "rendering": {
-    "surface": "widget",
-    "placement": "belowEditor",
-    "toolToggle": false,
+    "surface": "inline-card",
+    "stripFromContext": true,
+    "wrapTools": [],
+    "liveTicker": false,
+    "tickerPlacement": "belowEditor",
     "showRawInputs": "redacted-collapsed",
     "showRawOutputs": "summary-only",
-    "groupParallelTools": false,
     "order": "assistant-source",
-    "persistMetadata": true,
+    "persistAuditEntry": false,
     "persistDigestMessage": false,
     "expandedByDefault": false
   },
@@ -396,7 +367,10 @@ Config notes:
 
 - `mode`: `intent-only | outcome-only | intent-and-outcome`.
 - `tools.allowList`/`tools.blockList`: match tool names after alias normalization; blocklist wins.
-- `rendering.surface`: v1 supports `widget | status | digest | off`; `toggle` needs core renderer/annotation support.
+- `rendering.surface`: `inline-card` (Option B, default) | `ticker` (Option A) | `digest` (Option D) | `off`.
+- `rendering.stripFromContext`: must stay true so analysis is removed in the `context` hook before the LLM call.
+- `rendering.wrapTools`: opt-in list (Option C) of wrappable tool names, e.g. `["read","bash","edit","write"]` or provider-profile names; same-row raw/lens toggle for those only.
+- A generic same-row toggle for all tools needs the core annotation/view-mode API (separate issue).
 - Analyzer model should receive no tools in its context.
 
 ## Architecture plan
@@ -490,19 +464,31 @@ Prompt constraints:
 
 ### Rendering plan
 
-V1 extension-only rendering:
+Default (Option B), extension-only and context-safe:
 
-- Use `ctx.ui.setWidget("tool-lens", ...)` for live streaming.
-- Use `ctx.ui.setStatus("tool-lens", ...)` for compact progress/counts.
-- Use `pi.appendEntry("tool-lens", data)` for hidden typed metadata.
-- Use `pi.registerMessageRenderer("tool-lens-digest", ...)` for optional persisted digest messages.
-- Use `pi.sendMessage({ customType: "tool-lens-digest", display: true, details })` only if digest persistence is enabled.
+- `pi.sendMessage({ customType: "tool-lens", display: true, details })` to append an inline card after each analyzed tool result.
+- `pi.registerMessageRenderer("tool-lens", ...)` for collapsed/expanded card rendering.
+- `context` hook removes all `tool-lens` custom messages from the copy sent to the LLM.
+- `pi.appendEntry("tool-lens", data)` only if a hidden, non-context audit record is also wanted; otherwise the custom message detail carries state.
+- On streamed analysis updates, re-render the card component for that `toolCallId`.
 
-Core-enhanced target rendering:
+Opt-in (Option C), same-row toggle on wrappable tools:
 
-- Tool result component gets a raw/lens view toggle.
-- Tool render context exposes annotations for that tool call.
-- Tool-lens streams updates into the annotation and finalizes it on outcome.
+- Reconstruct built-ins via `createReadTool`/`createBashTool`/`createEditTool`/`createWriteTool`, or import in-repo `provider-tool-profiles` tools.
+- Register a wrapper that delegates `execute` to the original and composes `renderResult` raw/lens.
+- Store lens state by `toolCallId`; call captured `context.invalidate()` when analysis lands.
+- Document load-order/ownership coordination with `provider-tool-profiles`.
+
+Optional surfaces:
+
+- Option A live ticker via `ctx.ui.setWidget` / `ctx.ui.setStatus`.
+- Option D digest via a separate context-stripped `tool-lens-digest` custom message.
+
+Core-enhanced target rendering (separate Pi issue):
+
+- Tool render context exposes annotations keyed by `toolCallId`.
+- Tool row gains a raw/lens view mode distinct from expand.
+- tool-lens streams updates into the annotation; no tool-name co-ownership required.
 
 ### Privacy/security
 
@@ -557,7 +543,7 @@ Expected:
 - [ ] Tool allowlist/blocklist and alias normalization work; blocklist wins.
 - [ ] Intent analysis starts on tool call start without awaiting model completion in blocking hooks.
 - [ ] Outcome analysis starts after final tool result.
-- [ ] Live widget/status updates stream analyzer text while the main agent loop continues.
+- [ ] Inline lens cards render per tool call, update as analysis streams, and are stripped from LLM context.
 - [ ] Hidden versioned metadata persists per tool call via Pi-compatible custom entries.
 - [ ] Optional per-turn digest can be persisted as a custom message with custom renderer.
 - [ ] Configurable model selection supports explicit provider/model and cheap model-profile roles (`tool-lens`, `smol`).
