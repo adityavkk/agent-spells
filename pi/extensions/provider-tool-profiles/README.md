@@ -84,7 +84,7 @@ Schemas/descriptions are vendored from Letta Code for source-of-truth comparison
 - `vendor/letta/schemas/*.json`
 - `vendor/letta/descriptions/*.md`
 
-Runtime implementation is local Pi wrapper code, not Letta runtime internals.
+Runtime implementation is local Pi wrapper code, not Letta runtime internals. Vendored schemas do not imply tool activation or broader Pi capabilities.
 
 The vendored Codex snapshot includes both the currently active compatibility surface
 (`shell_command`, `apply_patch`, `update_plan`, `view_image`) and newer upstream
@@ -124,12 +124,25 @@ bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode lates
 
 Reports are written to `.tmp/pi-compat/`. CI runs locked compatibility on PRs and latest canary on schedule/dispatch.
 
+## Runtime behavior notes
+
+- Provider paths are resolved by explicit local policies in `tools/path.ts`.
+  - Claude keeps broad existing path behavior.
+  - Gemini file/search/list/shell directory inputs are cwd-contained and symlink-aware.
+  - Codex `apply_patch` paths are relative-only and preflighted before mutation.
+- Provider reads/writes/edits route through local adapters with session-local read-history audit details.
+- Search/list behavior routes through dedicated adapters.
+  - Gemini `.geminiignore` supports anchored rules, directory-only rules, escaped leading `#` / `!`, ordered negations, and scoped nested ignore files.
+  - Gemini search/glob discovers nested `.geminiignore` files under the searched directory with a bounded traversal; `rg` still handles native `.gitignore` behavior for search/glob.
+- Codex `update_plan` persists through Pi custom session entries with custom type `provider-tool-profiles.codex.plan.v1`.
+- Codex `view_image` uses the shared provider image-read adapter.
+
 ## Known gaps
 
-- Claude `Bash.run_in_background` returns an unsupported message in v1.
-- Latest upstream Codex defaults use `exec_command` and `write_stdin`; this extension still activates `shell_command` until session semantics are designed.
-- Codex `apply_patch` supports add/update/delete/move with context hunks, not every exotic patch directive. Paths are relative-only and contained within `cwd`; the patch is preflighted in memory before any disk write, with best-effort rollback on commit failure (not crash-safe atomicity).
-- `update_plan` stores plan state in-memory for the extension instance only.
+- Claude `Bash.run_in_background` returns an unsupported message.
+- Latest upstream Codex defaults use `exec_command` and `write_stdin`; this extension still activates `shell_command` until session/stdin/polling semantics are designed.
+- Codex `apply_patch` supports add/update/delete/move with context hunks, not every exotic patch directive. Rollback on commit failure is best effort, not crash-safe atomicity.
+- Codex shell escalation/approval fields are denied/unsupported until Pi exposes compatible approval semantics.
 - `read_many_files`, `glob`, and grep wrappers rely on `rg`.
 - No Letta memory/task/skill/approval system included.
 
