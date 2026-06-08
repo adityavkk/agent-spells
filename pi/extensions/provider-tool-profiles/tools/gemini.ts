@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "./pi-compat";
+import { editProviderTextFile } from "./edit-adapter";
 import { GEMINI_POLICY } from "./policies";
 import { readProviderFile } from "./read-adapter";
 import { writeProviderTextFile } from "./write-adapter";
@@ -14,7 +15,7 @@ import {
 	writeFileParams,
 } from "./schemas";
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
-import { applyExactEdits, globFiles, grepFiles, listDirectory, runShell, textResult } from "./shared";
+import { globFiles, grepFiles, listDirectory, runShell, textResult } from "./shared";
 import { requireResolvedPath, resolveExistingDirectoryUnderCwd, resolveGeminiPath } from "./path";
 
 async function geminiPath(cwd: string, rawPath: string, label: string): Promise<string> {
@@ -196,8 +197,13 @@ export function registerGeminiTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		description: "Replace exact text in a file. expected_replacements defaults to 1.",
 		promptSnippet: "Replace exact text in a file",
 		parameters: replaceParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return applyExactEdits(await geminiPath(ctx.cwd, params.file_path, "file_path"), [{ ...params, expected_replacements: params.expected_replacements ?? 1 }]);
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return editProviderTextFile({
+				path: await geminiPath(ctx.cwd, params.file_path, "file_path"),
+				edits: [{ ...params, expected_replacements: params.expected_replacements ?? 1 }],
+				readHistory: runtime.readHistory,
+				signal,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderEditCall("replace", args?.file_path, args, theme, context);

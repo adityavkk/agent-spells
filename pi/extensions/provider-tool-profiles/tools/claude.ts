@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "./pi-compat";
+import { editProviderTextFile } from "./edit-adapter";
 import { readProviderFile } from "./read-adapter";
 import { writeProviderTextFile } from "./write-adapter";
 import { bashParams, editParams, globParams, grepParams, lsParams, multiEditParams, readParams, writeParams } from "./schemas";
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
-import { applyExactEdits, globFiles, grepFiles, listDirectory, resolveToolPath, runShell } from "./shared";
+import { globFiles, grepFiles, listDirectory, resolveToolPath, runShell } from "./shared";
 import { createProviderToolRuntime, type ProviderToolRuntime } from "./runtime";
 
 export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRuntime = createProviderToolRuntime()): void {
@@ -59,8 +60,13 @@ export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		description: "Replace exact text in a file. Without replace_all, old_string must match exactly once.",
 		promptSnippet: "Replace exact text in a file",
 		parameters: editParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return applyExactEdits(resolveToolPath(ctx.cwd, params.file_path), [params]);
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return editProviderTextFile({
+				path: resolveToolPath(ctx.cwd, params.file_path),
+				edits: [params],
+				readHistory: runtime.readHistory,
+				signal,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderEditCall("Edit", args?.file_path, args, theme, context);
@@ -76,8 +82,13 @@ export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		description: "Apply multiple exact replacements to one file sequentially and atomically.",
 		promptSnippet: "Apply multiple exact edits to one file",
 		parameters: multiEditParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return applyExactEdits(resolveToolPath(ctx.cwd, params.file_path), params.edits);
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return editProviderTextFile({
+				path: resolveToolPath(ctx.cwd, params.file_path),
+				edits: params.edits,
+				readHistory: runtime.readHistory,
+				signal,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderEditCall("MultiEdit", args?.file_path, args, theme, context);

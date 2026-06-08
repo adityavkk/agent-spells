@@ -121,6 +121,18 @@ describe("providerToolProfilesExtension", () => {
 		expect(write.details).toMatchObject({ overwrote: true, readHistory: "stale" });
 	});
 
+	it("audits provider edits with read history", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-edit-read-history-"));
+		writeFileSync(join(root, "note.txt"), "alpha\nbeta\n");
+		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
+		h.ctx.cwd = root;
+
+		await h.tools.get("Read").execute("1", { file_path: "note.txt" }, undefined, () => {}, h.ctx);
+		const edit = await h.tools.get("Edit").execute("2", { file_path: "note.txt", old_string: "beta", new_string: "BETA" }, undefined, () => {}, h.ctx);
+
+		expect(edit.details).toMatchObject({ replacements: [1], readHistory: "fresh" });
+	});
+
 	it("keeps Gemini read_file plain and 0-based", async () => {
 		const root = mkdtempSync(join(tmpdir(), "provider-gemini-read-"));
 		writeFileSync(join(root, "note.txt"), "alpha\nbeta\ngamma\n");
