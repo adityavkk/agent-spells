@@ -96,6 +96,80 @@ upstream snapshot != local implementation != active capability
 
 Vendoring should be cheap and frequent. Activation should be deliberate and capability-aware.
 
+## Complementary Pi compatibility check
+
+Letta drift is only one side of the hybrid contract. We also need a Pi compatibility workflow so provider-tool-profiles keeps using Pi's public runtime APIs correctly while Pi evolves.
+
+Two upstream axes must stay separate:
+
+```text
+Letta compatibility = model-facing schemas/descriptions/default toolsets
+Pi compatibility = runtime primitives, public exports, tool result shapes, TUI contracts
+```
+
+A Letta sync is not safe to activate until Pi compatibility is green for the affected capability. Example: Letta may move Codex defaults to `exec_command` + `write_stdin`, but Pi compatibility remains blocked until Pi has explicit process-session, stdin, polling, timeout, abort, and cleanup semantics for that capability.
+
+### Proposed GitHub workflow: `pi-compat`
+
+Add a sibling workflow to `.github/workflows/letta-drift.yml`, for example `.github/workflows/pi-compat.yml`.
+
+Triggers:
+
+- `pull_request` touching `pi/extensions/provider-tool-profiles/**`, `package.json`, `bun.lock`, or the workflow itself.
+- `workflow_dispatch` with optional `pi_ref` / `pi_version` input.
+- Weekly schedule, offset from Letta drift.
+
+Recommended jobs:
+
+1. **Locked Pi check, blocking on PRs**
+   - `bun install --frozen-lockfile`
+   - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts`
+   - static import check: provider-tool-profiles must not import from Pi `dist/**`, `core/tools/**`, or other private paths.
+   - once added, run `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked`.
+2. **Latest Pi canary, issue-only on schedule**
+   - install the latest published Pi package in a temp directory, without mutating this repo's lockfile.
+   - assert required public exports exist:
+     - `withFileMutationQueue`
+     - `truncateHead`, `truncateTail`, `truncateLine`, `formatSize`
+     - `createLocalBashOperations`
+     - `createReadToolDefinition`, `createWriteToolDefinition`, `createBashToolDefinition`, `createLsToolDefinition`, `createGrepToolDefinition`, `createFindToolDefinition`
+   - create native tool definitions against a temp cwd and run minimal smoke calls where safe.
+   - write `.tmp/pi-compat/summary.md` and `.tmp/pi-compat/recommended-actions.md`.
+   - on scheduled failure, open/update one issue: `provider-tool-profiles: Pi compatibility drift` with label `area:provider-tool-profiles,pi-compat,needs-design`.
+
+PR behavior:
+
+- Fail PRs for locked-package test failures, private Pi imports, schema export breakage, or TUI renderer width/control-sequence regressions.
+- Do not fail ordinary PRs solely because latest Pi changed after the repo lockfile. Scheduled canary should open an issue instead.
+
+### Proposed script: `check-pi-compat.ts`
+
+Output files should mirror the Letta drift script:
+
+- `.tmp/pi-compat/summary.md`
+- `.tmp/pi-compat/public-api.json`
+- `.tmp/pi-compat/private-imports.txt`
+- `.tmp/pi-compat/native-tool-smoke.json`
+- `.tmp/pi-compat/recommended-actions.md`
+
+The report should answer:
+
+- Are all Pi public exports used by provider-tool-profiles still present?
+- Did any local file import private Pi internals?
+- Do native read/write/bash/list/search tool factories still instantiate?
+- Do result details still have the fields our adapters expect, such as truncation metadata and `fullOutputPath`?
+- Are TUI renderers still width-safe with current Pi TUI utilities?
+- Which provider capability is affected: read, write, edit, bash, glob/find, grep, list, image, plan, patch?
+
+### Compatibility decision rule
+
+For every Letta drift item, ask both questions before activation:
+
+1. Does the Letta/provider contract require a schema or default-toolset change?
+2. Does Pi expose a public runtime primitive that safely implements the required capability?
+
+If yes to 1 and no to 2, vendor only and mark `blocked` in `vendor/letta/tool-manifest.json`.
+
 ## Proposed future architecture
 
 ### 1. Replace hard-coded `FILES` with a tool manifest
@@ -326,7 +400,19 @@ Example config:
 
 This lets us test new wrappers on real models without committing them as defaults.
 
-### 10. Keep local implementations intentionally boring
+### 10. Add a Pi compatibility workflow
+
+Add `.github/workflows/pi-compat.yml` and `scripts/check-pi-compat.ts` after the adapter layer starts importing Pi runtime primitives directly.
+
+The workflow is the Pi-side mirror of Letta drift:
+
+```text
+check locked Pi -> check no private imports -> smoke public Pi factories -> run provider tests -> canary latest Pi -> issue if drift
+```
+
+Keep this workflow capability-aware. A latest-Pi break in `createLocalBashOperations()` should point to bash adapters; a break in `withFileMutationQueue()` should point to mutating file adapters.
+
+### 11. Keep local implementations intentionally boring
 
 Do not port Letta runtime internals wholesale.
 
@@ -340,10 +426,17 @@ For `exec_command`/`write_stdin`, the missing primitive is a session manager. De
 
 ## Recommended commands after streamlining
 
-Daily/weekly check:
+Daily/weekly Letta check:
 
 ```bash
 bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main
+```
+
+Daily/weekly Pi compatibility check once the script exists:
+
+```bash
+bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked
+bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --output .tmp/pi-compat
 ```
 
 Safe vendor refresh:
@@ -373,12 +466,20 @@ bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-t
 - Done: make `update-from-letta.ts` read manifest instead of hard-coded `FILES`.
 - Done: add CI job that fails only on script/test errors, not on upstream drift.
 
-### Phase 2: Safe automation
+### Phase 2: Safe Letta automation
 
 - Add scheduled GitHub Action.
 - Auto-open drift issue.
 - Auto-PR description-only snapshot refreshes.
 - Generate schema export/test coverage from manifest.
+
+### Phase 2b: Pi compatibility automation
+
+- Add `scripts/check-pi-compat.ts`.
+- Add `.github/workflows/pi-compat.yml`.
+- Make PR checks blocking for locked-package compatibility and private-import violations.
+- Make latest-Pi canary scheduled/issue-only.
+- Include Pi compatibility status in any Letta drift issue when a default-toolset change implies new runtime semantics.
 
 ### Phase 3: Capability-aware activation
 
@@ -399,15 +500,17 @@ bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-t
 - Do not auto-change canonical capability mappings.
 - Do not silently replace `shell_command` with `exec_command`.
 - Do not vendor all Letta tools into active profiles just because upstream defaults changed.
+- Do not import private Pi internals to get around missing public primitives.
+- Do not let latest-Pi canary failures block unrelated PRs; open a compatibility issue instead.
 
 ## North star
 
-Letta can move fast. Pi should keep a fresh snapshot, a clear drift report, and a conservative activation policy.
+Letta can move fast. Pi moves too. Provider-tool-profiles should keep a fresh Letta snapshot, a clear Letta drift report, a Pi compatibility report, and a conservative activation policy.
 
 The ideal sync loop is:
 
 ```text
-detect upstream drift -> classify risk -> vendor safe files -> preserve capability boundaries -> open design issue for semantic changes
+detect Letta drift -> classify provider risk -> check Pi compatibility -> vendor safe files -> preserve capability boundaries -> open design issue for semantic/runtime changes
 ```
 
-That keeps us close to Letta without turning provider-tool-profiles into an uncontrolled upstream runtime port.
+That keeps us close to Letta without turning provider-tool-profiles into an uncontrolled upstream runtime port, and keeps us close to Pi without depending on private internals.

@@ -1,374 +1,472 @@
-# Provider Tool Behavior Matrix
+# Provider Tool Behavior Matrix and Implementation Plan
 
 Issue: <https://github.com/adityavkk/agent-spells/issues/9>
 
-## Purpose
+Branch from issue comment: `docs/provider-tool-behavior-matrix-9`
 
-Provider tool profiles expose Claude Code, Codex CLI, and Gemini CLI-style tools inside Pi. The model-facing contract comes from the provider harnesses and the Letta tool templates. The runtime contract comes from Pi.
+## Goal
 
-This matrix records where those contracts align, where they conflict, and how an implementer should upgrade the provider tools without accidentally erasing provider-native behavior.
+Build provider-shaped tool profiles for Claude Code, Codex CLI, and Gemini CLI without losing Pi runtime safety.
 
 Target principle:
 
 > Provider-native LLM contract, Pi-native safety/integration.
 
+This means tool names, schemas, argument names, and model-facing quirks stay provider-native. Execution uses Pi primitives for path safety, cancellation, process handling, truncation, mutation serialization, image handling, and TUI-safe rendering.
+
 ## Research baseline
 
-Compared repo implementation against latest published Pi native tools:
+### Local and issue context
 
-- Pi latest checked: `@earendil-works/pi-coding-agent@0.79.0`
-- Local/global Pi also inspected: `@earendil-works/pi-coding-agent@0.78.1`
-- Native tool files inspected:
-  - `dist/core/tools/read.js`
-  - `dist/core/tools/write.js`
-  - `dist/core/tools/edit.js`
-  - `dist/core/tools/bash.js`
-  - `dist/core/tools/grep.js`
-  - `dist/core/tools/find.js`
-  - `dist/core/tools/ls.js`
-  - `dist/core/tools/truncate.js`
-  - `dist/core/tools/path-utils.js`
-  - `dist/core/tools/file-mutation-queue.js`
-  - `dist/core/tools/render-utils.js`
-- Pi docs consulted:
-  - `docs/extensions.md`
-  - `docs/tui.md`
+- Issue 9 body and comment checked with `gh issue view 9 --comments`.
+- Branch checked out and fast-forwarded: `docs/provider-tool-behavior-matrix-9`.
+- Letta drift checked: `bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main`.
+  - Result: no vendored schema, description, or default-toolset drift.
+- Current implementation inspected:
+  - `pi/extensions/provider-tool-profiles/tools/*.ts`
+  - `pi/extensions/provider-tool-profiles/vendor/letta/*`
+  - current tests under `pi/extensions/provider-tool-profiles/**/*test.ts`
+- Pi public APIs inspected from local `@mariozechner/pi-coding-agent@0.73.1` and global `@earendil-works/pi-coding-agent@0.79.0` docs/dist.
 
-Relevant repo files:
+### Search-tool prior art checked
 
-- `pi/extensions/provider-tool-profiles/tools/claude.ts`
-- `pi/extensions/provider-tool-profiles/tools/codex.ts`
-- `pi/extensions/provider-tool-profiles/tools/gemini.ts`
-- `pi/extensions/provider-tool-profiles/tools/shared.ts`
-- `pi/extensions/provider-tool-profiles/tools/rendering.ts`
-- `pi/extensions/provider-tool-profiles/vendor/letta/*`
+Fetched via the `srch` SDK, not ad hoc browser notes:
 
-## Invariants to preserve
+| Source | URL | Relevant takeaways |
+| --- | --- | --- |
+| Claude Code tools reference | <https://code.claude.com/docs/en/tools-reference> | `Bash` has timeout/output limits and full-output files. `Edit`/`Write` require prior reads. `Glob` is mtime-sorted and capped. `Grep` uses ripgrep modes. `Read` returns line-numbered text and supports images/PDF/notebooks. |
+| Letta Code snapshot | vendored from <https://github.com/letta-ai/letta-code> | Source of current schemas/descriptions. `MultiEdit` is sequential and atomic. `Read` says cat -n output, 2000-line default, images. `Bash` says 120s default, 10m max, 30k char cap. |
+| Gemini CLI tools reference | <https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md> | File tools live under root/workspace safety. `grep_search` has legacy alias `search_file_content`. Official docs now mention argument-key drift versus Letta vendored schemas. |
+| Gemini file tools | <https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/file-system.md> | `read_file` is 0-based and supports text/images/audio/PDF. `glob` sorts newest first and respects ignore settings. `replace` is exact literal replacement. |
+| Gemini shell tool | <https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/shell.md> | `run_shell_command` returns command, directory, stdout, stderr, exit code, and background PIDs. Shell sets `GEMINI_CLI=1`. |
+| OpenAI Codex CLI | <https://developers.openai.com/codex/cli> | Codex CLI can inspect, edit, run code, attach images, and use subagents. |
+| Codex tool spec | <https://github.com/openai/codex/blob/99f47d6e9a3546c14c43af99c7a58fa6bd130548/codex-rs/core/src/tools/spec.rs> | Current Codex includes `shell_command`, `apply_patch`, `update_plan`, `view_image`; newer `exec_command`/`write_stdin` need session semantics. |
+| Codex plan handler | <https://github.com/openai/codex/blob/99f47d6e9a3546c14c43af99c7a58fa6bd130548/codex-rs/core/src/tools/handlers/plan.rs> | `update_plan` is useful for input/rendering; tool output is just success text. At most one step may be `in_progress`. |
+| Codex apply-patch grammar | <https://github.com/openai/codex/blob/35aaa5d9/codex-rs/apply-patch/apply_patch_tool_instructions.md> | Patch envelope has Add/Update/Delete/Move operations. Paths are relative, never absolute. Grammar is designed to be parseable and safe. |
+| OpenAI Apply Patch API guide | <https://developers.openai.com/api/docs/guides/tools-apply-patch> | Patch workflows should report structured success/failure back to the model for iterative repair. |
+| Community Pi Codex profile | <https://github.com/Graffioh/pi-codex-profile> | Adds Codex profile plus apply_patch. Paths restricted to cwd. Good small-scope example. |
+| Community Pi apply-patch | <https://github.com/zrubing/pi-codex-apply-patch> | Shows atomic writes, path traversal checks, progress updates, and notes that forced patching improves auditability more than raw quality. |
+| Community Pi Codex conversion | <https://github.com/adnichols/pi-codex-conversion> | Strong modular layout: adapter, tools, shell, patch, prompt, tests. Uses exec sessions plus `write_stdin`, which this project should not activate until semantics are designed. |
 
-### Provider-facing invariants
+## Key correction to the first matrix
 
-- Keep provider tool names:
+Directly delegating `Read`/`read_file` to Pi native read is too blunt. Prior art says provider reads often need provider-specific text formatting: Claude/Letta line-numbered `cat -n` style, Gemini 0-based ranges, and provider-specific truncation notices. Use Pi native image/path/truncation primitives, but keep provider text shape through a read adapter.
+
+## Non-negotiable invariants
+
+### Provider-facing
+
+- Preserve active tool names:
   - Claude: `Read`, `Write`, `Edit`, `MultiEdit`, `Bash`, `Glob`, `Grep`, `LS`
   - Codex: `shell_command`, `apply_patch`, `update_plan`, `view_image`
   - Gemini: `run_shell_command`, `read_file`, `read_many_files`, `list_directory`, `glob`, `grep_search`, `search_file_content`, `replace`, `write_file`
-- Keep Letta/provider schemas unless a migration plan explicitly changes them.
-- Keep provider-specific arg names and offset semantics.
-- Keep provider-specific edit semantics where provider docs require them.
+- Preserve vendored Letta schemas unless a separate schema migration is planned.
+- Preserve provider arg names and offset bases.
+- Preserve provider edit semantics where docs require them: sequential `MultiEdit`, `replace_all`, `expected_replacements`, exact literal matching.
+- Do not auto-activate vendored Codex `exec_command`, `write_stdin`, `shell`, `read_file`, or `list_dir` until Pi has explicit session/stdin/polling semantics.
 
-### Pi runtime invariants
+### Pi runtime
 
-- Tool renderers must never emit a rendered line wider than `width`.
-- Tool renderers must not allow raw user/tool text to inject terminal controls.
-- Mutating file tools must serialize same-file writes.
-- Tools must respect abort signals.
-- Large outputs must be truncated with useful continuation notices.
-- Where possible, full truncated output should be available from a temp file.
-- Runtime behavior differences should be documented and tested.
+- Use public Pi APIs only. No deep imports from `dist/core/**`.
+- Mutating tools use `withFileMutationQueue()` for the whole read-modify-write window.
+- Abort signals are checked before and after awaited filesystem/process operations.
+- Output is bounded, with explicit notices and full-output temp files when useful.
+- Shell process handling comes from Pi shell operations where possible, not custom `spawn`.
+- Renderers sanitize terminal controls and never return lines wider than `width`.
+- Deliberate divergence from native Pi behavior is documented and tested.
 
-## Summary table
+## Decision summary
 
-| Tool family | Current state | Pi native behavior | Recommendation |
+| Area | Decision | Rationale |
+| --- | --- | --- |
+| Package boundary | Add one `pi-compat.ts` import boundary. Use current `@mariozechner/*` in this repo, but keep the boundary ready for `@earendil-works/*`. | Avoid global package-name churn across implementation files. |
+| Native reuse | Reuse public Pi factories/utilities for operations, queues, truncation, shell execution, and rendering helpers when shapes match. | Prevent reimplementing Pi internals. |
+| Path policy | Implement a per-profile/per-tool path policy table. Patch is relative-only. Gemini mutation/search/list stays cwd-contained. Claude file tools keep absolute-path support. | Avoid accidental filesystem broadening or narrowing. Provider docs conflict here, so the policy must be explicit and tested. |
+| Read | Hybrid, not raw delegation. Native-compatible path/image/truncation; provider-specific text formatting and offset mapping. | Direct Pi output would drift from Claude/Letta line-numbered reads and Gemini 0-based reads. |
+| Read history | Add session-local read-history audit for edit/write. Default is audit-only; strict enforcement is out of scope for this issue. | Captures Claude read-before-edit intent without surprising users on first safety pass. |
+| Media | Implement text and image support now. PDF, audio, and notebooks return explicit unsupported/deferred results. | Pi public native support is image-focused; silent capability drops are worse than clear unsupported output. |
+| Write | Use native write semantics plus provider result text policy. Audit read-before-overwrite. | Safety now, low model-visible risk. |
+| Edit | Keep provider sequential semantics. Add Pi queue, BOM/line-ending preservation, diffs, and better diagnostics. | Pi native edit matches all edits against original content, which conflicts with provider `MultiEdit`. |
+| Shell | Use Pi `createLocalBashOperations()` or equivalent shell backend. Nonzero exit is a normal provider result with exit code. Timeout/abort are errors. Security-affecting unsupported args are denied, not ignored. | Provider harnesses expose command failures as inspectable output; sandbox escalation must never be silently accepted. |
+| Search/glob/list | Keep provider result-set semantics by profile. Claude Glob uses vendored Letta cap 2000 for now. Borrow Pi limits, long-line caps, notices, and abort handling. | Provider defaults conflict with Pi native `find`/`grep`; vendored docs win until Letta drift changes. |
+| Image | Prefer Pi native image read/resize/capability behavior. Keep Codex `view_image` wrapper. | Avoid oversized image payloads and non-vision confusion. |
+| Apply patch | Keep custom. Enforce Codex relative-path-only policy. Preflight into an in-memory write plan, then commit under stable ordered queues with best-effort in-memory rollback on commit error. | Codex grammar has no Pi native equivalent and absolute paths are explicitly forbidden. Crash-safe multi-file atomicity is out of scope. |
+| Update plan | Keep custom. Validate one `in_progress`. Persist plan in session entries and restore on `session_start`. | Inputs are the important artifact; output can stay minimal. |
+
+## Path policy
+
+Implement this before changing behavior. Tests must cover absolute paths, relative paths, `~`, leading `@`, NUL bytes, `..`, symlinks, and cwd escape attempts.
+
+| Profile/tool group | Path policy | Notes |
+| --- | --- | --- |
+| Claude `Read`, `Write`, `Edit`, `MultiEdit`, `Glob.path`, `Grep.path`, `LS.path` | Absolute allowed; relative resolves against `ctx.cwd`; leading `@` stripped; `~`/`~/` stays expanded for current Pi compatibility; `$VAR` is not expanded. | Matches current capability and Claude/Letta absolute-path expectations. Document `~` expansion as a Pi compatibility divergence from Letta's literal-path wording. |
+| Gemini `write_file`, `replace`, `glob.dir_path`, `grep_search.dir_path`, `search_file_content.dir_path`, `list_directory.dir_path` | Must resolve under `ctx.cwd` after symlink/canonicalization. Relative paths allowed. Absolute paths allowed only if under `ctx.cwd`. | Matches Gemini `rootDirectory`/workspace safety. |
+| Gemini `read_file`, `read_many_files` | Same cwd-contained default as other Gemini tools. If a future user need requires temp screenshots outside cwd, add an explicit config flag and tests. | Avoid silent broad reads in Gemini profile. |
+| Codex `apply_patch` | Relative-only, POSIX-normalized, cwd-contained. Reject NUL, absolute POSIX, absolute Windows, empty, `..`, and symlink escape. | Codex apply-patch instructions say file references are never absolute. |
+| Codex `shell_command.workdir` | Must resolve under `ctx.cwd`; default `ctx.cwd`; reject missing or non-directory workdirs. | Avoid shell execution from surprising directories. |
+| Codex `view_image.path` | Absolute or relative read-only image path allowed; leading `@` stripped; no mutation. | Codex prior art says use full local image paths supplied by the user. |
+| Shell commands themselves | Path policy applies only to tool args, not shell internals. | Shell can still access what the OS/user permits; Pi permission/sandbox systems remain the enforcement layer. |
+
+## Read-history audit design
+
+Default for this issue: audit only, never block. Strict enforcement can be a later config flag.
+
+- Store session-local `Map<canonicalPath, ReadRecord>`.
+- `ReadRecord`: `{ path, profile, toolName, mtimeMs, size, sha256, readAtTurnId? }`.
+- Canonicalize with realpath for existing files; resolved absolute path for missing files.
+- Successful `Read`, `read_file`, and `read_many_files` text reads count. Image reads count only for image overwrite audit, not text edit confidence.
+- Shell commands do not count as reads in v1. Recognizing `cat`/`sed`/`grep` can be a later narrow feature.
+- Before write/edit, stat and hash the file if it exists:
+  - no record -> details include `readHistory: "missing"`
+  - hash/mtime mismatch -> details include `readHistory: "stale"`
+  - match -> details include `readHistory: "fresh"`
+- Renderers may show audit state in compact form, but LLM-facing text stays concise.
+
+## Media scope
+
+Phase 2 supports text and common images (`png`, `jpg`, `jpeg`, `gif`, `webp`) through Pi-compatible image handling.
+
+Explicitly deferred for all profiles unless Pi exposes a public primitive or a later issue scopes it:
+
+- PDF page extraction
+- audio transcription/attachment
+- Jupyter notebook semantic rendering/editing
+
+Deferred media must return a clear tool result, not a silent text read of binary bytes. Suggested text: `Unsupported media type for <path>: PDF/audio/notebook support is deferred. Use shell tools or convert the file to text/image first.`
+
+## Target architecture
+
+### Data flow
+
+```text
+provider tool call
+  -> provider contract adapter
+  -> provider policy lookup
+  -> Pi runtime facade or provider-specific engine
+  -> result normalizer
+  -> TUI-safe renderer
+```
+
+### Suggested module layout
+
+Keep modules small, testable, and mostly pure.
+
+| Module | Responsibility |
+| --- | --- |
+| `tools/pi-compat.ts` | All imports from Pi public APIs. Current package-name shim. |
+| `tools/contracts.ts` | Shared `ProviderProfile`, `ProviderPolicy`, `ProviderToolAdapter` types. |
+| `tools/policies.ts` | Claude/Codex/Gemini behavior constants: offset base, caps, shell policy, glob ignore policy. |
+| `tools/path.ts` | Path-policy enforcement, cwd containment, symlink checks, relative-only patch validation. |
+| `tools/results.ts` | Text/image result helpers, truncation notices, full-output temp-file references. |
+| `tools/read-adapter.ts` | Text/image read orchestration and provider-specific formatting. |
+| `tools/read-history.ts` | Session-local read audit records for edit/write freshness. |
+| `tools/write-adapter.ts` | Native-safe writes and read-history audit details. |
+| `tools/edit-adapter.ts` | Sequential provider exact edits, BOM/line-ending preservation, diff/patch details. |
+| `tools/shell-adapter.ts` | Provider shell wrappers over Pi shell operations, streaming, timeout, nonzero policy. |
+| `tools/search-adapter.ts` | Glob/grep/read_many providers, limits, mtime sorting, ignore policy. |
+| `tools/list-adapter.ts` | `LS`/`list_directory` with ignore patterns and entry limits. |
+| `tools/patch-adapter.ts` | Codex patch parser, preflight, path policy, queued execution. |
+| `tools/plan-state.ts` | `update_plan` validation, session persistence, and restore. |
+| `tools/rendering.ts` | Current TUI-safe rendering helpers. Keep all terminal sanitization here. |
+| `tools/register.ts` | Thin registration layer per provider, no business logic. |
+
+### Core types
+
+```ts
+type ProviderProfile = "claude" | "codex" | "gemini";
+
+type ShellFailurePolicy = "nonzero-as-result" | "nonzero-as-error";
+
+type ProviderPolicy = {
+  profile: ProviderProfile;
+  readOffsetBase: 0 | 1;
+  readTextFormat: "plain" | "cat-n";
+  shellFailurePolicy: ShellFailurePolicy;
+  glob: {
+    sort: "mtime-desc" | "alpha";
+    respectGitIgnoreDefault: boolean;
+    includeHiddenDefault: boolean;
+    resultLimit: number;
+  };
+  grep: {
+    outputLimitChars: number;
+    maxLineChars: number;
+  };
+};
+
+type ProviderToolResult<Details = unknown> = {
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >;
+  details?: Details;
+  terminate?: boolean;
+};
+
+type ReadHistory = {
+  recordRead(path: string, result: { mtimeMs: number; size: number; sha256: string }): void;
+  checkFreshness(path: string): Promise<"missing" | "stale" | "fresh">;
+};
+
+type RuntimeContext = {
+  cwd: string;
+  signal?: AbortSignal;
+  onUpdate?: (result: ProviderToolResult) => void;
+  model?: unknown;
+  readHistory: ReadHistory;
+};
+
+type ProviderToolAdapter<ProviderArgs, NativeArgs, Details = unknown> = {
+  providerName: string;
+  policy: ProviderPolicy;
+  mapArgs(args: ProviderArgs, ctx: { cwd: string }): NativeArgs;
+  execute(args: ProviderArgs, runtime: RuntimeContext): Promise<ProviderToolResult<Details>>;
+};
+```
+
+Do not over-abstract registration. The goal is shared execution behavior, not a generic framework.
+
+## Desired per-tool behavior
+
+| Tool family | Desired behavior | Reuse | Do not do |
 | --- | --- | --- | --- |
-| Read | Text-only custom read | Text + images, resizing, macOS path variants, better truncation | Delegate or adapt to Pi native read |
-| Write | Basic write + local queue | Abort-aware write + realpath queue | Delegate or copy native behavior |
-| Edit | Sequential literal replacements | Original-content normalized edits with diff/patch | Keep provider semantics, add Pi safety |
-| Shell | `pi.exec("bash", ["-lc", ...])`, nonzero as text | configured shell/env, process-tree kill, streaming, temp file, errors on nonzero | Hybrid, explicit nonzero policy |
-| Glob | `rg --files -g` | native `find` uses `fd`, limits, notices | Decide result semantics, add limits |
-| Grep | raw `rg` modes | `rg --json`, match limits, long-line cap | Keep provider args, add native safety |
-| LS | basic listing | default path, entry limit, notices | Low-risk native-like upgrade |
-| Image | `view_image` reads common image types | native read handles resize/capability | Borrow native image handling |
-| Patch/Plan | custom provider tools | no native equivalent | Keep custom, add safety/tests |
+| Claude `Read`, Gemini `read_file` | Map provider offsets. Text gets provider formatting and continuation notices. Images use Pi image detection/resizing/model-capability notes. Unsupported media gets explicit deferred text. | Pi read path/image helpers if public, `truncateHead`. | Do not return raw Pi text for Claude/Letta if line-numbered output is required. Do not read binary media as UTF-8. |
+| Gemini `read_many_files` | Expand globs with Gemini ignore defaults, then call read adapter per file. Bound total files and bytes. Record read-history for every text file included. | Shared glob/read adapters. | Do not concatenate unbounded files. |
+| Claude `Write`, Gemini `write_file` | Create dirs, write atomically enough for local fs, queue by canonical path, check abort after awaits. Include read-history audit details. | Pi `createWriteToolDefinition` or `withFileMutationQueue`. | Do not write outside mutation queue. |
+| Claude `Edit`/`MultiEdit`, Gemini `replace` | Sequential exact literal edits. `replace_all` and `expected_replacements` honored. Preserve BOM and line endings. Return diff/patch details. | Pi queue, truncation, maybe public `renderDiff` only. | Do not delegate to Pi native edit because semantics differ. |
+| Claude `Bash`, Codex `shell_command`, Gemini `run_shell_command` | Provider args and result text. Nonzero returns normal output with exit code. Timeout/abort fail. Stream partial output. Full output saved on truncation. Unsupported background/session fields return explicit unsupported results. Codex `sandbox_permissions: "require_escalated"` returns denied/unsupported unless Pi has an approval path. | Pi `createLocalBashOperations`, `truncateTail`, temp files. | Do not use raw `spawn` or `pi.exec("bash", ["-lc"])` long term. Do not ignore security-affecting args. |
+| Claude `Glob`, Gemini `glob` | Profile-specific ignore policy, mtime-desc sorting where provider docs expect it, result limits, truncation notices. | Shared process runner or native-safe fd/rg helpers. | Do not silently switch Claude/Gemini to Pi native `find` result semantics. |
+| Claude `Grep`, Gemini `grep_search`/`search_file_content` | Keep output modes and aliases. Use regex/literal/case/context options per schema. Cap matches and long lines. | Pi grep ideas: `rg --json`, long-line cap, notices. | Do not drop provider output modes. |
+| Claude `LS`, Gemini `list_directory` | Provider args, ignore patterns, directory suffixes, entry limit, case-insensitive sort. | Pi `ls` ideas and truncation. | Do not omit ignore support. |
+| Codex `apply_patch` | Parse Codex envelope. Reject absolute/traversal paths. Preflight all ops into an in-memory write plan. Queue all touched files in stable order. Commit with best-effort rollback from in-memory snapshots if a write/delete/rename fails. Return per-file status. | Existing parser plus Pi queue/truncation. | Do not allow absolute paths, cwd escape, or claims of crash-safe atomicity. |
+| Codex `update_plan` | Validate statuses and single `in_progress`. Render current plan. Persist latest plan via `pi.appendEntry()` and restore on `session_start`. | Existing renderer/session APIs. | Do not make plan output verbose to the model. |
+| Codex `view_image` | Local image path only. Use Pi image resize/capability behavior. | Read image adapter. | Do not base64 huge images without resize. |
 
-## Detailed matrix
+## Implementation plan
 
-### Claude `Read` and Gemini `read_file`
+### Phase 0: Baseline and contract tests first
 
-| Dimension | Current provider tool | Pi native read | Desired behavior |
-| --- | --- | --- | --- |
-| Args | Claude `file_path`, 1-based `offset`; Gemini `file_path`, 0-based `offset` | `path`, 1-based `offset`, `limit` | Keep provider args. Map to native args. Convert Gemini offset to 1-based for native call. |
-| Path handling | `resolveToolPath()` strips leading `@`, expands `~` | `resolveReadPathAsync()` handles `@`, unicode spaces, macOS screenshot AM/PM, NFD, curly quotes | Use native path resolver via native read where possible. |
-| Text truncation | simple head truncation, 2000 lines/50KB | line/byte truncation with first-line-too-large behavior and continuation offsets | Prefer native read output/details. |
-| Images | unsupported except Codex `view_image` | detects supported image mimes, resizes, adds model non-vision notes | Use native read behavior for image reads. |
-| Rendering | custom compact summary unless expanded | syntax highlighting, compact resource classification | Custom rendering is acceptable if TUI-safe, but native rendering is richer. |
+Deliverables:
 
-Implementation direction:
+- Add golden tests for every current provider tool name and schema export.
+- Add behavior tests from prior art:
+  - Claude/Letta read offset, line-number formatting, image read.
+  - Gemini 0-based read offsets.
+  - Sequential `MultiEdit` where edit 2 depends on edit 1.
+  - `replace_all` and `expected_replacements`.
+  - Shell nonzero as result, timeout as error, abort as error.
+  - Shell security fields: `sandbox_permissions: "require_escalated"` is denied/unsupported, not ignored.
+  - Path policy: cwd escape, symlink escape, NUL, `~`, leading `@`, and absolute paths per profile.
+  - Patch relative-path rejection and rollback-on-commit-error.
+  - Deferred media returns explicit unsupported text.
+- Keep existing TUI hostile-text width tests green.
 
-- Use `createReadToolDefinition(ctx.cwd)` or equivalent native factory if feasible.
-- Provider wrapper maps args, calls native `execute`, and returns native result.
-- Keep provider render names if desired, or reuse native result rendering after arg mapping.
+Agent handoff:
 
-Tests:
+1. Write tests that fail against current gaps.
+2. Do not refactor tool registration yet.
+3. Commit only tests if requested by project workflow owner.
 
-- text read with offset/limit
-- offset out of bounds
-- image read path returns image block or model note
-- macOS path variants if testable
-- TUI width safety with long path/content
+### Phase 1: Foundation modules
 
-### Claude `Write` and Gemini `write_file`
+Deliverables:
 
-| Dimension | Current provider tool | Pi native write | Desired behavior |
-| --- | --- | --- | --- |
-| Args | `file_path`, `content` | `path`, `content` | Straight arg map. |
-| Parent dirs | creates parent dirs | creates parent dirs | Match native. |
-| Queue | local in-extension queue by raw path | `withFileMutationQueue()` with realpath canonicalization | Use native queue. |
-| Abort | no explicit post-await abort checks | checks abort before/after mkdir/write | Add native abort behavior. |
-| Result | `Wrote <path>`, details bytes/path | `Successfully wrote N bytes to <path>`, details undefined | Decide whether provider-facing result text matters. Prefer native safety, document text divergence if changed. |
-| Rendering | previews content | native highlights by file type and handles incremental streaming args | Custom TUI-safe preview okay. Native rendering richer. |
+- `pi-compat.ts` with public Pi imports only:
+  - `withFileMutationQueue`
+  - `truncateHead`, `truncateTail`, `truncateLine`, `formatSize`
+  - `createLocalBashOperations`
+  - native tool definitions where directly safe
+- `policies.ts` for provider constants.
+- `path.ts` for path-policy enforcement, cwd containment, symlink checks, and patch path validation.
+- `read-history.ts` for read audit keying, hashing, and freshness checks.
+- `results.ts` for result helpers, unsupported-field results, and truncation notice builders.
 
-Implementation direction:
+Rules:
 
-- Easiest: delegate to native write with `{ path: file_path, content }`.
-- If retaining provider result text, copy native abort/queue structure.
+- No business logic in `claude.ts`, `codex.ts`, or `gemini.ts` after this phase.
+- No deep imports from Pi internals.
+- Each helper gets direct unit tests.
 
-Tests:
+### Phase 2: Read, write, image
 
-- creates parent dirs
-- abort before write rejects/throws
-- same-file concurrent writes serialize
-- content preview remains TUI-safe
+Deliverables:
 
-### Claude `Edit`, Claude `MultiEdit`, Gemini `replace`
+- `read-adapter.ts`:
+  - provider offset mapping
+  - provider text formatting
+  - image path handling through Pi-compatible image behavior
+  - actionable continuation notices
+- `write-adapter.ts`:
+  - `withFileMutationQueue()` across mkdir/write
+  - abort checks before and after awaits
+  - canonical path details
+- `view_image` uses the shared image read path.
 
-| Dimension | Current provider tool | Pi native edit | Desired behavior |
-| --- | --- | --- | --- |
-| Args | Claude/Gemini use `old_string`/`new_string`; MultiEdit uses `edits` | native uses `edits: [{ oldText, newText }]` | Keep provider schemas. |
-| Multi-edit semantics | sequential, each edit sees previous edit's result | native replacements matched against original normalized file | Keep provider sequential semantics because Letta/Claude docs specify it. |
-| `replace_all` | supported | native requires unique replacement blocks, no provider `replace_all` | Keep provider behavior. |
-| `expected_replacements` | supported for Gemini replace | native does not expose this exact contract | Keep provider behavior. |
-| Empty `old_string` create-file behavior | Letta MultiEdit docs mention this | current behavior likely not sufficient | Verify and implement if provider contract requires it. |
-| Atomicity | reads all, computes, writes once | native queue + write once | Preserve. |
-| Line endings/BOM | not preserved deliberately | native strips/restores BOM, preserves line endings | Add native-style preservation. |
-| Diff/details | replacements count only | native returns diff, patch, firstChangedLine | Add diff/patch details if possible. |
+Notes:
 
-Implementation direction:
+- Implement read-history exactly as described above. Audit state goes into `details`, not long model-facing prose.
+- If Pi image internals are not exposed enough, wrap native `createReadToolDefinition()` for image paths and normalize result text only.
+- PDF/audio/notebook support is deferred with explicit unsupported results.
 
-- Do not blind-delegate to native edit.
-- Keep sequential provider algorithm.
-- Wrap with `withFileMutationQueue()`.
-- Borrow/copy native edit-diff helpers if public or reimplement narrowly with tests.
+### Phase 3: Edit safety without semantic drift
+
+Deliverables:
+
+- `edit-adapter.ts` with provider sequential edits.
 - Preserve BOM and original line endings.
-- Return diff/patch details for improved rendering/review.
+- Add diff/patch details and first-changed-line if practical.
+- Queue by canonical file path for the full read-modify-write.
+- Read-before-edit audit details using `read-history.ts`; no blocking in this issue.
 
-Tests:
+Required tests:
 
-- sequential MultiEdit where second edit depends on first
-- overlapping edit cases documented as provider behavior
-- `replace_all`
-- `expected_replacements`
-- BOM preservation
-- CRLF preservation
-- concurrent same-file edits serialize
+- sequential edit dependency
+- conflicting edit diagnostics
+- empty `old_string` creates a new file for Claude `MultiEdit` if this stays in prompt contract
+- CRLF and BOM preservation
+- same-file concurrent edits serialize
+- diff details stable enough for TUI rendering
 
-### Claude `Bash`, Codex `shell_command`, Gemini `run_shell_command`
+### Phase 4: Shell runner
 
-| Dimension | Current provider tool | Pi native bash | Desired behavior |
-| --- | --- | --- | --- |
-| Shell | `pi.exec("bash", ["-lc", command])` | configured shell from Pi shell config | Prefer native shell backend if accessible. |
-| Environment | whatever `pi.exec` provides | `getShellEnv()` and spawn hook support | Prefer native. |
-| Process kill | delegated to `pi.exec` | kills process tree | Prefer native process-tree behavior. |
-| Streaming | no partial output streaming | throttled partial output via `onUpdate` | Add streaming. |
-| Truncation | tail truncates to text only | output accumulator, temp file, detailed truncation metadata | Use native accumulator behavior if possible. |
-| Nonzero exit | returned as successful text with `(exit n)` | throws, marks tool error | Decide explicitly. Provider harnesses often surface command failures as tool output. |
-| Timeout units | provider schemas vary: Claude/Codex milliseconds, Pi native seconds | Pi native seconds | Normalize carefully. |
+Deliverables:
 
-Nonzero policy options:
+- `shell-adapter.ts` over Pi shell operations.
+- Provider wrappers:
+  - Claude `Bash`: `command`, `timeout`, unsupported `run_in_background` still explicit.
+  - Codex `shell_command`: `command`, `workdir`, `timeout_ms`; `login` recorded if unsupported; `sandbox_permissions: "require_escalated"`, `justification`, and `prefix_rule` return explicit denied/unsupported unless Pi approval semantics are implemented.
+  - Gemini `run_shell_command`: `command`, `dir_path`; background/session fields return explicit unsupported results until session semantics exist.
+- Streaming partial output through `onUpdate`.
+- Tail truncation, full-output temp file, and consistent details.
 
-1. **Pi-native policy**: nonzero throws and marks tool result error.
-2. **Provider-native policy**: nonzero returns normal tool result with exit code in text/details.
-3. **Hybrid**: nonzero returns normal result, timeout/abort throw or mark error.
+Decision:
 
-Recommendation: choose hybrid or provider-native, document it, and test it. Models from provider harnesses often expect command failure output to be inspectable without the harness treating the tool call itself as broken.
+- Nonzero exit returns a normal tool result with `exitCode` and output.
+- Timeout and abort throw errors so Pi marks the tool failed.
 
-Tests:
+Required tests:
 
-- stdout/stderr merged ordering if possible
-- nonzero command policy
-- timeout policy
-- abort kills child process tree
-- long output writes temp file and includes continuation notice
-- partial output updates
+- stdout/stderr captured
+- nonzero inspectable by model
+- timeout text includes partial output
+- abort stops process tree through Pi operations
+- long output writes a temp file and includes the path
 
-### Claude `Glob`, Gemini `glob`, Gemini `read_many_files`
+### Phase 5: Search, glob, list, read_many
 
-| Dimension | Current provider tool | Pi native find | Desired behavior |
-| --- | --- | --- | --- |
-| Backend | `rg --files -g` | `fd --glob --hidden --no-require-git` | Decide whether provider result-set parity or Pi result-set parity matters. |
-| Limits | generic truncation only | default result limit 1000 and byte truncation notices | Add explicit result limits/notices. |
-| Gitignore | `rg --files` respects gitignore by default, option for Gemini no-ignore | native `fd` no-require-git semantics | Document and test. |
-| Hidden files | depends on `rg` defaults; likely not hidden unless no-ignore flags | native includes `--hidden` | Decide and document. |
-| `read_many_files` | expands globs then reads each file | no native exact equivalent | Keep custom, but use native read for each file. |
+Deliverables:
 
-Implementation direction:
+- `search-adapter.ts` for glob/grep/read_many.
+- Profile policies:
+  - Claude Glob: mtime-desc, cap 2000 from vendored Letta docs, default no `.gitignore` filtering to match Claude Code prior art.
+  - Gemini Glob: mtime-desc, `respect_git_ignore` default true, nuisance dirs excluded.
+  - Claude/Gemini Grep: keep provider modes and aliases; respect `.gitignore` by default; add long-line cap and match notices.
+- `list-adapter.ts` with ignore patterns, entry cap, directory suffixes.
 
-- For simple glob tools, either map to native `find` or keep `rg` and add native-like limits.
-- For `read_many_files`, keep orchestration but call native read wrapper internally.
+Required tests:
 
-Tests:
+- hidden/gitignored behavior per profile policy
+- mtime sort
+- result caps and continuation notices
+- grep output modes: `content`, `files_with_matches`, `count`
+- Gemini `read_many_files` total cap and binary skip behavior if implemented
 
-- limit behavior
-- hidden file behavior
-- gitignored file behavior
-- read_many skips binary/large files according to provider contract if needed
+### Phase 6: Codex patch and plan
 
-### Claude `Grep`, Gemini `grep_search`, Gemini `search_file_content`
+Deliverables:
 
-| Dimension | Current provider tool | Pi native grep | Desired behavior |
-| --- | --- | --- | --- |
-| Backend | raw `rg` modes | `rg --json` | Keep provider args/output modes, but consider JSON backend for control. |
-| Output modes | Claude supports `content`, `files_with_matches`, `count` | native always formats matching lines | Keep provider output modes. |
-| Match limits | provider `head_limit` support, generic truncation | default 100 matches and explicit match-limit notices | Add explicit limits/notices. |
-| Long lines | no specific long-line cap | truncates match lines to 500 chars | Add long-line cap. |
-| Context | supports `-A/-B/-C` | supports context by reading files | Keep provider args, test formatting. |
+- `patch-adapter.ts`:
+  - relative-path-only validation
+  - reject NUL, absolute POSIX, absolute Windows, `..` traversal, and symlink escape
+  - parse plus apply hunks in memory before touching disk
+  - compute a write plan: create, update, delete, move, previous in-memory snapshot
+  - stable lock ordering for multi-file patches to avoid deadlocks
+  - commit under locks; on commit error, best-effort rollback from in-memory snapshots
+  - per-file result details; never claim crash-safe atomicity
+- `plan-state.ts`:
+  - status validation
+  - only one `in_progress`
+  - session persistence through `pi.appendEntry()` and restore on `session_start`
 
-Implementation direction:
-
-- Do not blindly delegate to native grep because provider output modes differ.
-- Borrow native ideas: JSON event parsing, match limits, long-line cap, truncation details.
-
-Tests:
-
-- each output mode
-- context lines
-- head limit/offset
-- long line truncation
-- byte truncation notice
-- no matches
-
-### Claude `LS`, Gemini `list_directory`
-
-| Dimension | Current provider tool | Pi native ls | Desired behavior |
-| --- | --- | --- | --- |
-| Args | Claude `path` required; Gemini `dir_path` | native `path` optional default `.` and `limit` | Keep provider schemas; map to native if possible. |
-| Ignore | provider supports ignore array | native has no ignore parameter | Keep custom filtering or pre/post-filter native result. |
-| Limits | generic truncation | entry limit 500 and byte truncation notices | Add explicit limit behavior if schema permits, or fixed internal limit. |
-| Sorting | locale sort | case-insensitive sort | Match native if no provider conflict. |
-
-Implementation direction:
-
-- Low-risk native-like implementation.
-- Keep `ignore` support for Claude.
-- Add internal entry limit and notice even if schema lacks `limit`.
-
-Tests:
-
-- empty directory text
-- directory suffix `/`
-- ignore patterns
-- entry limit notice
-- invalid path/not directory errors
-
-### Codex `apply_patch`
-
-| Dimension | Current provider tool | Pi native equivalent | Desired behavior |
-| --- | --- | --- | --- |
-| Contract | Codex-style `*** Begin Patch` format | no direct native equivalent | Keep custom. |
-| Mutations | add/update/delete/move | n/a | Use Pi mutation queue per target file. |
-| Atomicity | patch parser applies operations | n/a | Ensure multi-file failures do not leave partial state where possible, or document limits. |
-| Diagnostics | basic parser errors | n/a | Improve parse/apply error messages. |
-| Rendering | patch summary + preview | n/a | Current TUI-safe rendering okay. |
-
-Implementation direction:
-
-- Keep custom parser.
-- Queue file mutations.
-- Consider preflight validation before writes for stronger atomicity.
-
-Tests:
+Required tests:
 
 - add/update/delete/move
-- invalid patch diagnostics
-- concurrent patch/edit same file
-- TUI hostile patch preview
+- parser diagnostics
+- absolute/traversal path rejection
+- preflight creates no on-disk changes
+- commit failure triggers rollback attempt and reports rollback status
+- one `in_progress` validation
+- plan restore from persisted session entry
 
-### Codex `update_plan`
+### Phase 7: Activation, docs, smoke
 
-| Dimension | Current provider tool | Pi native equivalent | Desired behavior |
-| --- | --- | --- | --- |
-| Contract | model-visible plan state | no native equivalent | Keep custom. |
-| Persistence | in-memory `currentPlan` only | n/a | Consider session persistence if needed. |
-| Rendering | plan result lines with status accents | n/a | Current TUI-safe rendering okay. |
+Deliverables:
 
-Implementation direction:
+- Keep provider activation behavior unchanged unless tests prove a bug.
+- Update `README.md` known gaps after implementation.
+- Add smoke prompts for each profile covering read, edit, shell failure, search, and image.
+- Run:
 
-- Keep custom.
-- Decide whether plan should survive reload/session resume.
+```bash
+bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts
+bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main
+```
 
-Tests:
+## CI compatibility workflows
 
-- status rendering
-- invalid/partial args
-- persistence if implemented
+Keep two independent compatibility checks in CI:
 
-### Codex `view_image`
+| Workflow | Protects | Trigger | PR behavior | Scheduled behavior |
+| --- | --- | --- | --- | --- |
+| Letta drift | Provider-facing schema/descriptions/default toolsets | existing `.github/workflows/letta-drift.yml` | report drift; fail only on tooling/test errors | open/update `provider-tool-profiles: Letta drift` |
+| Pi compatibility | Pi public runtime APIs, native tool primitives, result shapes, TUI contracts | proposed `.github/workflows/pi-compat.yml` | fail on locked-package test failures, private Pi imports, renderer regressions, or missing public exports | open/update `provider-tool-profiles: Pi compatibility drift` for latest-Pi canary failures |
 
-| Dimension | Current provider tool | Pi native read image path | Desired behavior |
-| --- | --- | --- | --- |
-| Supported types | png, jpg, jpeg, gif, webp | native read detects supported image mimes | Expand to match native if possible. |
-| Resize | none | native resizes inline images to model/provider limits | Borrow native behavior. |
-| Model capability | no non-vision note | native notes when model lacks image support | Borrow native behavior. |
-| Result | text + image block | text + image block | Match native details where useful. |
+Pi compatibility check scope:
 
-Implementation direction:
+- Run current provider-tool-profiles tests against the locked dependency set.
+- Assert provider-tool-profiles imports Pi only through public package exports, not `dist/**` or private `core/**` paths.
+- Smoke import the public Pi primitives the hybrid adapters depend on:
+  - `withFileMutationQueue`
+  - `truncateHead`, `truncateTail`, `truncateLine`, `formatSize`
+  - `createLocalBashOperations`
+  - native tool factories for read/write/bash/list/grep/find
+- Instantiate native tool definitions against a temp cwd and verify result details still expose expected truncation/full-output fields where relevant.
+- Upload `.tmp/pi-compat/summary.md` and `.tmp/pi-compat/recommended-actions.md` artifacts.
 
-- Prefer using native read wrapper on image path.
-- If keeping separate `view_image`, share native image handling.
+Activation rule for agents: do not activate a Letta-driven tool change unless both the Letta drift decision and the Pi compatibility check are green for the affected capability. If Letta wants a tool whose semantics need missing Pi primitives, vendor it and mark it `blocked`.
 
-Tests:
+## Acceptance criteria
 
-- supported type
-- unsupported type
-- oversized image resize path
-- non-vision model note if accessible
-
-## Implementation phases
-
-### Phase 1: Matrix-driven tests
-
-Add tests that pin desired behavior before large refactors:
-
-- provider schema names and required fields stay unchanged
-- renderer TUI safety remains green
-- documented intentional divergences have tests
-
-### Phase 2: Read/write native safety
-
-- Adapt `Read`/`read_file` to native read behavior.
-- Adapt `Write`/`write_file` to native write behavior or copy native queue/abort logic.
-
-### Phase 3: Shell safety
-
-- Add streaming updates.
-- Add full-output temp files on truncation.
-- Add process-tree kill/abort safety.
-- Decide and test nonzero policy.
-
-### Phase 4: Edit safety without semantic drift
-
-- Preserve provider sequential edit semantics.
-- Add queue, BOM/line-ending preservation, diff/patch details.
-- Test provider examples from Letta descriptions.
-
-### Phase 5: Search/list/glob output controls
-
-- Add explicit match/result/entry limits.
-- Add long-line caps.
-- Add native-like truncation notices/details.
-
-## Open questions
-
-1. Should shell nonzero exits be tool errors or normal results?
-2. Should provider tools reuse native renderers where possible, or maintain provider-specific labels/previews?
-3. Should `update_plan` state be persisted into the session branch?
-4. Should `read_many_files` mimic Gemini's binary/default-exclude behavior more strictly?
-5. Should `apply_patch` be made multi-file atomic, or is preflight validation sufficient?
-
-## Done criteria for implementation
-
-- This matrix is updated as decisions are made.
-- Every provider tool has documented desired behavior.
-- All deliberate deviations from Pi native behavior are explicit.
-- Provider schemas remain stable unless a migration note exists.
-- TUI rendering tests remain exhaustive across narrow widths and hostile text.
+- All provider tool names and schemas remain stable.
+- Every provider tool has documented desired behavior and tests for intentional Pi divergence.
+- No provider renderer emits terminal control sequences from tool/user text.
+- No rendered line exceeds terminal width in narrow-width tests.
 - Mutating tools use Pi-compatible file mutation serialization.
-- Output truncation is bounded and includes useful continuation guidance.
+- Shell long output is bounded and recoverable from a temp file.
+- Nonzero shell behavior is explicitly tested as provider-native normal result.
+- Path policy tests pass for absolute, relative, `~`, leading `@`, NUL, `..`, symlink escape, and cwd escape cases.
+- Security-affecting unsupported shell args produce explicit denied/unsupported results.
+- Deferred media types produce explicit unsupported results.
+- `apply_patch` cannot write outside cwd and does not mutate disk before preflight completes.
+- `update_plan` restores latest plan after session reload/resume when session persistence is available.
+- Letta drift report remains clean or documented.
+- Pi compatibility check is documented and, once implemented, reports locked-package status plus latest-Pi canary status.
+- No implementation agent adds private Pi imports to satisfy hybrid behavior.
+
+## Deferred, not blocking this issue
+
+- Strict Claude read-before-edit/write enforcement. This issue records audit details only.
+- Gemini schema migration from vendored `offset`/`limit` to newer official `start_line`/`end_line`. Stay vendored until Letta changes or a migration issue is opened.
+- PDF/audio/notebook support. Return explicit unsupported results until scoped separately.
+- Codex `exec_command`/`write_stdin` activation. Implement as a separate feature branch with explicit session/stdin/polling UX.
+- Crash-safe multi-file patch atomicity. This issue implements in-memory preflight plus best-effort rollback, not journaling or fs-level transactions.
+
+## Best-practice guidance for implementation agents
+
+- Change one tool family per PR or agent handoff.
+- Start each family with tests that pin provider contract and Pi safety invariants.
+- Prefer small adapters over global rewrites.
+- Keep registration files thin.
+- Use public Pi APIs. If a needed primitive is not public, either add a narrow local helper with tests or open an upstream Pi export request.
+- Do not broaden capabilities while aligning behavior. New Letta schemas do not mean newly active tools.
+- Do not sacrifice provider behavior merely to reuse a Pi native tool. Reuse Pi internals only behind an adapter that preserves the model-visible contract.
