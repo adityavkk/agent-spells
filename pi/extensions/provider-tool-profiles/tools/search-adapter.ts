@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import { requireResolvedPath, resolveClaudePath, resolveExistingDirectoryUnderCwd } from "./path";
 import { runProcess } from "./shared";
 import { textResult, truncateTextHead, type TextResultDetails, type ToolTextResult } from "./results";
-import { loadIgnoreFile, mergeIgnoreRuleSets, parseIgnorePatterns, toPosixPath, toRipgrepExcludeGlob, type IgnoreRuleSet } from "./ignore-policy";
+import { isIgnoredPath, loadIgnoreFile, mergeIgnoreRuleSets, parseIgnorePatterns, toPosixPath, toRipgrepExcludeGlob, type IgnoreRuleSet } from "./ignore-policy";
 
 export type SearchProvider = "claude" | "gemini";
 export type GrepOutputMode = "content" | "files_with_matches" | "count";
@@ -12,6 +12,8 @@ const RIPGREP_TIMEOUT_MS = 60_000;
 const MAX_GLOB_RESULTS = 200;
 const MAX_GREP_LINES = 2_000;
 const MAX_SEARCH_BYTES = 50 * 1024;
+const RG_MATCH_SEPARATOR = "\x1f";
+const RG_CONTEXT_SEPARATOR = "\x1e";
 
 export interface ProviderGlobInput {
 	cwd: string;
@@ -117,9 +119,48 @@ function addRipgrepExcludeArgs(args: string[], ignores: IgnoreRuleSet, caseInsen
 	}
 }
 
+function canPreFilterWithRipgrep(ignores: IgnoreRuleSet, rgRoot: string, cwd: string): boolean {
+	// Positive ignore negations cannot be represented safely as ripgrep --glob
+	// includes without narrowing unrelated results. For those cases, run rg wide
+	// and apply provider ignore semantics after discovery.
+	return ignores.negatedRules === 0 && rgRoot === cwd;
+}
+
 function relativeResultPath(root: string, absolutePath: string): string {
 	const rel = relative(root, absolutePath);
 	return toPosixPath(rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : absolutePath);
+}
+
+function absoluteRgPath(rgRoot: string, path: string): string {
+	return isAbsolute(path) ? path : join(rgRoot, path);
+}
+
+function ignoredRgPath(cwd: string, rgRoot: string, path: string, ignores: IgnoreRuleSet): boolean {
+	if (ignores.rules.length === 0) return false;
+	const relativePath = relativeResultPath(cwd, absoluteRgPath(rgRoot, path));
+	return isIgnoredPath(relativePath, false, ignores.rules);
+}
+
+function firstSeparatorIndex(line: string): number {
+	const matchIndex = line.indexOf(RG_MATCH_SEPARATOR);
+	const contextIndex = line.indexOf(RG_CONTEXT_SEPARATOR);
+	if (matchIndex === -1) return contextIndex;
+	if (contextIndex === -1) return matchIndex;
+	return Math.min(matchIndex, contextIndex);
+}
+
+function grepLinePath(line: string, mode: GrepOutputMode): string | undefined {
+	if (mode === "files_with_matches") return line;
+	if (mode === "count") {
+		const separator = line.lastIndexOf(":");
+		return separator === -1 ? undefined : line.slice(0, separator);
+	}
+	const separator = firstSeparatorIndex(line);
+	return separator === -1 ? undefined : line.slice(0, separator);
+}
+
+function restoreGrepSeparators(line: string): string {
+	return line.replaceAll(RG_MATCH_SEPARATOR, ":").replaceAll(RG_CONTEXT_SEPARATOR, "-");
 }
 
 async function sortPathsByMtime(root: string, paths: readonly string[]): Promise<string[]> {
@@ -155,11 +196,12 @@ export async function runProviderGlob(input: ProviderGlobInput): Promise<ToolTex
 	const args = ["--files", "--color=never"];
 	addRipgrepGitIgnoreArg(args, input.respectGitIgnore);
 	args.push(input.caseSensitive === false ? "--iglob" : "--glob", input.pattern);
-	addRipgrepExcludeArgs(args, ignores, input.caseSensitive === false);
+	if (canPreFilterWithRipgrep(ignores, root, input.cwd)) addRipgrepExcludeArgs(args, ignores, input.caseSensitive === false);
 
 	const result = await runProcess("rg", args, { cwd: root, timeoutMs: RIPGREP_TIMEOUT_MS, signal: input.signal });
 	if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `rg exited ${result.code}`);
-	const discovered = result.code === 1 ? [] : result.stdout.trim().split("\n").filter(Boolean);
+	const discovered = (result.code === 1 ? [] : result.stdout.trim().split("\n").filter(Boolean))
+		.filter((path) => !ignoredRgPath(input.cwd, root, path, ignores));
 	const sorted = await sortPathsByMtime(root, discovered);
 	const capped = capLines(sorted, MAX_GLOB_RESULTS);
 	const rawOutput = capped.lines.join("\n");
@@ -187,16 +229,20 @@ export async function runProviderGrep(input: ProviderGrepInput): Promise<ToolTex
 	const mode = input.outputMode ?? "files_with_matches";
 	const args = ["--color=never", "--sort", "path"];
 	addRipgrepGitIgnoreArg(args, input.respectGitIgnore);
+	const postFilterIgnores = ignores.rules.length > 0;
 	if (mode === "files_with_matches") args.push("--files-with-matches");
 	else if (mode === "count") args.push("--count");
-	else if (input.lineNumbers !== false) args.push("--line-number");
+	else {
+		if (input.lineNumbers !== false) args.push("--line-number");
+		if (postFilterIgnores) args.push("--field-match-separator", RG_MATCH_SEPARATOR, "--field-context-separator", RG_CONTEXT_SEPARATOR);
+	}
 	if (mode === "content") {
 		if (typeof input.context === "number") args.push("-C", String(Math.max(0, Math.floor(input.context))));
 		if (typeof input.before === "number") args.push("-B", String(Math.max(0, Math.floor(input.before))));
 		if (typeof input.after === "number") args.push("-A", String(Math.max(0, Math.floor(input.after))));
 	}
 	if (input.glob) args.push("--glob", input.glob);
-	addRipgrepExcludeArgs(args, ignores);
+	if (canPreFilterWithRipgrep(ignores, target.cwdForRg, input.cwd)) addRipgrepExcludeArgs(args, ignores);
 	if (input.caseInsensitive) args.push("--ignore-case");
 	if (input.type) args.push("--type", input.type);
 	if (input.multiline) args.push("--multiline", "--multiline-dotall");
@@ -217,6 +263,14 @@ export async function runProviderGrep(input: ProviderGrepInput): Promise<ToolTex
 	if (result.code !== 0) throw new Error(result.stderr || `rg exited ${result.code}`);
 
 	let lines = result.stdout.trimEnd().split("\n").filter((line) => line.length > 0);
+	if (postFilterIgnores) {
+		lines = lines
+			.filter((line) => {
+				const path = grepLinePath(line, mode);
+				return path === undefined || !ignoredRgPath(input.cwd, target.cwdForRg, path, ignores);
+			})
+			.map(restoreGrepSeparators);
+	}
 	if (!target.isDirectory) {
 		lines = lines.map((line) => line.replace(target.absolutePath, relativeResultPath(input.cwd, target.absolutePath)));
 	}

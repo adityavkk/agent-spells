@@ -63,6 +63,31 @@ describe("provider search adapter", () => {
 		expect(none.details).toMatchObject({ matches: 0 });
 	});
 
+	it("applies Gemini .geminiignore negations after ripgrep discovery", async () => {
+		const root = tempRoot();
+		writeFileSync(join(root, ".geminiignore"), "*.ts\n!keep.ts\n");
+		writeFileSync(join(root, "drop.ts"), "needle drop\n");
+		writeFileSync(join(root, "keep.ts"), "needle keep\n");
+
+		const glob = await runProviderGlob({ cwd: root, profile: "gemini", toolName: "glob", pattern: "*.ts" });
+		const grep = await runProviderGrep({ cwd: root, profile: "gemini", toolName: "grep_search", pattern: "needle", outputMode: "content", glob: "*.ts" });
+
+		expect(glob.content[0]?.text).toBe("keep.ts");
+		expect(grep.content[0]?.text).toBe("./keep.ts:1:needle keep");
+		expect(grep.details).toMatchObject({ geminiIgnoreRules: 2, unsupportedGeminiIgnoreNegations: 0 });
+	});
+
+	it("filters Gemini grep results with colon-containing paths", async () => {
+		const root = tempRoot();
+		writeFileSync(join(root, ".geminiignore"), "drop:me.ts\n");
+		writeFileSync(join(root, "drop:me.ts"), "needle drop\n");
+		writeFileSync(join(root, "keep:me.ts"), "needle keep\n");
+
+		const result = await runProviderGrep({ cwd: root, profile: "gemini", toolName: "grep_search", pattern: "needle", outputMode: "content", glob: "*.ts" });
+
+		expect(result.content[0]?.text).toBe("./keep:me.ts:1:needle keep");
+	});
+
 	it("applies Gemini .geminiignore to grep", async () => {
 		const root = tempRoot();
 		writeFileSync(join(root, ".geminiignore"), "ignored.ts\n");

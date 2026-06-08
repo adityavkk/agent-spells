@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { requireResolvedPath, resolveClaudePath, resolveExistingDirectoryUnderCwd } from "./path";
-import { isIgnoredPath, loadIgnoreFile, mergeIgnoreRuleSets, parseIgnorePatterns, toPosixPath, type IgnoreRuleSet } from "./ignore-policy";
+import { isIgnoredPath, loadIgnoreHierarchy, mergeIgnoreRuleSets, parseIgnorePatterns, toPosixPath, type IgnoreRuleSet } from "./ignore-policy";
 import { textResult, truncateTextHead, type TextResultDetails, type ToolTextResult } from "./results";
 
 export type ListProvider = "claude" | "gemini";
@@ -45,11 +45,11 @@ async function resolveListDirectory(input: ProviderListInput): Promise<string> {
 	return resolved.absolutePath;
 }
 
-async function ignoreRules(input: ProviderListInput): Promise<IgnoreRuleSet> {
+async function ignoreRules(input: ProviderListInput, directory: string): Promise<IgnoreRuleSet> {
 	const explicit = parseIgnorePatterns("explicit", input.ignore);
 	if (input.profile !== "gemini") return explicit;
-	const git = input.fileFilteringOptions?.respect_git_ignore === false ? { rules: [], unsupportedNegations: 0 } : await loadIgnoreFile(input.cwd, ".gitignore", "git");
-	const gemini = input.fileFilteringOptions?.respect_gemini_ignore === false ? { rules: [], unsupportedNegations: 0 } : await loadIgnoreFile(input.cwd, ".geminiignore", "gemini");
+	const git = input.fileFilteringOptions?.respect_git_ignore === false ? { rules: [], negatedRules: 0, unsupportedNegations: 0 } : await loadIgnoreHierarchy(input.cwd, directory, ".gitignore", "git");
+	const gemini = input.fileFilteringOptions?.respect_gemini_ignore === false ? { rules: [], negatedRules: 0, unsupportedNegations: 0 } : await loadIgnoreHierarchy(input.cwd, directory, ".geminiignore", "gemini");
 	return mergeIgnoreRuleSets(explicit, git, gemini);
 }
 
@@ -70,7 +70,7 @@ function capRows(rows: string[]): { rows: string[]; capped: boolean } {
 
 export async function listProviderDirectory(input: ProviderListInput): Promise<ToolTextResult<ListResultDetails>> {
 	const directory = await resolveListDirectory(input);
-	const rules = await ignoreRules(input);
+	const rules = await ignoreRules(input, directory);
 	const entries = await readdir(directory, { withFileTypes: true });
 	const rows = entries.map((entry) => {
 		const absolutePath = join(directory, entry.name);

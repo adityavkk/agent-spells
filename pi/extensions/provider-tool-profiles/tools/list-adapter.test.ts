@@ -50,6 +50,22 @@ describe("provider list adapter", () => {
 		await expect(listProviderDirectory({ cwd: root, profile: "gemini", toolName: "list_directory", path: "escape" })).rejects.toThrow("escapes the working directory");
 	});
 
+	it("applies nested Gemini ignore files and negations when listing subdirectories", async () => {
+		const root = tempRoot();
+		mkdirSync(join(root, "src"));
+		writeFileSync(join(root, ".geminiignore"), "root.log\n");
+		writeFileSync(join(root, "src", ".geminiignore"), "*.log\n!keep.log\n");
+		writeFileSync(join(root, "src", "drop.log"), "drop");
+		writeFileSync(join(root, "src", "keep.log"), "keep");
+		writeFileSync(join(root, "src", "root.log"), "root");
+		writeFileSync(join(root, "src", "shown.txt"), "shown");
+
+		const result = await listProviderDirectory({ cwd: root, profile: "gemini", toolName: "list_directory", path: "src" });
+
+		expect(result.content[0]?.text.split("\n")).toEqual([".geminiignore", "keep.log", "shown.txt"]);
+		expect(result.details).toMatchObject({ geminiIgnoreRules: 3, ignored: 2, unsupportedIgnoreNegations: 0 });
+	});
+
 	it("can disable Gemini ignore files explicitly", async () => {
 		const root = tempRoot();
 		writeFileSync(join(root, ".gitignore"), "git.log\n");
