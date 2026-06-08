@@ -3,16 +3,15 @@
   "type": "object",
   "properties": {
     "command": {
-      "type": "string",
-      "description": "Shell script to run in the user's default shell."
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The command to execute"
     },
     "workdir": {
       "type": "string",
       "description": "Working directory for the command. Defaults to the turn cwd."
-    },
-    "login": {
-      "type": "boolean",
-      "description": "True runs with login shell semantics; false disables them. Defaults to true."
     },
     "timeout_ms": {
       "type": "number",

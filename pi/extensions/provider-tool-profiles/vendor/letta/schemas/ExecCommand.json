@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "cmd": {
+      "type": "string",
+      "description": "Shell command to execute."
+    },
+    "login": {
+      "type": "boolean",
+      "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
+    },
+    "max_output_tokens": {
+      "type": "number",
+      "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
+    },
+    "shell": {
+      "type": "string",
+      "description": "Shell binary to launch. Defaults to the user's default shell."
+    },
+    "tty": {
+      "type": "boolean",
+      "description": "True allocates a PTY for the command; false or omitted uses plain pipes."
+    },
+    "workdir": {
+      "type": "string",
+      "description": "Working directory for the command. Defaults to the turn cwd."
+    },
+    "yield_time_ms": {
+      "type": "number",
+      "description": "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
+    }
+  },
+  "required": ["cmd"],
+  "additionalProperties": false
+}

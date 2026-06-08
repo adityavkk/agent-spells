@@ -1,7 +1,7 @@
 # Letta Code tool schema snapshot
 
 Upstream: https://github.com/letta-ai/letta-code
-Pinned ref: 42c60f6bc8678a29996ec4334bf67e77cf9be567
+Pinned ref: 2eca6e1354e37413e5b0840243ac208b8add7bd5
 License: Apache-2.0, see upstream repository for full license text.
 
 This extension vendors selected schema and description files only. Runtime implementations are local Pi wrappers.
@@ -9,7 +9,7 @@ This extension vendors selected schema and description files only. Runtime imple
 Refresh:
 
 ```bash
-bun pi/extensions/provider-tool-profiles/scripts/update-from-letta.ts 42c60f6bc8678a29996ec4334bf67e77cf9be567
+bun pi/extensions/provider-tool-profiles/scripts/update-from-letta.ts 2eca6e1354e37413e5b0840243ac208b8add7bd5
 ```
 
 Copied files:
@@ -32,6 +32,16 @@ Copied files:
 - src/tools/descriptions/LS.md
 - src/tools/schemas/ShellCommand.json
 - src/tools/descriptions/ShellCommand.md
+- src/tools/schemas/ExecCommand.json
+- src/tools/descriptions/ExecCommand.md
+- src/tools/schemas/WriteStdin.json
+- src/tools/descriptions/WriteStdin.md
+- src/tools/schemas/Shell.json
+- src/tools/descriptions/Shell.md
+- src/tools/schemas/ReadFileCodex.json
+- src/tools/descriptions/ReadFileCodex.md
+- src/tools/schemas/ListDirCodex.json
+- src/tools/descriptions/ListDirCodex.md
 - src/tools/schemas/ApplyPatch.json
 - src/tools/descriptions/ApplyPatch.md
 - src/tools/schemas/UpdatePlan.json

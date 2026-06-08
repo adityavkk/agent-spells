@@ -16,6 +16,11 @@ export const grepParams = vendorSchema("Grep");
 export const lsParams = vendorSchema("LS");
 
 export const shellCommandParams = vendorSchema("ShellCommand");
+export const execCommandParams = vendorSchema("ExecCommand");
+export const writeStdinParams = vendorSchema("WriteStdin");
+export const shellParams = vendorSchema("Shell");
+export const readFileCodexParams = vendorSchema("ReadFileCodex");
+export const listDirCodexParams = vendorSchema("ListDirCodex");
 export const applyPatchParams = vendorSchema("ApplyPatch");
 export const updatePlanParams = vendorSchema("UpdatePlan");
 export const viewImageParams = vendorSchema("ViewImage");

@@ -86,6 +86,12 @@ Schemas/descriptions are vendored from Letta Code for source-of-truth comparison
 
 Runtime implementation is local Pi wrapper code, not Letta runtime internals.
 
+The vendored Codex snapshot includes both the currently active compatibility surface
+(`shell_command`, `apply_patch`, `update_plan`, `view_image`) and newer upstream
+Codex schemas (`exec_command`, `write_stdin`, `shell`, `read_file`, `list_dir`).
+Those newer schemas are not activated by default until Pi has an explicit design for
+long-running exec sessions and stdin/polling behavior.
+
 Refresh:
 
 ```bash
@@ -95,6 +101,7 @@ bun pi/extensions/provider-tool-profiles/scripts/update-from-letta.ts
 ## Known gaps
 
 - Claude `Bash.run_in_background` returns an unsupported message in v1.
+- Latest upstream Codex defaults use `exec_command` and `write_stdin`; this extension still activates `shell_command` until session semantics are designed.
 - Codex `apply_patch` supports add/update/delete with context hunks, not every exotic patch directive.
 - `update_plan` stores plan state in-memory for the extension instance only.
 - `read_many_files`, `glob`, and grep wrappers rely on `rg`.

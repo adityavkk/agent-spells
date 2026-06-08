@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const LETTA_REPO = "https://github.com/letta-ai/letta-code";
-const DEFAULT_REF = "6a954aa389cb707b5aed9a3e9e02876620079087";
+const DEFAULT_REF = "2eca6e1354e37413e5b0840243ac208b8add7bd5";
 const ROOT = new URL("..", import.meta.url).pathname;
 
 const FILES = [
@@ -15,6 +15,11 @@ const FILES = [
 	"Grep",
 	"LS",
 	"ShellCommand",
+	"ExecCommand",
+	"WriteStdin",
+	"Shell",
+	"ReadFileCodex",
+	"ListDirCodex",
 	"ApplyPatch",
 	"UpdatePlan",
 	"ViewImage",
