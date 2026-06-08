@@ -47,6 +47,8 @@ The analyzer must work in parallel with the main agent loop: fail open, avoid bl
 - Context default: recent visible conversation only; more context is configurable.
 - Tone: terse operator notes with educational/guiding phrasing.
 - Judgment scope: describe intent and outcome; do not grade the agent broadly.
+- Surface: Option B inline adjacent cards as the only v1 surface.
+- Visibility: a user toggle shows/hides all lens cards globally without mutating the session.
 
 ## Pushback / important constraint
 
@@ -138,22 +140,40 @@ At `turn_end`/`agent_end`, persist one `tool-lens` summary (also context-strippe
 
 ## Async update mechanism
 
-Both B and C update after the row already exists:
+The lens card is appended right after the tool row, then filled in as analysis streams:
 
-- `tool_call`/`tool_execution_start`: start intent analysis; never await in `tool_call` (it can block execution).
+- `tool_call`/`tool_execution_start`: append the card in `observed` state and start intent analysis. Never await in `tool_call` (it can block execution).
 - `tool_result`: start outcome analysis; return `undefined`, never patch the result.
-- On stream progress/finish: update the `toolCallId`-keyed store, then trigger a redraw.
-  - Option B: re-render the custom message component.
-  - Option C: call the captured `context.invalidate()` for that `toolCallId` (same pattern edit tools use to fill in diffs).
+- On stream progress/finish: write the latest text to the `toolCallId`-keyed store, then trigger a repaint.
 
-`renderResult` is synchronous, so analysis is read from the store on each render pass; never block rendering on the model.
+Repaint mechanics (verified against Pi source):
+
+- The card is a custom component returned by `registerMessageRenderer`. Its `render(width)` runs every paint, so it reads the shared store and renders the latest intent/outcome each frame.
+- To force a frame after async analysis lands, call `ctx.ui.setStatus("tool-lens", ...)`, which internally calls `requestRender()`. The status text doubles as a progress/visibility indicator.
+- Do not block `render()` on the model; rendering only reads cached store state.
+
+## Visibility toggle
+
+This is a hard requirement: the user can show/hide all lens cards on demand.
+
+Design (no session mutation, verified mechanics):
+
+- Keep a module-level `visibility` state: `full | compact | hidden`.
+- The custom renderer switches on it every paint:
+  - `full`: intent/outcome card, honoring expand/collapse.
+  - `compact`: one-line summary (tool name + matched/again indicator).
+  - `hidden`: a single dim placeholder line.
+- A keybinding via `pi.registerShortcut(...)` and a `/tool-lens` command both cycle/set the state, then call `ctx.ui.setStatus(...)` to force a repaint and reflect the mode in the footer.
+- Caveat: `CustomMessageComponent` always prepends one blank `Spacer(1)` line, so `hidden` cannot be zero-height; use a minimal one-line stub. Fully removing the gap would need a Pi core display flag (separate issue).
+- Global expand/collapse (ctrl+o `setToolsExpanded`) already propagates to custom-message components, so the card gets density control for free; the visibility toggle is an independent axis.
+- Default visibility and default density come from config.
 
 ## Recommended UX path
 
-1. Default: Option B inline adjacent card, context-stripped, collapsed by default.
-2. Opt-in: Option C wrapper for built-ins + provider-tool-profiles to get a real raw/lens toggle on common tools.
-3. Optional: Option A live ticker and Option D digest behind config.
-4. Core follow-up for the generic same-row toggle: add a Pi annotation API so `renderResult` context exposes annotations keyed by `toolCallId` plus a raw/lens view mode, removing the need to co-own tool names.
+1. v1: Option B inline adjacent cards only, context-stripped, with the global visibility toggle and per-card expand/collapse.
+2. Optional behind config: Option A live ticker, Option D digest.
+3. Deferred: Option C same-row wrapper for built-ins/provider-tool-profiles.
+4. Core follow-up for a generic same-row raw/lens toggle and zero-height hide: add a Pi annotation/display API so `renderResult` context exposes annotations keyed by `toolCallId` plus a view mode, removing the need to co-own tool names.
 
 ## UX sketch
 
@@ -178,7 +198,15 @@ Option B inline adjacent card (default), collapsed then expanded:
   implication: optional broader smoke before shipping
 ```
 
-Option C same-row toggle (opt-in, wrappable tools only):
+Visibility toggle states (same session, no data loss):
+
+```text
+full     ● bash ...        lens card with intent/outcome
+compact  ● bash ...        lens: verify config; passed ✓
+hidden   ● bash ...        (lens hidden)
+```
+
+Option C same-row toggle (deferred, wrappable tools only):
 
 ```text
 ● read  README.md  42 lines                    [▸ raw | lens]
@@ -345,15 +373,18 @@ Suggested schema:
   "rendering": {
     "surface": "inline-card",
     "stripFromContext": true,
-    "wrapTools": [],
-    "liveTicker": false,
-    "tickerPlacement": "belowEditor",
+    "defaultVisibility": "full",
+    "visibilityCycle": ["full", "compact", "hidden"],
+    "toggleShortcut": "ctrl+l",
     "showRawInputs": "redacted-collapsed",
     "showRawOutputs": "summary-only",
     "order": "assistant-source",
+    "expandedByDefault": false,
     "persistAuditEntry": false,
+    "liveTicker": false,
+    "tickerPlacement": "belowEditor",
     "persistDigestMessage": false,
-    "expandedByDefault": false
+    "wrapTools": []
   },
   "privacy": {
     "sendInputsToAnalyzer": true,
@@ -367,9 +398,10 @@ Config notes:
 
 - `mode`: `intent-only | outcome-only | intent-and-outcome`.
 - `tools.allowList`/`tools.blockList`: match tool names after alias normalization; blocklist wins.
-- `rendering.surface`: `inline-card` (Option B, default) | `ticker` (Option A) | `digest` (Option D) | `off`.
+- `rendering.surface`: `inline-card` (Option B, default, the only supported v1 surface) | `ticker` (Option A) | `digest` (Option D) | `off`.
 - `rendering.stripFromContext`: must stay true so analysis is removed in the `context` hook before the LLM call.
-- `rendering.wrapTools`: opt-in list (Option C) of wrappable tool names, e.g. `["read","bash","edit","write"]` or provider-profile names; same-row raw/lens toggle for those only.
+- `rendering.defaultVisibility` / `visibilityCycle` / `toggleShortcut`: drive the global show/hide toggle (`full | compact | hidden`).
+- `rendering.wrapTools`: deferred Option C list of wrappable tool names; ignored in v1.
 - A generic same-row toggle for all tools needs the core annotation/view-mode API (separate issue).
 - Analyzer model should receive no tools in its context.
 
@@ -387,8 +419,9 @@ Create `pi/extensions/tool-lens/`:
 - `redaction.ts`: redact/truncate tool inputs/results before render/model calls/persistence.
 - `prompts.ts`: intent and outcome prompt builders.
 - `analyzer.ts`: streaming model runner, queue, cancellation, retries/timeouts.
-- `store.ts`: append/read versioned `tool-lens` custom entries by `toolCallId`.
-- `renderer.ts`: widget/status renderer and custom message renderer.
+- `store.ts`: in-memory `toolCallId`-keyed analysis store plus optional audit-entry read/write.
+- `card.ts`: custom message renderer for the inline lens card (full/compact/hidden states).
+- `visibility.ts`: global visibility state, shortcut + `/tool-lens` command, repaint trigger.
 - `README.md`: install, config, smoke prompts, privacy warnings.
 - `*.test.ts`: config, redaction, context builder, store, state machine, renderer.
 
@@ -396,18 +429,19 @@ Create `pi/extensions/tool-lens/`:
 
 Use Pi extension events documented in `docs/extensions.md`:
 
-- `session_start`: load config, restore persisted state from custom entries, register message renderer, initialize widget/status.
+- `session_start`: load config, register `registerMessageRenderer("tool-lens", ...)`, register the visibility shortcut and `/tool-lens` command, restore visibility state, initialize footer status.
+- `context`: remove every `tool-lens` custom message from the deep-copied message list so analysis never reaches the LLM. This is mandatory.
 - `before_agent_start`: capture current user prompt and optional context metadata summary, not full system prompt by default.
 - `turn_start`: initialize per-turn state.
-- `tool_execution_start` or `tool_call`: create tool record with `toolCallId`, tool name, args, source order, timestamp.
-  - Important: if using `tool_call`, return immediately; never await analyzer model there because `tool_call` can block execution.
+- `tool_execution_start` (preferred) or `tool_call`: create the `toolCallId` record (tool name, args, source order, timestamp); append the inline lens card via `sendMessage({ customType: "tool-lens", display: true, details })` in `observed` state.
+  - If hooking `tool_call`, return immediately; never await the analyzer model there because `tool_call` can block execution.
   - Kick off intent analysis with `void queueIntentAnalysis(...)`.
-- `tool_execution_update`: record optional partial result metadata, update render state only.
-- `tool_result`: capture final content/details/isError and kick off outcome analysis.
-  - Return `undefined`; never patch result.
+- `tool_execution_update`: update store partial state only.
+- `tool_result`: capture final content/details/isError and kick off outcome analysis; return `undefined`, never patch result.
 - `tool_execution_end`: finalize duration/error metadata.
-- `turn_end`/`agent_end`: append final metadata entries and optional digest message if configured.
-- `session_shutdown`: abort pending analyzer streams and clear UI widgets/status.
+- On any analysis delta/finish: update the store and call `ctx.ui.setStatus("tool-lens", ...)` to force a repaint of the card.
+- `turn_end`/`agent_end`: optionally write audit entries / digest if enabled.
+- `session_shutdown`: abort pending analyzer streams and clear footer status.
 
 ### State machine
 
@@ -543,9 +577,10 @@ Expected:
 - [ ] Tool allowlist/blocklist and alias normalization work; blocklist wins.
 - [ ] Intent analysis starts on tool call start without awaiting model completion in blocking hooks.
 - [ ] Outcome analysis starts after final tool result.
-- [ ] Inline lens cards render per tool call, update as analysis streams, and are stripped from LLM context.
-- [ ] Hidden versioned metadata persists per tool call via Pi-compatible custom entries.
-- [ ] Optional per-turn digest can be persisted as a custom message with custom renderer.
+- [ ] Inline lens cards render per tool call, update as analysis streams, and are stripped from LLM context via the `context` hook.
+- [ ] A global visibility toggle (shortcut + `/tool-lens`) cycles full/compact/hidden for all cards without mutating the session, and persists the choice for the session.
+- [ ] Per-card expand/collapse works and reacts to global ctrl+o.
+- [ ] Optional audit entry and optional per-turn digest persist only when enabled.
 - [ ] Configurable model selection supports explicit provider/model and cheap model-profile roles (`tool-lens`, `smol`).
 - [ ] Default context is recent visible conversation; system prompt/context files/tool descriptions are opt-in.
 - [ ] Inputs/outputs are redacted and truncated before analyzer model calls and before persistence.
@@ -564,10 +599,10 @@ Expected:
 
 ## Remaining grill questions
 
-1. For v1, should visible digest messages be default off? Recommendation: off, metadata on.
+1. Digest/audit entries default off in v1 (inline cards are the surface). Confirm.
 2. Should output analysis include tool `details` objects by default, or only visible `content`? Recommendation: include redacted/truncated details for file mutation counts/diffs, but cap aggressively.
-3. Should `tool-lens` skip ultra-fast tools if analyzer lags behind? Recommendation: still persist eventual analysis, but widget may show only active/latest N.
-4. Should users be able to pause for one turn via shortcut/command? Recommendation: yes, `/tool-lens pause|resume|once`.
+3. For ultra-fast tools, still render the card and fill it when analysis lands (no skipping). Confirm.
+4. Visibility toggle default keybinding `ctrl+l` and `/tool-lens [full|compact|hidden|toggle]`. Confirm keybinding choice.
 5. Should the core annotation API be part of the same issue or separate follow-up? Recommendation: separate issue linked from this one unless toggle is mandatory for v1.
 
 ## Implementation order
@@ -575,11 +610,11 @@ Expected:
 1. Scaffold `tool-lens` extension, config loader, README stub.
 2. Implement redaction/truncation and tests first.
 3. Implement state machine and fake event tests.
-4. Implement custom-entry store and reconstruction tests.
+4. Implement in-memory store and optional audit-entry persistence with tests.
 5. Implement context/prompt builders and tests.
 6. Implement analyzer streaming runner with fake stream tests.
-7. Implement widget/status renderer.
-8. Wire Pi events with fail-open behavior.
-9. Add optional digest message renderer.
+7. Implement the inline card renderer (full/compact/hidden) and visibility module (shortcut + `/tool-lens`).
+8. Wire Pi events with fail-open behavior, including the mandatory `context` strip.
+9. Add optional audit-entry and digest renderers behind config.
 10. Add smoke docs and manual test notes.
-11. Open a separate Pi core issue for tool annotations + raw/lens toggle if desired.
+11. Open a separate Pi core issue for tool annotations + generic same-row toggle if desired.
