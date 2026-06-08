@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "./pi-compat";
 import { editProviderTextFile } from "./edit-adapter";
+import { listProviderDirectory } from "./list-adapter";
 import { GEMINI_POLICY } from "./policies";
 import { readProviderFile } from "./read-adapter";
+import { runProviderGlob, runProviderGrep } from "./search-adapter";
 import { runProviderShell } from "./shell-adapter";
 import { writeProviderTextFile } from "./write-adapter";
 import { createProviderToolRuntime, type ProviderToolRuntime } from "./runtime";
@@ -16,21 +18,11 @@ import {
 	writeFileParams,
 } from "./schemas";
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
-import { globFiles, grepFiles, listDirectory, textResult } from "./shared";
-import { requireResolvedPath, resolveExistingDirectoryUnderCwd, resolveGeminiPath } from "./path";
+import { textResult } from "./shared";
+import { requireResolvedPath, resolveGeminiPath } from "./path";
 
 async function geminiPath(cwd: string, rawPath: string, label: string): Promise<string> {
 	return requireResolvedPath(await resolveGeminiPath(cwd, rawPath), label).absolutePath;
-}
-
-async function geminiDirectory(cwd: string, rawPath: string, label: string): Promise<string> {
-	return requireResolvedPath(await resolveExistingDirectoryUnderCwd(cwd, rawPath), label).absolutePath;
-}
-
-async function optionalGeminiDirectory(cwd: string, rawPath: unknown, label: string): Promise<string | undefined> {
-	if (rawPath === undefined) return undefined;
-	if (typeof rawPath !== "string") throw new Error(`${label}: expected string`);
-	return geminiDirectory(cwd, rawPath, label);
 }
 
 async function readMany(cwd: string, params: { include: string[]; exclude?: string[]; useDefaultExcludes?: boolean }, runtime: ProviderToolRuntime) {
@@ -39,7 +31,7 @@ async function readMany(cwd: string, params: { include: string[]; exclude?: stri
 	const exclude = [...defaultExcludes, ...(params.exclude ?? [])];
 	const files = new Set<string>();
 	for (const include of params.include) {
-		const result = await globFiles(cwd, include, { exclude });
+		const result = await runProviderGlob({ cwd, profile: "gemini", toolName: "read_many_files", pattern: include, exclude });
 		const text = result.content[0]?.text ?? "";
 		for (const line of text.split("\n")) {
 			const file = line.trim();
@@ -143,7 +135,14 @@ export function registerGeminiTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		promptSnippet: "List directory contents",
 		parameters: listDirectoryParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return listDirectory(await geminiDirectory(ctx.cwd, params.dir_path, "dir_path"), params.ignore);
+			return listProviderDirectory({
+				cwd: ctx.cwd,
+				profile: "gemini",
+				toolName: "list_directory",
+				path: params.dir_path,
+				ignore: params.ignore,
+				fileFilteringOptions: params.file_filtering_options,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderListCall("list_directory", args?.dir_path, theme, context);
@@ -159,11 +158,17 @@ export function registerGeminiTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		description: "Find files by glob pattern using Gemini CLI-style arguments.",
 		promptSnippet: "Find files by glob pattern",
 		parameters: geminiGlobParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return globFiles(ctx.cwd, params.pattern, {
-				dir: await optionalGeminiDirectory(ctx.cwd, params.dir_path, "dir_path"),
-				caseSensitive: params.case_sensitive,
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return runProviderGlob({
+				cwd: ctx.cwd,
+				profile: "gemini",
+				toolName: "glob",
+				pattern: params.pattern,
+				path: params.dir_path,
+				caseSensitive: params.case_sensitive ?? false,
 				respectGitIgnore: params.respect_git_ignore,
+				respectGeminiIgnore: params.respect_gemini_ignore,
+				signal,
 			});
 		},
 		renderCall(args, theme, context) {
@@ -180,13 +185,17 @@ export function registerGeminiTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		description: "Search file contents with ripgrep using Gemini CLI-style arguments.",
 		promptSnippet: "Search file contents",
 		parameters: searchFileContentParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return grepFiles(ctx.cwd, {
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return runProviderGrep({
+				cwd: ctx.cwd,
+				profile: "gemini",
+				toolName: name,
 				pattern: params.pattern,
-				path: await optionalGeminiDirectory(ctx.cwd, params.dir_path, "dir_path"),
+				path: params.dir_path,
 				glob: params.include,
-				output_mode: "content",
+				outputMode: "content",
 				lineNumbers: true,
+				signal,
 			});
 		},
 		renderCall(args, theme, context) {

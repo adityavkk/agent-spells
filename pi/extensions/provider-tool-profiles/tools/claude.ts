@@ -1,11 +1,13 @@
 import type { ExtensionAPI } from "./pi-compat";
 import { editProviderTextFile } from "./edit-adapter";
+import { listProviderDirectory } from "./list-adapter";
 import { readProviderFile } from "./read-adapter";
+import { runProviderGlob, runProviderGrep } from "./search-adapter";
 import { runProviderShell } from "./shell-adapter";
 import { writeProviderTextFile } from "./write-adapter";
 import { bashParams, editParams, globParams, grepParams, lsParams, multiEditParams, readParams, writeParams } from "./schemas";
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
-import { globFiles, grepFiles, listDirectory, resolveToolPath } from "./shared";
+import { resolveToolPath } from "./shared";
 import { createProviderToolRuntime, type ProviderToolRuntime } from "./runtime";
 
 export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRuntime = createProviderToolRuntime()): void {
@@ -131,8 +133,15 @@ export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		description: "Find files by glob pattern using ripgrep file discovery.",
 		promptSnippet: "Find files by glob pattern",
 		parameters: globParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return globFiles(ctx.cwd, params.pattern, { dir: params.path });
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return runProviderGlob({
+				cwd: ctx.cwd,
+				profile: "claude",
+				toolName: "Glob",
+				pattern: params.pattern,
+				path: params.path,
+				signal,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderGlobCall("Glob", args?.pattern, args?.path, theme, context);
@@ -148,12 +157,15 @@ export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		description: "Search file contents with ripgrep using Claude Code-style arguments.",
 		promptSnippet: "Search file contents",
 		parameters: grepParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return grepFiles(ctx.cwd, {
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return runProviderGrep({
+				cwd: ctx.cwd,
+				profile: "claude",
+				toolName: "Grep",
 				pattern: params.pattern,
 				path: params.path,
 				glob: params.glob,
-				output_mode: params.output_mode,
+				outputMode: params.output_mode,
 				context: params.context ?? params["-C"],
 				before: params["-B"],
 				after: params["-A"],
@@ -163,6 +175,7 @@ export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 				headLimit: params.head_limit,
 				offset: params.offset,
 				multiline: params.multiline,
+				signal,
 			});
 		},
 		renderCall(args, theme, context) {
@@ -180,7 +193,13 @@ export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		promptSnippet: "List directory contents",
 		parameters: lsParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return listDirectory(resolveToolPath(ctx.cwd, params.path), params.ignore);
+			return listProviderDirectory({
+				cwd: ctx.cwd,
+				profile: "claude",
+				toolName: "LS",
+				path: params.path,
+				ignore: params.ignore,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderListCall("LS", args?.path, theme, context);
