@@ -14,6 +14,87 @@ Target principle:
 
 This means tool names, schemas, argument names, and model-facing quirks stay provider-native. Execution uses Pi primitives for path safety, cancellation, process handling, truncation, mutation serialization, image handling, and TUI-safe rendering.
 
+## Current implementation status and next-agent handoff
+
+Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
+
+- Shipped commits:
+  - `f8d1222 feat: harden codex apply_patch path policy and preflight`
+  - `290aeba ci: add provider tool Pi compatibility checks`
+- Verified locally:
+  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 58 pass, 0 fail
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked` -> green
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest` -> green
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main` -> clean (`changed=0 newSchemas=0 toolsetDiffs=0`)
+
+### What is already done
+
+1. **Codex `apply_patch` hardening**
+   - Added `tools/path.ts` with the first explicit path policy: Codex patch paths are relative-only, POSIX-normalized, cwd-contained, and symlink-aware.
+   - Codex patch paths now reject empty paths, NUL bytes, absolute POSIX/Windows paths, backslashes, `~`, `..`, and symlink escapes.
+   - Reworked `tools/apply-patch.ts` into parse -> read-only preflight -> commit.
+   - Preflight computes the full write plan in memory before disk mutation.
+   - Commit has best-effort rollback from in-memory snapshots. It is not crash-safe atomicity.
+   - Added tests in `tools/path.test.ts` and expanded `tools/apply-patch.test.ts` for path policy, preflight no-mutation, and commit rollback.
+
+2. **Pi compatibility automation**
+   - Added `tools/pi-compat.ts` as the provider-tool extension's public Pi API import boundary.
+   - Rewired provider-tool runtime imports through that boundary.
+   - Added `scripts/check-pi-compat.ts`.
+     - Enforces no private Pi imports (`dist/**`, `core/**`, `src/**`, mode internals).
+     - Enforces no direct Pi package imports outside `tools/pi-compat.ts`.
+     - Smoke-tests required public exports, native tool factories, native read/write, and `createLocalBashOperations()`.
+     - Supports locked mode and latest/canary mode in a temp dir without mutating this repo's lockfile.
+   - Added `.github/workflows/pi-compat.yml`.
+     - PRs block on provider-tool tests and locked Pi compatibility.
+     - Schedule/dispatch runs latest canary and opens/updates `provider-tool-profiles: Pi compatibility drift` on failure.
+
+### Important boundaries for the next agent
+
+- Do not edit native Pi packages. All work stays under `pi/extensions/provider-tool-profiles/**` plus CI/docs for that extension.
+- Keep Letta/provider compatibility separate from Pi/runtime compatibility.
+  - Letta drift: `scripts/check-letta-drift.ts`, `vendor/letta/*`, `.github/workflows/letta-drift.yml`.
+  - Pi compatibility: `tools/pi-compat.ts`, `scripts/check-pi-compat.ts`, `.github/workflows/pi-compat.yml`.
+- Do not activate vendored Codex `exec_command` / `write_stdin` / `shell` / `read_file` / `list_dir`.
+- Do not broaden tool capabilities while aligning behavior.
+- Do not import Pi internals to get a helper. If a primitive is not public, add a small local helper with tests or leave a design note.
+
+### Known remaining gaps
+
+- `tools/path.ts` currently implements only the Codex `apply_patch` policy. Gemini cwd-containment, Codex shell workdir containment, Codex image read-only path policy, and explicit Claude path policy are still pending.
+- Gemini tools and Codex `shell_command.workdir` still flow through the broad legacy `resolveToolPath()` in `tools/shared.ts`.
+- `tools/shared.ts` still has local queue/truncation/shell helpers. The Pi import boundary is in place, but runtime adapters have not yet migrated to `withFileMutationQueue()`, Pi truncation helpers, or `createLocalBashOperations()`.
+- `read-history.ts`, `results.ts`, `policies.ts`, `read-adapter.ts`, `write-adapter.ts`, `edit-adapter.ts`, `shell-adapter.ts`, `search-adapter.ts`, `list-adapter.ts`, and `plan-state.ts` are still pending.
+- `update_plan` still stores state in memory only.
+- Provider read behavior is still too blunt: Claude text reads are not line-numbered `cat -n` style, Gemini media/deferred handling is incomplete, and read-history audit is absent.
+
+### Recommended next slice
+
+Implement path policy for the remaining active tool args before touching read/write/shell behavior:
+
+1. Extend `tools/path.ts` with tested helpers:
+   - Claude resolver: absolute allowed; relative against `ctx.cwd`; strip leading `@`; expand `~`/`~/`; do not expand `$VAR`.
+   - Cwd-contained resolver for Gemini file/search/list args: relative allowed; absolute allowed only under `ctx.cwd`; reject `..`, cwd escapes, NUL, and symlink escapes after canonicalization.
+   - Existing-directory-under-cwd resolver for Codex `shell_command.workdir`.
+   - Read-only image resolver for Codex `view_image.path`: absolute or relative allowed; strip leading `@`; no mutation.
+2. Wire only path resolution/policy, not broad runtime refactors:
+   - Gemini `read_file`, `read_many_files`, `write_file`, `replace`, `glob.dir_path`, `grep_search.dir_path`, `search_file_content.dir_path`, `list_directory.dir_path`.
+   - Codex `shell_command.workdir`.
+   - Optionally move Claude tools onto the explicit Claude resolver to preserve current behavior with tests.
+3. Add tests before/with wiring:
+   - Gemini absolute path under cwd allowed.
+   - Gemini absolute path outside cwd rejected.
+   - Gemini `..` and symlink escape rejected.
+   - Codex shell workdir rejects missing path, file path, absolute/outside cwd, and symlink escape.
+   - Claude absolute paths, `~`, relative paths, and leading `@` behavior preserved.
+4. Run before committing:
+
+```bash
+bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts
+bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked
+bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main
+```
+
 ## Research baseline
 
 ### Local and issue context
@@ -79,7 +160,7 @@ Directly delegating `Read`/`read_file` to Pi native read is too blunt. Prior art
 
 | Area | Decision | Rationale |
 | --- | --- | --- |
-| Package boundary | Add one `pi-compat.ts` import boundary. Use current `@mariozechner/*` in this repo, but keep the boundary ready for `@earendil-works/*`. | Avoid global package-name churn across implementation files. |
+| Package boundary | Done: `tools/pi-compat.ts` is the import boundary for public Pi APIs. Use current `@mariozechner/*` in this repo, but keep the boundary ready for `@earendil-works/*`. | Avoid global package-name churn across implementation files. |
 | Native reuse | Reuse public Pi factories/utilities for operations, queues, truncation, shell execution, and rendering helpers when shapes match. | Prevent reimplementing Pi internals. |
 | Path policy | Implement a per-profile/per-tool path policy table. Patch is relative-only. Gemini mutation/search/list stays cwd-contained. Claude file tools keep absolute-path support. | Avoid accidental filesystem broadening or narrowing. Provider docs conflict here, so the policy must be explicit and tested. |
 | Read | Hybrid, not raw delegation. Native-compatible path/image/truncation; provider-specific text formatting and offset mapping. | Direct Pi output would drift from Claude/Letta line-numbered reads and Gemini 0-based reads. |
@@ -102,7 +183,7 @@ Implement this before changing behavior. Tests must cover absolute paths, relati
 | Claude `Read`, `Write`, `Edit`, `MultiEdit`, `Glob.path`, `Grep.path`, `LS.path` | Absolute allowed; relative resolves against `ctx.cwd`; leading `@` stripped; `~`/`~/` stays expanded for current Pi compatibility; `$VAR` is not expanded. | Matches current capability and Claude/Letta absolute-path expectations. Document `~` expansion as a Pi compatibility divergence from Letta's literal-path wording. |
 | Gemini `write_file`, `replace`, `glob.dir_path`, `grep_search.dir_path`, `search_file_content.dir_path`, `list_directory.dir_path` | Must resolve under `ctx.cwd` after symlink/canonicalization. Relative paths allowed. Absolute paths allowed only if under `ctx.cwd`. | Matches Gemini `rootDirectory`/workspace safety. |
 | Gemini `read_file`, `read_many_files` | Same cwd-contained default as other Gemini tools. If a future user need requires temp screenshots outside cwd, add an explicit config flag and tests. | Avoid silent broad reads in Gemini profile. |
-| Codex `apply_patch` | Relative-only, POSIX-normalized, cwd-contained. Reject NUL, absolute POSIX, absolute Windows, empty, `..`, and symlink escape. | Codex apply-patch instructions say file references are never absolute. |
+| Codex `apply_patch` | Done: relative-only, POSIX-normalized, cwd-contained. Rejects NUL, absolute POSIX, absolute Windows, empty, `..`, backslashes, `~`, and symlink escape. | Codex apply-patch instructions say file references are never absolute. |
 | Codex `shell_command.workdir` | Must resolve under `ctx.cwd`; default `ctx.cwd`; reject missing or non-directory workdirs. | Avoid shell execution from surprising directories. |
 | Codex `view_image.path` | Absolute or relative read-only image path allowed; leading `@` stripped; no mutation. | Codex prior art says use full local image paths supplied by the user. |
 | Shell commands themselves | Path policy applies only to tool args, not shell internals. | Shell can still access what the OS/user permits; Pi permission/sandbox systems remain the enforcement layer. |
@@ -419,17 +500,17 @@ Keep two independent compatibility checks in CI:
 | Workflow | Protects | Trigger | PR behavior | Scheduled behavior |
 | --- | --- | --- | --- | --- |
 | Letta drift | Provider-facing schema/descriptions/default toolsets | existing `.github/workflows/letta-drift.yml` | report drift; fail only on tooling/test errors | open/update `provider-tool-profiles: Letta drift` |
-| Pi compatibility | Pi public runtime APIs, native tool primitives, result shapes, TUI contracts | proposed `.github/workflows/pi-compat.yml` | fail on locked-package test failures, private Pi imports, renderer regressions, or missing public exports | open/update `provider-tool-profiles: Pi compatibility drift` for latest-Pi canary failures |
+| Pi compatibility | Pi public runtime APIs, native tool primitives, result shapes, TUI contracts | `.github/workflows/pi-compat.yml` | fail on locked-package test failures, private Pi imports, boundary violations, renderer regressions, or missing public exports | open/update `provider-tool-profiles: Pi compatibility drift` for latest-Pi canary failures |
 
 Pi compatibility check scope:
 
 - Run current provider-tool-profiles tests against the locked dependency set.
-- Assert provider-tool-profiles imports Pi only through public package exports, not `dist/**` or private `core/**` paths.
+- Assert provider-tool-profiles imports Pi only through `tools/pi-compat.ts` and public package exports, not `dist/**` or private `core/**` paths.
 - Smoke import the public Pi primitives the hybrid adapters depend on:
   - `withFileMutationQueue`
   - `truncateHead`, `truncateTail`, `truncateLine`, `formatSize`
   - `createLocalBashOperations`
-  - native tool factories for read/write/bash/list/grep/find
+  - native tool factories for read/write/edit/bash/list/grep/find
 - Instantiate native tool definitions against a temp cwd and verify result details still expose expected truncation/full-output fields where relevant.
 - Upload `.tmp/pi-compat/summary.md` and `.tmp/pi-compat/recommended-actions.md` artifacts.
 
