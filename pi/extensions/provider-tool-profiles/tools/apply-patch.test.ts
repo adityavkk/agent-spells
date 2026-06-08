@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyPatch, parseApplyPatch } from "./apply-patch";
@@ -79,5 +80,96 @@ describe("applyPatch", () => {
 		expect(existsSync(join(root, "old.txt"))).toBe(false);
 		expect(readFileSync(join(root, "nested", "new.txt"), "utf8")).toBe("alpha\nnew\nomega\n");
 		expect(result.content[0]?.text).toContain("moved old.txt -> nested/new.txt");
+	});
+});
+
+describe("applyPatch path policy", () => {
+	it("rejects absolute target paths", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-abs-"));
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Add File: /tmp/escape.txt
++nope
+*** End Patch`),
+		).rejects.toThrow("absolute paths are not allowed");
+	});
+
+	it("rejects parent-directory traversal", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-traversal-"));
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Add File: ../escape.txt
++nope
+*** End Patch`),
+		).rejects.toThrow("escapes the working directory");
+	});
+
+	it("rejects symlink escapes from inside cwd", async () => {
+		const base = mkdtempSync(join(tmpdir(), "provider-apply-symlink-"));
+		const root = join(base, "root");
+		const outside = join(base, "outside");
+		await mkdir(root, { recursive: true });
+		await mkdir(outside, { recursive: true });
+		symlinkSync(outside, join(root, "link"));
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Add File: link/escape.txt
++nope
+*** End Patch`),
+		).rejects.toThrow("escapes the working directory");
+	});
+});
+
+describe("applyPatch preflight atomicity", () => {
+	it("does not mutate disk when a later operation fails preflight", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-preflight-"));
+		writeFileSync(join(root, "exists.txt"), "original\n");
+
+		// First op is a valid add; second op updates a missing file and must fail.
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Add File: created.txt
++created
+*** Update File: missing.txt
+@@
+-old
++new
+*** End Patch`),
+		).rejects.toThrow("does not exist");
+
+		// The earlier add must NOT have touched disk: preflight runs before commit.
+		expect(existsSync(join(root, "created.txt"))).toBe(false);
+		expect(readFileSync(join(root, "exists.txt"), "utf8")).toBe("original\n");
+	});
+
+	it("reports update targets that do not exist", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-missing-"));
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Update File: ghost.txt
+@@
+-old
++new
+*** End Patch`),
+		).rejects.toThrow("does not exist");
+	});
+
+	it("rolls back an applied operation when a later commit step fails", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-rollback-"));
+
+		// op1 creates the file `blocker`; op2 tries to add `blocker/child.txt`,
+		// whose parent is now a file. mkdir fails at commit time (post-preflight),
+		// so op1 must be rolled back, leaving the workspace clean.
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Add File: blocker
++i am a file
+*** Add File: blocker/child.txt
++orphan
+*** End Patch`),
+		).rejects.toThrow("apply_patch failed during commit");
+
+		expect(existsSync(join(root, "blocker"))).toBe(false);
+		expect(existsSync(join(root, "blocker", "child.txt"))).toBe(false);
 	});
 });

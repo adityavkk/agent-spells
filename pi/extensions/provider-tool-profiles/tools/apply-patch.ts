@@ -1,11 +1,45 @@
+/**
+ * Codex `apply_patch` engine.
+ *
+ * Codex's apply-patch grammar (`*** Begin Patch` ... `*** End Patch`) has no
+ * Pi-native equivalent, so this engine is implemented locally. It follows the
+ * safety contract in `docs/tool-behavior-matrix.md`:
+ *
+ * 1. Paths are relative-only and contained within `cwd` (see `path.ts`).
+ * 2. The patch is parsed and fully resolved in a read-only **preflight** that
+ *    produces an in-memory write plan. No file is mutated until every operation
+ *    has parsed, passed path policy, and been computed.
+ * 3. The plan is then **committed**. If any write/delete/rename fails midway,
+ *    previously applied operations are rolled back from in-memory snapshots on
+ *    a best-effort basis. This is not crash-safe atomicity, and we never claim
+ *    it is.
+ */
+
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { applyExactEditsToText, resolveToolPath, textResult, withPathQueue, type ToolTextResult } from "./shared";
+import { resolvePatchPath } from "./path";
+import { applyExactEditsToText, textResult, withPathQueue, type ToolTextResult } from "./shared";
 
 type PatchOperation =
 	| { kind: "add"; path: string; content: string }
 	| { kind: "delete"; path: string }
 	| { kind: "update"; path: string; hunks: Array<{ oldText: string; newText: string }>; moveTo?: string };
+
+/** A single operation after path resolution and in-memory computation. */
+type ResolvedOperation =
+	| { kind: "add"; relativePath: string; absolutePath: string; content: string }
+	| { kind: "delete"; relativePath: string; absolutePath: string }
+	| {
+			kind: "update";
+			relativePath: string;
+			absolutePath: string;
+			nextText: string;
+			replacements: number[];
+			move?: { relativePath: string; absolutePath: string };
+	  };
+
+/** Snapshot of a file's bytes before mutation, used for best-effort rollback. */
+type Snapshot = { present: true; content: Buffer } | { present: false };
 
 function cleanLine(line: string): string {
 	return line.endsWith("\r") ? line.slice(0, -1) : line;
@@ -56,6 +90,12 @@ function parseHunks(lines: string[]): Array<{ oldText: string; newText: string }
 	return hunks;
 }
 
+/**
+ * Parse a Codex patch envelope into structured operations.
+ *
+ * Pure and filesystem-free: this only inspects text so it stays trivially
+ * testable and can run during preflight without side effects.
+ */
 export function parseApplyPatch(input: string): PatchOperation[] {
 	const lines = input.split("\n");
 	const first = lines.findIndex((line) => cleanLine(line) === "*** Begin Patch");
@@ -112,42 +152,166 @@ export function parseApplyPatch(input: string): PatchOperation[] {
 	return ops;
 }
 
-export async function applyPatch(cwd: string, input: string): Promise<ToolTextResult> {
-	const ops = parseApplyPatch(input);
-	const changed: string[] = [];
+/** Resolve a raw patch path or throw a clear, directive-tagged policy error. */
+async function resolveOrThrow(cwd: string, rawPath: string, directive: string): Promise<{ absolutePath: string; relativePath: string }> {
+	const resolved = await resolvePatchPath(cwd, rawPath);
+	if (!resolved.ok) throw new Error(`${directive} "${rawPath}": ${resolved.reason}`);
+	return { absolutePath: resolved.absolutePath, relativePath: resolved.relativePath };
+}
+
+/**
+ * Read-only preflight: resolve every path and compute the resulting file
+ * contents in memory. Throws before any disk mutation if a path violates
+ * policy, a target for update/delete is missing, or a hunk does not apply.
+ */
+async function preflight(cwd: string, ops: PatchOperation[]): Promise<ResolvedOperation[]> {
+	const resolved: ResolvedOperation[] = [];
 	for (const op of ops) {
-		const path = resolveToolPath(cwd, op.path);
-		await withPathQueue(path, async () => {
+		const { absolutePath, relativePath } = await resolveOrThrow(cwd, op.path, directiveLabel(op.kind));
+		if (op.kind === "add") {
+			resolved.push({ kind: "add", relativePath, absolutePath, content: op.content });
+			continue;
+		}
+		if (op.kind === "delete") {
+			await readExisting(absolutePath, relativePath, "Delete File");
+			resolved.push({ kind: "delete", relativePath, absolutePath });
+			continue;
+		}
+		const current = await readExisting(absolutePath, relativePath, "Update File");
+		const { text, replacements } = applyExactEditsToText(
+			current,
+			op.hunks.map((hunk) => ({ old_string: hunk.oldText, new_string: hunk.newText })),
+		);
+		let move: { relativePath: string; absolutePath: string } | undefined;
+		if (op.moveTo) {
+			const target = await resolveOrThrow(cwd, op.moveTo, "Move to");
+			if (target.absolutePath !== absolutePath) move = target;
+		}
+		resolved.push({ kind: "update", relativePath, absolutePath, nextText: text, replacements, move });
+	}
+	return resolved;
+}
+
+function directiveLabel(kind: PatchOperation["kind"]): string {
+	return kind === "add" ? "Add File" : kind === "delete" ? "Delete File" : "Update File";
+}
+
+async function readExisting(absolutePath: string, relativePath: string, directive: string): Promise<string> {
+	try {
+		return await readFile(absolutePath, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`${directive} "${relativePath}": file does not exist`);
+		throw error;
+	}
+}
+
+async function readSnapshot(absolutePath: string): Promise<Snapshot> {
+	try {
+		return { present: true, content: await readFile(absolutePath) };
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { present: false };
+		throw error;
+	}
+}
+
+async function restoreSnapshot(absolutePath: string, snapshot: Snapshot): Promise<void> {
+	if (snapshot.present) {
+		await mkdir(dirname(absolutePath), { recursive: true });
+		await writeFile(absolutePath, snapshot.content);
+	} else {
+		await rm(absolutePath, { force: true });
+	}
+}
+
+/**
+ * Commit a preflighted plan. Each operation captures a snapshot immediately
+ * before mutating, registers an undo closure, and on any failure the applied
+ * operations are rolled back in reverse order.
+ */
+async function commit(plan: ResolvedOperation[]): Promise<ToolTextResult> {
+	const changed: string[] = [];
+	const undos: Array<() => Promise<void>> = [];
+
+	try {
+		for (const op of plan) {
 			if (op.kind === "add") {
-				await mkdir(dirname(path), { recursive: true });
-				await writeFile(path, op.content, "utf8");
-				changed.push(`added ${op.path}`);
-				return;
+				await withPathQueue(op.absolutePath, async () => {
+					const before = await readSnapshot(op.absolutePath);
+					await mkdir(dirname(op.absolutePath), { recursive: true });
+					await writeFile(op.absolutePath, op.content, "utf8");
+					undos.push(() => restoreSnapshot(op.absolutePath, before));
+				});
+				changed.push(`added ${op.relativePath}`);
+				continue;
 			}
 			if (op.kind === "delete") {
-				await rm(path);
-				changed.push(`deleted ${op.path}`);
-				return;
+				await withPathQueue(op.absolutePath, async () => {
+					const before = await readSnapshot(op.absolutePath);
+					await rm(op.absolutePath, { force: true });
+					undos.push(() => restoreSnapshot(op.absolutePath, before));
+				});
+				changed.push(`deleted ${op.relativePath}`);
+				continue;
 			}
-			const current = await readFile(path, "utf8");
-			const { text, replacements } = applyExactEditsToText(current, op.hunks.map((hunk) => ({
-				old_string: hunk.oldText,
-				new_string: hunk.newText,
-			})));
-			await writeFile(path, text, "utf8");
-			if (op.moveTo) {
-				const targetPath = resolveToolPath(cwd, op.moveTo);
-				if (targetPath !== path) {
-					await withPathQueue(targetPath, async () => {
-						await mkdir(dirname(targetPath), { recursive: true });
-						await rename(path, targetPath);
-					});
-				}
-				changed.push(`moved ${op.path} -> ${op.moveTo}`);
-				return;
-			}
-			changed.push(`updated ${op.path} (${replacements.reduce((sum, count) => sum + count, 0)} hunk replacement(s))`);
-		});
+			await commitUpdate(op, undos);
+			changed.push(
+				op.move
+					? `moved ${op.relativePath} -> ${op.move.relativePath}`
+					: `updated ${op.relativePath} (${op.replacements.reduce((sum, count) => sum + count, 0)} hunk replacement(s))`,
+			);
+		}
+	} catch (error) {
+		const rollbackOk = await rollback(undos);
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new Error(`apply_patch failed during commit: ${reason}. Rollback ${rollbackOk ? "succeeded" : "incomplete; inspect the workspace"}.`);
 	}
-	return textResult(changed.join("\n") || "No patch operations", { operations: ops.length });
+
+	return textResult(changed.join("\n") || "No patch operations", { operations: plan.length });
+}
+
+async function commitUpdate(op: Extract<ResolvedOperation, { kind: "update" }>, undos: Array<() => Promise<void>>): Promise<void> {
+	await withPathQueue(op.absolutePath, async () => {
+		const beforeSource = await readSnapshot(op.absolutePath);
+		await writeFile(op.absolutePath, op.nextText, "utf8");
+		if (!op.move) {
+			undos.push(() => restoreSnapshot(op.absolutePath, beforeSource));
+			return;
+		}
+		const move = op.move;
+		await withPathQueue(move.absolutePath, async () => {
+			const beforeTarget = await readSnapshot(move.absolutePath);
+			await mkdir(dirname(move.absolutePath), { recursive: true });
+			await rename(op.absolutePath, move.absolutePath);
+			undos.push(async () => {
+				// Undo in reverse: move the file back, then restore both endpoints.
+				await rm(op.absolutePath, { force: true });
+				await rename(move.absolutePath, op.absolutePath).catch(() => undefined);
+				await restoreSnapshot(move.absolutePath, beforeTarget);
+				await restoreSnapshot(op.absolutePath, beforeSource);
+			});
+		});
+	});
+}
+
+async function rollback(undos: Array<() => Promise<void>>): Promise<boolean> {
+	let ok = true;
+	for (const undo of undos.reverse()) {
+		try {
+			await undo();
+		} catch {
+			ok = false;
+		}
+	}
+	return ok;
+}
+
+/**
+ * Apply a Codex patch under `cwd`. Parses, preflights into an in-memory plan,
+ * then commits with best-effort rollback. No disk mutation occurs unless the
+ * entire patch parses, passes path policy, and computes cleanly.
+ */
+export async function applyPatch(cwd: string, input: string): Promise<ToolTextResult> {
+	const ops = parseApplyPatch(input);
+	const plan = await preflight(cwd, ops);
+	return commit(plan);
 }

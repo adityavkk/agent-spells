@@ -110,7 +110,7 @@ Sync strategy and future automation plan: `docs/letta-sync.md`.
 
 - Claude `Bash.run_in_background` returns an unsupported message in v1.
 - Latest upstream Codex defaults use `exec_command` and `write_stdin`; this extension still activates `shell_command` until session semantics are designed.
-- Codex `apply_patch` supports add/update/delete with context hunks, not every exotic patch directive.
+- Codex `apply_patch` supports add/update/delete/move with context hunks, not every exotic patch directive. Paths are relative-only and contained within `cwd`; the patch is preflighted in memory before any disk write, with best-effort rollback on commit failure (not crash-safe atomicity).
 - `update_plan` stores plan state in-memory for the extension instance only.
 - `read_many_files`, `glob`, and grep wrappers rely on `rg`.
 - No Letta memory/task/skill/approval system included.
