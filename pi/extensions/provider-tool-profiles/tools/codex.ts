@@ -1,29 +1,13 @@
-import { extname } from "node:path";
-import { readFile } from "node:fs/promises";
 import type { ExtensionAPI } from "./pi-compat";
 import { applyPatchParams, shellCommandParams, updatePlanParams, viewImageParams } from "./schemas";
 import { applyPatch } from "./apply-patch";
 import { renderImageCall, renderImageResult, renderPatchCall, renderPlanCall, renderPlanResult, renderPreviewResult, renderShellCall, renderShellResult } from "./rendering";
+import { createCodexPlanState, type CodexPlanState } from "./plan-state";
+import { readProviderImage } from "./read-adapter";
 import { runProviderShell } from "./shell-adapter";
-import { textResult } from "./shared";
 import { requireResolvedPath, resolveCodexImagePath } from "./path";
 
-type PlanItem = { step: string; status: string };
-
-const IMAGE_TYPES: Record<string, string> = {
-	".png": "image/png",
-	".jpg": "image/jpeg",
-	".jpeg": "image/jpeg",
-	".gif": "image/gif",
-	".webp": "image/webp",
-};
-
-function planSummary(plan: PlanItem[]): string {
-	return plan.map((item) => `- [${item.status}] ${item.step}`).join("\n");
-}
-
-export function registerCodexTools(pi: ExtensionAPI): void {
-	let currentPlan: PlanItem[] = [];
+export function registerCodexTools(pi: ExtensionAPI, planState: CodexPlanState = createCodexPlanState(pi)): void {
 
 	pi.registerTool({
 		name: "shell_command",
@@ -81,9 +65,7 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 		promptSnippet: "Update the visible task plan",
 		parameters: updatePlanParams,
 		async execute(_id, params) {
-			currentPlan = params.plan;
-			const summary = [params.explanation, planSummary(currentPlan)].filter(Boolean).join("\n\n");
-			return textResult(summary || "Plan updated", { plan: currentPlan });
+			return planState.update(params.plan, params.explanation);
 		},
 		renderCall(args, theme, context) {
 			return renderPlanCall(args ?? {}, theme, context);
@@ -101,16 +83,7 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 		parameters: viewImageParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const path = requireResolvedPath(resolveCodexImagePath(ctx.cwd, params.path), "path").absolutePath;
-			const mediaType = IMAGE_TYPES[extname(path).toLowerCase()];
-			if (!mediaType) return textResult(`Unsupported image type for ${path}`, { path, unsupported: true });
-			const data = await readFile(path, "base64");
-			return {
-				content: [
-					{ type: "text", text: `Loaded image ${path}` },
-					{ type: "image", data, mimeType: mediaType },
-				] as any,
-				details: { path, mediaType },
-			};
+			return readProviderImage({ path, profile: "codex", toolName: "view_image" });
 		},
 		renderCall(args, theme, context) {
 			return renderImageCall(args ?? {}, theme, context);

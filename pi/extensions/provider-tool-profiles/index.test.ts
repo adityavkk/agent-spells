@@ -21,6 +21,7 @@ function harness(model: { provider: string; id: string }) {
 	const tools = new Map<string, any>();
 	const execCalls: Array<{ command: string; args: string[]; options: unknown }> = [];
 	const statusCalls: Array<{ key: string; value: string | undefined }> = [];
+	const customEntries: Array<{ customType: string; data: unknown }> = [];
 	const pi = {
 		registerTool(tool: { name: string }) { registered.push(tool.name); tools.set(tool.name, tool); },
 		on(event: string, handler: Function) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
@@ -30,6 +31,7 @@ function harness(model: { provider: string; id: string }) {
 			execCalls.push({ command, args, options });
 			return { stdout: "ok", stderr: "", code: 0, killed: false };
 		},
+		appendEntry(customType: string, data: unknown) { customEntries.push({ customType, data }); },
 	} as any;
 	const ctx = {
 		cwd: "/tmp/provider-tool-profiles-index-test",
@@ -43,7 +45,7 @@ function harness(model: { provider: string; id: string }) {
 		},
 	} as any;
 	providerToolProfilesExtension(pi);
-	return { handlers, registered, tools, execCalls, statusCalls, get activeTools() { return activeTools; }, ctx };
+	return { handlers, registered, tools, execCalls, statusCalls, customEntries, get activeTools() { return activeTools; }, ctx };
 }
 
 describe("providerToolProfilesExtension", () => {
@@ -206,6 +208,17 @@ describe("providerToolProfilesExtension", () => {
 		await expect(h.tools.get("shell_command").execute("1", { command: "pwd", workdir: outside }, undefined, () => {}, h.ctx)).rejects.toThrow("escapes the working directory");
 
 		expect(h.execCalls).toEqual([]);
+	});
+
+	it("persists Codex update_plan state as custom session entries", async () => {
+		const h = harness({ provider: "openai-codex", id: "gpt-5.4" });
+
+		const result = await h.tools.get("update_plan").execute("1", { explanation: "Tracking", plan: [{ step: "Implement", status: "in_progress" }] }, undefined, () => {}, h.ctx);
+
+		expect(result.content[0]?.text).toContain("- [in_progress] Implement");
+		expect(result.details).toMatchObject({ persisted: true, plan: [{ step: "Implement", status: "in_progress" }] });
+		expect(h.customEntries).toHaveLength(1);
+		expect(h.customEntries[0]?.customType).toBe("provider-tool-profiles.codex.plan.v1");
 	});
 
 	it("keeps Codex view_image read-only paths outside cwd available", async () => {

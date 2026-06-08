@@ -34,6 +34,13 @@ export interface ReadProviderFileInput {
 	readHistory?: ReadHistory;
 }
 
+export interface ReadProviderImageInput {
+	path: string;
+	profile: ProviderProfile;
+	toolName: string;
+	readHistory?: ReadHistory;
+}
+
 export interface ReadTextDetails extends TextResultDetails {
 	path: string;
 	profile: "claude" | "gemini";
@@ -81,7 +88,7 @@ function continuationNotice(start: number, end: number, total: number, nextOffse
 	return `[Showing lines ${start + 1}-${end} of ${total}. Use offset ${nextOffset} to continue.]`;
 }
 
-async function readImage(path: string, profile: "claude" | "gemini", toolName: string, mimeType: string, readHistory?: ReadHistory): Promise<ProviderToolResult> {
+async function readImage(path: string, profile: ProviderProfile, toolName: string, mimeType: string, readHistory?: ReadHistory): Promise<ProviderToolResult> {
 	const [data, stats] = await Promise.all([readFile(path, "base64"), stat(path)]);
 	await readHistory?.recordRead({ path, profile, toolName, kind: "image" });
 	return {
@@ -143,6 +150,12 @@ export async function readProviderFile(input: ReadProviderFileInput): Promise<Pr
 	if (deferredKind) return unsupportedMediaResult(input.path, deferredKind);
 
 	return readText(input);
+}
+
+export async function readProviderImage(input: ReadProviderImageInput): Promise<ProviderToolResult> {
+	const mimeType = imageMimeTypeForPath(input.path);
+	if (!mimeType) return unsupportedResult(`Unsupported image type for ${input.path}`, { path: input.path, profile: input.profile, toolName: input.toolName, unsupported: true });
+	return readImage(input.path, input.profile, input.toolName, mimeType, input.readHistory);
 }
 
 export function imageMimeTypeForPath(path: string): string | undefined {
