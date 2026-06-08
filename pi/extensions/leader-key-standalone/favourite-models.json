@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Sonnet",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "thinking": "medium"
+  },
+  {
+    "label": "Opus",
+    "provider": "anthropic",
+    "model": "claude-opus-4-6",
+    "thinking": "medium"
+  }
+]

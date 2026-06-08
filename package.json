@@ -21,6 +21,9 @@
   },
   "dependencies": {
     "@boundaryml/baml": "^0.220.0",
-    "@mariozechner/pi-ai": "^0.66.1"
+    "@mariozechner/pi-agent-core": "^0.73.1",
+    "@mariozechner/pi-ai": "^0.66.1",
+    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@mariozechner/pi-tui": "^0.73.1"
   }
 }
