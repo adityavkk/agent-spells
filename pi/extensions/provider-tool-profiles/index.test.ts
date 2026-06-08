@@ -2,6 +2,15 @@ import { describe, expect, it } from "bun:test";
 import providerToolProfilesExtension from "./index";
 import { CLAUDE_TOOLS } from "./types";
 
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+};
+
+function renderedText(component: { render(width: number): string[] }, width = 100): string {
+	return component.render(width).join("\n");
+}
+
 function harness(model: { provider: string; id: string }) {
 	const handlers = new Map<string, Function[]>();
 	let activeTools = ["read", "bash", "edit", "write", "answer"];
@@ -78,5 +87,32 @@ describe("providerToolProfilesExtension", () => {
 		const result = await h.tools.get("Bash").execute("1", { command: "pwd", timeout: 1234 }, signal, () => {}, h.ctx);
 		expect(h.execCalls).toEqual([{ command: "bash", args: ["-lc", "pwd"], options: { cwd: h.ctx.cwd, timeout: 1234, signal } }]);
 		expect(result.content[0]?.text).toContain("ok");
+	});
+
+	it("renders long shell output compactly until expanded", () => {
+		const h = harness({ provider: "openai-codex", id: "gpt-5.4" });
+		const tool = h.tools.get("shell_command");
+		const result = { content: [{ type: "text", text: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n") }], details: {} };
+		const compact = renderedText(tool.renderResult(result, { expanded: false }, theme, { cwd: h.ctx.cwd, showImages: true }));
+		const expanded = renderedText(tool.renderResult(result, { expanded: true }, theme, { cwd: h.ctx.cwd, showImages: true }));
+
+		expect(compact.split("\n")).not.toContain("line 1");
+		expect(compact).toContain("14 earlier lines");
+		expect(compact).toContain("line 20");
+		expect(expanded).toContain("line 1");
+		expect(expanded).toContain("line 20");
+	});
+
+	it("renders read output as summary unless expanded", () => {
+		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
+		const tool = h.tools.get("Read");
+		const result = { content: [{ type: "text", text: "secret file body\nsecond line" }], details: { lineCount: 2, bytes: 28 } };
+		const compact = renderedText(tool.renderResult(result, { expanded: false }, theme, { cwd: h.ctx.cwd, showImages: true }));
+		const expanded = renderedText(tool.renderResult(result, { expanded: true }, theme, { cwd: h.ctx.cwd, showImages: true }));
+
+		expect(compact).toContain("2 lines");
+		expect(compact).toContain("28B");
+		expect(compact).not.toContain("secret file body");
+		expect(expanded).toContain("secret file body");
 	});
 });

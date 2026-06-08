@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { bashParams, editParams, globParams, grepParams, lsParams, multiEditParams, readParams, writeParams } from "./schemas";
+import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
 import { applyExactEdits, globFiles, grepFiles, listDirectory, readTextFile, resolveToolPath, runShell, writeTextFile } from "./shared";
 
 export function registerClaudeTools(pi: ExtensionAPI): void {
@@ -12,6 +13,12 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return readTextFile(resolveToolPath(ctx.cwd, params.file_path), { offset: params.offset, limit: params.limit, offsetBase: 1 });
 		},
+		renderCall(args, theme, context) {
+			return renderReadCall("Read", args.file_path, args, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderReadResult(result, options, theme, context);
+		},
 	});
 
 	pi.registerTool({
@@ -22,6 +29,12 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 		parameters: writeParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return writeTextFile(resolveToolPath(ctx.cwd, params.file_path), params.content);
+		},
+		renderCall(args, theme, context) {
+			return renderWriteCall("Write", args.file_path, args.content, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderWriteResult(result, options, theme, context);
 		},
 	});
 
@@ -34,6 +47,12 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return applyExactEdits(resolveToolPath(ctx.cwd, params.file_path), [params]);
 		},
+		renderCall(args, theme, context) {
+			return renderEditCall("Edit", args.file_path, args, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderEditResult(result, options, theme, context);
+		},
 	});
 
 	pi.registerTool({
@@ -44,6 +63,12 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 		parameters: multiEditParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return applyExactEdits(resolveToolPath(ctx.cwd, params.file_path), params.edits);
+		},
+		renderCall(args, theme, context) {
+			return renderEditCall("MultiEdit", args.file_path, args, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderEditResult(result, options, theme, context);
 		},
 	});
 
@@ -59,6 +84,12 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 			}
 			return runShell({ pi, ctx, command: params.command, timeoutMs: params.timeout, signal });
 		},
+		renderCall(args, theme, context) {
+			return renderShellCall(args, theme, context, "$");
+		},
+		renderResult(result, options, theme, context) {
+			return renderShellResult(result, options, theme, context);
+		},
 	});
 
 	pi.registerTool({
@@ -69,6 +100,12 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 		parameters: globParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return globFiles(ctx.cwd, params.pattern, { dir: params.path });
+		},
+		renderCall(args, theme, context) {
+			return renderGlobCall("Glob", args.pattern, args.path, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderPreviewResult(result, options, theme, context, 18);
 		},
 	});
 
@@ -95,6 +132,12 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 				multiline: params.multiline,
 			});
 		},
+		renderCall(args, theme, context) {
+			return renderSearchCall("Grep", args, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderPreviewResult(result, options, theme, context, 15);
+		},
 	});
 
 	pi.registerTool({
@@ -105,6 +148,12 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 		parameters: lsParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return listDirectory(resolveToolPath(ctx.cwd, params.path), params.ignore);
+		},
+		renderCall(args, theme, context) {
+			return renderListCall("LS", args.path, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderPreviewResult(result, options, theme, context, 20);
 		},
 	});
 }

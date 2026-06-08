@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { applyPatchParams, shellCommandParams, updatePlanParams, viewImageParams } from "./schemas";
 import { applyPatch } from "./apply-patch";
+import { renderImageCall, renderImageResult, renderPatchCall, renderPlanCall, renderPlanResult, renderPreviewResult, renderShellCall, renderShellResult } from "./rendering";
 import { resolveToolPath, runShell, textResult } from "./shared";
 
 type PlanItem = { step: string; status: string };
@@ -31,6 +32,12 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			return runShell({ pi, ctx, command: params.command, workdir: params.workdir, timeoutMs: params.timeout_ms, signal });
 		},
+		renderCall(args, theme, context) {
+			return renderShellCall(args, theme, context, "$");
+		},
+		renderResult(result, options, theme, context) {
+			return renderShellResult(result, options, theme, context);
+		},
 	});
 
 	pi.registerTool({
@@ -41,6 +48,12 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 		parameters: applyPatchParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return applyPatch(ctx.cwd, params.input);
+		},
+		renderCall(args, theme, context) {
+			return renderPatchCall(args, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderPreviewResult(result, options, theme, context, 12);
 		},
 	});
 
@@ -54,6 +67,12 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 			currentPlan = params.plan;
 			const summary = [params.explanation, planSummary(currentPlan)].filter(Boolean).join("\n\n");
 			return textResult(summary || "Plan updated", { plan: currentPlan });
+		},
+		renderCall(args, theme, context) {
+			return renderPlanCall(args, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderPlanResult(result, options, theme, context);
 		},
 	});
 
@@ -71,10 +90,16 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 			return {
 				content: [
 					{ type: "text", text: `Loaded image ${path}` },
-					{ type: "image", source: { type: "base64", mediaType, data } },
+					{ type: "image", data, mimeType: mediaType },
 				] as any,
 				details: { path, mediaType },
 			};
+		},
+		renderCall(args, theme, context) {
+			return renderImageCall(args, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderImageResult(result, options, theme, context);
 		},
 	});
 }
