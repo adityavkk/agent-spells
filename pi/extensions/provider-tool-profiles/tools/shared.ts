@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative } from "node:path";
 import { spawn } from "node:child_process";
-import type { ExtensionAPI, ExtensionContext } from "./pi-compat";
+import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "./pi-compat";
 import { requireResolvedPath, resolveClaudePath } from "./path";
 
 export const MAX_BYTES = 50 * 1024;
@@ -28,8 +28,6 @@ export interface ExactEdit {
 	expected_replacements?: number;
 }
 
-const fileQueues = new Map<string, Promise<unknown>>();
-
 export function textResult(text: string, details: TextResultDetails = {}): ToolTextResult {
 	return { content: [{ type: "text", text }], details };
 }
@@ -44,14 +42,7 @@ export function displayPath(cwd: string, path: string): string {
 }
 
 export async function withPathQueue<T>(path: string, fn: () => Promise<T>): Promise<T> {
-	const previous = fileQueues.get(path) ?? Promise.resolve();
-	const run = previous.catch(() => undefined).then(fn);
-	fileQueues.set(path, run.catch(() => undefined));
-	try {
-		return await run;
-	} finally {
-		if (fileQueues.get(path) === run) fileQueues.delete(path);
-	}
+	return withFileMutationQueue(path, fn);
 }
 
 export function truncateHead(text: string, maxLines = MAX_LINES, maxBytes = MAX_BYTES): { text: string; truncated: boolean; lineCount: number; bytes: number } {
