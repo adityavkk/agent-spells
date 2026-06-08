@@ -278,6 +278,7 @@ async function main() {
 	await write(join(args.outputDir, "changed-vendored-files.json"), `${JSON.stringify(changedFiles, null, 2)}\n`);
 	await write(join(args.outputDir, "new-upstream-tools.json"), `${JSON.stringify({ ref: args.ref, schemas: newSchemas }, null, 2)}\n`);
 	await write(join(args.outputDir, "default-toolsets.json"), `${JSON.stringify(toolsetSnapshot, null, 2)}\n`);
+	await write(join(args.outputDir, "default-toolset-diff.json"), `${JSON.stringify(toolsetDiffs, null, 2)}\n`);
 	await write(join(args.outputDir, "summary.md"), renderSummary({ manifest, ref: args.ref, changedFiles, newSchemas, toolsetDiffs }));
 	await write(join(args.outputDir, "recommended-actions.md"), renderRecommendedActions({ changedFiles, newSchemas, toolsetDiffs }));
 

@@ -70,6 +70,7 @@ The first automation slice now exists:
 - `vendor/letta/default-toolsets.json` snapshots Letta's extracted default toolsets.
 - `scripts/update-from-letta.ts` reads the manifest instead of a hard-coded file list.
 - `scripts/check-letta-drift.ts` writes a read-only drift report to `.tmp/letta-drift/`.
+- `.github/workflows/letta-drift.yml` runs the drift check weekly and opens or updates a GitHub issue when drift appears.
 
 Use it like this:
 
@@ -370,7 +371,7 @@ bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-t
 - Done: add read-only `check-letta-drift.ts`.
 - Done: extract upstream toolsets into `vendor/letta/default-toolsets.json`.
 - Done: make `update-from-letta.ts` read manifest instead of hard-coded `FILES`.
-- Next: add CI job that fails only on script/test errors, not on upstream drift.
+- Done: add CI job that fails only on script/test errors, not on upstream drift.
 
 ### Phase 2: Safe automation
 

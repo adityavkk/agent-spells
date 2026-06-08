@@ -1,0 +1,83 @@
+name: Letta drift
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday morning UTC. Drift reports are non-failing unless tooling breaks.
+    - cron: "17 8 * * 1"
+  pull_request:
+    paths:
+      - "pi/extensions/provider-tool-profiles/**"
+      - ".github/workflows/letta-drift.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: Check provider tool drift
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate drift report
+        run: bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main
+
+      - name: Summarize drift
+        id: drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed=$(jq 'length' .tmp/letta-drift/changed-vendored-files.json)
+          new_schemas=$(jq '.schemas | length' .tmp/letta-drift/new-upstream-tools.json)
+          toolset_diffs=$(jq 'length' .tmp/letta-drift/default-toolset-diff.json)
+          total=$((changed + new_schemas + toolset_diffs))
+          {
+            echo "changed=$changed"
+            echo "new_schemas=$new_schemas"
+            echo "toolset_diffs=$toolset_diffs"
+            echo "total=$total"
+          } >> "$GITHUB_OUTPUT"
+          cat .tmp/letta-drift/summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          cat .tmp/letta-drift/recommended-actions.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload drift report
+        uses: actions/upload-artifact@v4
+        with:
+          name: letta-drift-report
+          path: .tmp/letta-drift
+
+      - name: Open or update drift issue
+        if: github.event_name != 'pull_request' && steps.drift.outputs.total != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="provider-tool-profiles: Letta drift"
+          body_file=".tmp/letta-drift/issue-body.md"
+          {
+            cat .tmp/letta-drift/summary.md
+            echo
+            cat .tmp/letta-drift/recommended-actions.md
+            echo
+            echo "Workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "$body_file"
+
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body_file"
+            gh issue edit "$existing" --add-label "area:provider-tool-profiles,needs-design" || true
+          else
+            url=$(gh issue create --title "$title" --body-file "$body_file")
+            gh issue edit "$url" --add-label "area:provider-tool-profiles,needs-design" || true
+          fi
