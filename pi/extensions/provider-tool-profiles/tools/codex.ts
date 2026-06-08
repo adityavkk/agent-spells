@@ -50,7 +50,7 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 			return applyPatch(ctx.cwd, params.input);
 		},
 		renderCall(args, theme, context) {
-			return renderPatchCall(args, theme, context);
+			return renderPatchCall(args ?? {}, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderPreviewResult(result, options, theme, context, 12);
@@ -69,7 +69,7 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 			return textResult(summary || "Plan updated", { plan: currentPlan });
 		},
 		renderCall(args, theme, context) {
-			return renderPlanCall(args, theme, context);
+			return renderPlanCall(args ?? {}, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderPlanResult(result, options, theme, context);
@@ -96,7 +96,7 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 			};
 		},
 		renderCall(args, theme, context) {
-			return renderImageCall(args, theme, context);
+			return renderImageCall(args ?? {}, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderImageResult(result, options, theme, context);

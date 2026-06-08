@@ -14,7 +14,7 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 			return readTextFile(resolveToolPath(ctx.cwd, params.file_path), { offset: params.offset, limit: params.limit, offsetBase: 1 });
 		},
 		renderCall(args, theme, context) {
-			return renderReadCall("Read", args.file_path, args, theme, context);
+			return renderReadCall("Read", args?.file_path, args, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderReadResult(result, options, theme, context);
@@ -31,7 +31,7 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 			return writeTextFile(resolveToolPath(ctx.cwd, params.file_path), params.content);
 		},
 		renderCall(args, theme, context) {
-			return renderWriteCall("Write", args.file_path, args.content, theme, context);
+			return renderWriteCall("Write", args?.file_path, args?.content, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderWriteResult(result, options, theme, context);
@@ -48,7 +48,7 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 			return applyExactEdits(resolveToolPath(ctx.cwd, params.file_path), [params]);
 		},
 		renderCall(args, theme, context) {
-			return renderEditCall("Edit", args.file_path, args, theme, context);
+			return renderEditCall("Edit", args?.file_path, args, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderEditResult(result, options, theme, context);
@@ -65,7 +65,7 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 			return applyExactEdits(resolveToolPath(ctx.cwd, params.file_path), params.edits);
 		},
 		renderCall(args, theme, context) {
-			return renderEditCall("MultiEdit", args.file_path, args, theme, context);
+			return renderEditCall("MultiEdit", args?.file_path, args, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderEditResult(result, options, theme, context);
@@ -102,7 +102,7 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 			return globFiles(ctx.cwd, params.pattern, { dir: params.path });
 		},
 		renderCall(args, theme, context) {
-			return renderGlobCall("Glob", args.pattern, args.path, theme, context);
+			return renderGlobCall("Glob", args?.pattern, args?.path, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderPreviewResult(result, options, theme, context, 18);
@@ -150,7 +150,7 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 			return listDirectory(resolveToolPath(ctx.cwd, params.path), params.ignore);
 		},
 		renderCall(args, theme, context) {
-			return renderListCall("LS", args.path, theme, context);
+			return renderListCall("LS", args?.path, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderPreviewResult(result, options, theme, context, 20);

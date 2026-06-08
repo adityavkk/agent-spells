@@ -62,7 +62,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 			return readTextFile(resolveToolPath(ctx.cwd, params.file_path), { offset: params.offset, limit: params.limit, offsetBase: 0 });
 		},
 		renderCall(args, theme, context) {
-			return renderReadCall("read_file", args.file_path, args, theme, context);
+			return renderReadCall("read_file", args?.file_path, args, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderReadResult(result, options, theme, context);
@@ -79,7 +79,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 			return readMany(ctx.cwd, params);
 		},
 		renderCall(args, theme, context) {
-			return renderGlobCall("read_many_files", Array.isArray(args.include) ? args.include.join(", ") : args.include, ".", theme, context);
+			return renderGlobCall("read_many_files", Array.isArray(args?.include) ? args.include.join(", ") : args?.include, ".", theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderPreviewResult(result, options, theme, context, 18);
@@ -96,7 +96,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 			return listDirectory(resolveToolPath(ctx.cwd, params.dir_path), params.ignore);
 		},
 		renderCall(args, theme, context) {
-			return renderListCall("list_directory", args.dir_path, theme, context);
+			return renderListCall("list_directory", args?.dir_path, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderPreviewResult(result, options, theme, context, 20);
@@ -117,7 +117,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 			});
 		},
 		renderCall(args, theme, context) {
-			return renderGlobCall("glob", args.pattern, args.dir_path, theme, context);
+			return renderGlobCall("glob", args?.pattern, args?.dir_path, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderPreviewResult(result, options, theme, context, 18);
@@ -159,7 +159,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 			return applyExactEdits(resolveToolPath(ctx.cwd, params.file_path), [{ ...params, expected_replacements: params.expected_replacements ?? 1 }]);
 		},
 		renderCall(args, theme, context) {
-			return renderEditCall("replace", args.file_path, args, theme, context);
+			return renderEditCall("replace", args?.file_path, args, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderEditResult(result, options, theme, context);
@@ -176,7 +176,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 			return writeTextFile(resolveToolPath(ctx.cwd, params.file_path), params.content);
 		},
 		renderCall(args, theme, context) {
-			return renderWriteCall("write_file", args.file_path, args.content, theme, context);
+			return renderWriteCall("write_file", args?.file_path, args?.content, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderWriteResult(result, options, theme, context);

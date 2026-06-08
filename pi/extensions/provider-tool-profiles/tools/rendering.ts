@@ -31,6 +31,25 @@ type ComponentLike = {
 	invalidate(): void;
 };
 
+const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+const UNSAFE_CONTROL_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
+
+function sanitizeDisplayText(text: string): string {
+	return text
+		.replace(ANSI_PATTERN, "")
+		.replace(/\r/g, "")
+		.replace(/\t/g, "    ")
+		.replace(UNSAFE_CONTROL_PATTERN, "");
+}
+
+function sanitizeInlineText(text: string): string {
+	return sanitizeDisplayText(text).replace(/\n+/g, " ").replace(/ +/g, " ").trim();
+}
+
+function inline(value: unknown): string {
+	return sanitizeInlineText(String(value));
+}
+
 function truncateLine(line: string, width: number): string {
 	if (width <= 0) return "";
 	return visibleWidth(line) <= width ? line : truncateToWidth(line, width, "…");
@@ -115,13 +134,13 @@ function success(theme: ThemeLike, text: string): string {
 }
 
 function str(value: unknown): string | null {
-	if (typeof value === "string") return value;
+	if (typeof value === "string") return sanitizeDisplayText(value);
 	if (value == null) return "";
 	return null;
 }
 
 function short(value: string, max = 96): string {
-	const clean = value.replace(/\s+/g, " ").trim();
+	const clean = sanitizeInlineText(value);
 	if (clean.length <= max) return clean;
 	return `${clean.slice(0, max - 1)}…`;
 }
@@ -141,7 +160,7 @@ function formatBytes(value: unknown): string | undefined {
 
 function displayPath(cwd: string | undefined, rawPath: string | null, emptyFallback = "."): string {
 	if (rawPath === null) return "[invalid path]";
-	const input = rawPath?.trim().replace(/^@/, "") || emptyFallback;
+	const input = rawPath ? sanitizeInlineText(rawPath).replace(/^@/, "") : emptyFallback;
 	if (!input) return emptyFallback;
 	const home = homedir();
 	const absolute = input === "~"
@@ -167,11 +186,10 @@ function renderPath(theme: ThemeLike, cwd: string | undefined, rawPath: unknown,
 }
 
 function textFromResult(result: ToolResultLike, showImages = true): string {
-	const text = (result.content ?? [])
+	const text = sanitizeDisplayText((result.content ?? [])
 		.filter((item) => item.type === "text")
 		.map((item) => item.text ?? "")
-		.join("\n")
-		.replace(/\r/g, "");
+		.join("\n"));
 	const imageCount = (result.content ?? []).filter((item) => item.type === "image").length;
 	if (showImages || imageCount === 0) return text;
 	const suffix = `${imageCount} image${imageCount === 1 ? "" : "s"}`;
@@ -220,7 +238,7 @@ export function renderShellCall(args: any, theme: ThemeLike, context: RenderCont
 	const timeout = args?.timeout ?? args?.timeout_ms;
 	let text = title(theme, `${label} `) + (command === null ? error(theme, "[invalid command]") : accent(theme, command || "..."));
 	if (args?.workdir || args?.dir_path) text += muted(theme, ` in ${displayPath(context.cwd, str(args.workdir ?? args.dir_path), ".")}`);
-	if (timeout !== undefined) text += muted(theme, ` (timeout ${timeout}${typeof timeout === "number" && timeout < 1000 ? "s" : "ms"})`);
+	if (timeout !== undefined) text += muted(theme, ` (timeout ${inline(timeout)}${typeof timeout === "number" && timeout < 1000 ? "s" : "ms"})`);
 	return textBlock(text, context.lastComponent);
 }
 
@@ -238,7 +256,7 @@ export function renderReadCall(name: string, rawPath: unknown, args: any, theme:
 	const offset = args?.offset;
 	const limit = args?.limit;
 	if (offset !== undefined || limit !== undefined) {
-		text += muted(theme, ` (${[offset !== undefined ? `offset ${offset}` : undefined, limit !== undefined ? `limit ${limit}` : undefined].filter(Boolean).join(", ")})`);
+		text += muted(theme, ` (${[offset !== undefined ? `offset ${inline(offset)}` : undefined, limit !== undefined ? `limit ${inline(limit)}` : undefined].filter(Boolean).join(", ")})`);
 	}
 	return textBlock(text, context.lastComponent);
 }
@@ -324,7 +342,7 @@ export function renderSearchCall(name: string, args: any, theme: ThemeLike, cont
 	const pattern = str(args?.pattern);
 	let text = `${title(theme, name)} ${pattern === null ? error(theme, "[invalid pattern]") : accent(theme, `/${pattern || ""}/`)}`;
 	text += muted(theme, ` in ${displayPath(context.cwd, str(args?.path ?? args?.dir_path), ".")}`);
-	if (args?.glob || args?.include) text += muted(theme, ` (${args.glob ?? args.include})`);
+	if (args?.glob || args?.include) text += muted(theme, ` (${inline(args.glob ?? args.include)})`);
 	return textBlock(text, context.lastComponent);
 }
 
@@ -358,7 +376,7 @@ export function renderPatchCall(args: any, theme: ThemeLike, context: RenderCont
 	let text = title(theme, "apply_patch");
 	if (summary.length) text += muted(theme, ` ${summary.slice(0, 4).join(", ")}${summary.length > 4 ? `, +${summary.length - 4}` : ""}`);
 	if (context.expanded && typeof args?.input === "string") {
-		text += `\n\n${styleOutputLines(previewLines(args.input, { expanded: false, maxLines: 24, theme }), theme)}`;
+		text += `\n\n${styleOutputLines(previewLines(sanitizeDisplayText(args.input), { expanded: false, maxLines: 24, theme }), theme)}`;
 	}
 	return textBlock(text, context.lastComponent);
 }
@@ -383,7 +401,7 @@ export function renderImageCall(args: any, theme: ThemeLike, context: RenderCont
 
 export function renderImageResult(result: ToolResultLike, _options: RenderOptionsLike, theme: ThemeLike, context: RenderContextLike): ComponentLike {
 	if (context.isError) return resultBlock(error(theme, textFromResult(result, context.showImages).trim()), context);
-	const path = typeof result.details?.path === "string" ? displayPath(context.cwd, result.details.path) : "image";
-	const mediaType = typeof result.details?.mediaType === "string" ? ` ${result.details.mediaType}` : "";
+	const path = typeof result.details?.path === "string" ? displayPath(context.cwd, sanitizeDisplayText(result.details.path)) : "image";
+	const mediaType = typeof result.details?.mediaType === "string" ? ` ${sanitizeInlineText(result.details.mediaType)}` : "";
 	return resultBlock(success(theme, `loaded ${path}${mediaType}`), context);
 }
