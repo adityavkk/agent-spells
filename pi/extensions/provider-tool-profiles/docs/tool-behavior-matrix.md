@@ -19,14 +19,17 @@ This means tool names, schemas, argument names, and model-facing quirks stay pro
 Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
 
 - Shipped commits:
-  - `f8d1222 feat: harden codex apply_patch path policy and preflight`
-  - `290aeba ci: add provider tool Pi compatibility checks`
-  - `f524441 fix: enforce provider tool path policies`
-  - `b174b4c fix: use Pi mutation queue for provider files`
+  - `41d9cca feat: harden codex apply_patch path policy and preflight`
+  - `38c4741 ci: add provider tool Pi compatibility checks`
+  - `6f334d4 fix: enforce provider tool path policies`
+  - `374df15 fix: use Pi mutation queue for provider files`
+  - `a0e94f0 feat: add provider read write adapter foundations`
+  - `a03770c feat: wire provider reads and writes through adapters`
+  - `30ef63f feat: audit provider edits with read history`
 - Verified locally after the latest runtime changes:
-  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 70 pass, 0 fail
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked` -> green
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest` -> green
+  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 93 pass, 0 fail
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-read-adapters` -> green
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-read-adapters` -> green
   - `bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main` -> clean (`changed=0 newSchemas=0 toolsetDiffs=0`)
 
 ### What is already done
@@ -65,6 +68,26 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
    - Replaced the local provider-tool file queue with Pi's public `withFileMutationQueue()` through `tools/pi-compat.ts`.
    - Existing `withPathQueue()` remains as the provider-tool wrapper, so current adapters and `apply_patch` use Pi mutation serialization without broader rewrites.
 
+5. **Read/write adapter foundation**
+   - Added `tools/policies.ts` for provider behavior constants outside vendored Letta schema data.
+   - Added `tools/results.ts` for typed provider results, explicit unsupported/deferred media messages, and Pi-public truncation notices.
+   - Added `tools/read-history.ts` for session-local read audit records keyed by canonical path, with `missing` / `stale` / `fresh` checks.
+   - Added `tools/runtime.ts` for shared per-session provider-tool runtime state.
+   - Added `tools/read-adapter.ts` for provider-specific read behavior:
+     - Claude `Read` returns `cat -n`-style line-numbered text with 1-based offsets.
+     - Gemini `read_file` stays plain text with 0-based offsets.
+     - Text reads record read-history.
+     - Common image extensions return text plus image content.
+     - PDF/audio/notebook/binary support returns explicit deferred/unsupported tool results.
+   - Added `tools/write-adapter.ts` for queued writes with abort checks and read-history audit details.
+   - Wired Claude `Read` / `Write` and Gemini `read_file` / `read_many_files` / `write_file` through the adapters.
+   - Gemini `read_many_files` now has total file/byte caps and records text reads per included file.
+
+6. **Edit adapter audit**
+   - Added `tools/edit-adapter.ts` for queued provider exact edits with abort checks and read-history audit details.
+   - Wired Claude `Edit`, Claude `MultiEdit`, and Gemini `replace` through the adapter.
+   - Sequential edit semantics remain provider-compatible via `applyExactEditsToText()`; no delegation to Pi native edit semantics.
+
 ### Important boundaries for the next agent
 
 - Do not edit native Pi packages. All work stays under `pi/extensions/provider-tool-profiles/**` plus CI/docs for that extension.
@@ -77,30 +100,32 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
 
 ### Known remaining gaps
 
-- `tools/shared.ts` still has local truncation helpers and a mixed bag of read/write/edit/shell/search/list behavior. Pi mutation queue migration is done, but Pi truncation helpers and shell operations are not fully adopted yet.
-- `read-history.ts`, `results.ts`, `policies.ts`, `read-adapter.ts`, `write-adapter.ts`, `edit-adapter.ts`, `shell-adapter.ts`, `search-adapter.ts`, `list-adapter.ts`, and `plan-state.ts` are still pending.
+- `tools/shared.ts` still contains legacy compatibility wrappers plus shell/search/list helpers. Read/write/edit adapter migration is done for active Claude/Gemini file mutation/read tools, but shell/search/list are still mixed in shared.
+- `shell-adapter.ts`, `search-adapter.ts`, `list-adapter.ts`, and `plan-state.ts` are still pending.
 - `update_plan` still stores state in memory only.
-- Provider read behavior is still too blunt: Claude text reads are not line-numbered `cat -n` style, Gemini media/deferred handling is incomplete, and read-history audit is absent.
 - Shell security-affecting fields are not all explicit yet. Codex `sandbox_permissions: "require_escalated"`, `justification`, and `prefix_rule` still need denied/unsupported behavior unless Pi approval semantics are implemented.
+- Shell process handling still goes through `pi.exec("bash", ["-lc", ...])`; it has not moved to `createLocalBashOperations()` or a dedicated shell adapter.
 - Search/list/glob still use the shared legacy adapters. They now receive safer paths for Gemini where applicable, but result ordering, ignore policy, caps, and provider-specific continuation notices still need hardening.
+- Codex `view_image` still has a local image helper instead of using the shared read/image adapter; this is safe but duplicate.
 
 ### Recommended next slice
 
-Implement the read/write adapter foundation before broader search or shell refactors:
+Implement shell hardening before broader search/list refactors:
 
-1. Add small foundation modules, each with direct unit tests:
-   - `policies.ts` for provider constants that are not Letta schema data.
-   - `results.ts` for concise text results, unsupported/deferred results, and truncation notices built on Pi public truncation helpers.
-   - `read-history.ts` for session-local read audit keying, hashing, and freshness checks exactly as described below.
-2. Add `read-adapter.ts` and migrate only provider read tools first:
-   - Claude `Read`: preserve provider args, add line-numbered `cat -n`-style text output, use 1-based offsets, keep image support path through Pi-compatible behavior where possible.
-   - Gemini `read_file`: preserve 0-based offsets and cwd-contained paths, return explicit unsupported/deferred text for PDF/audio/notebook until scoped.
-   - Gemini `read_many_files`: keep cwd containment for resolved files, add total caps and binary/deferred handling.
-   - Successful text reads should update `read-history.ts`.
-3. Add `write-adapter.ts` only after read-history exists:
-   - Use existing path policies and Pi mutation serialization.
-   - Before overwrites, attach read-history audit details (`missing`, `stale`, `fresh`) without blocking.
-   - Preserve provider-facing result text shape.
+1. Add behavior tests first:
+   - Codex `shell_command` with `sandbox_permissions: "require_escalated"` returns explicit unsupported/denied result and does not execute.
+   - Codex `shell_command.justification` and `prefix_rule` are not silently accepted unless paired with supported semantics.
+   - Shell nonzero exits remain normal provider results with exit code.
+   - Timeout and abort behavior remains bounded and tested.
+2. Add `shell-adapter.ts`:
+   - Keep provider args/results stable for Claude `Bash`, Codex `shell_command`, and Gemini `run_shell_command`.
+   - Use Pi public shell primitives where shape-compatible (`createLocalBashOperations()`), or keep `pi.exec` behind the adapter with a narrow design note if not shape-compatible.
+   - Centralize timeout, abort, truncation, unsupported-field, and workdir handling.
+   - Do not activate Codex `exec_command`, `write_stdin`, `shell`, `read_file`, or `list_dir`.
+3. After shell adapter, pick one narrow follow-up:
+   - Move Codex `view_image` onto the shared read/image adapter, or
+   - Add `search-adapter.ts` for Glob/Grep/Gemini search/list result caps and ordering, or
+   - Add `plan-state.ts` for `update_plan` session persistence.
 4. Keep Letta schemas untouched and Pi imports isolated to `tools/pi-compat.ts`.
 5. Run before committing:
 
