@@ -28,10 +28,12 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
   - `30ef63f feat: audit provider edits with read history`
   - `d3441b2 feat: add provider shell adapter foundation`
   - `7539ac6 fix: route provider shell tools through adapter`
+  - `9d2bd49 feat: harden provider search and list adapters`
+  - `18a5346 feat: persist Codex plans and share image reads`
 - Verified locally after the latest runtime changes:
-  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 99 pass, 0 fail
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-shell-adapter` -> green
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-shell-adapter` -> green
+  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 110 pass, 0 fail
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-final-search-plan` -> green
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-final-search-plan` -> green
   - `bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main` -> clean (`changed=0 newSchemas=0 toolsetDiffs=0`)
 
 ### What is already done
@@ -104,6 +106,23 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
      - Gemini `run_shell_command`: `bash -c`, matching the vendored schema description.
    - `createLocalBashOperations()` remains unused intentionally for now. It is public, but `ExtensionAPI.exec` preserves extension exec hooks and stdout/stderr result shape; the adapter keeps a future backend swap localized.
 
+8. **Search/list adapter hardening**
+   - Added `tools/ignore-policy.ts` for explicit provider ignore rule parsing and matching.
+   - Added `tools/search-adapter.ts` for Claude `Glob`, Claude `Grep`, Gemini `glob`, Gemini `grep_search`, and Gemini `search_file_content`.
+   - Added `tools/list-adapter.ts` for Claude `LS` and Gemini `list_directory`.
+   - Removed search/list/glob helpers from `tools/shared.ts`; it now stays focused on file/process compatibility helpers.
+   - Centralized ripgrep invocation, stable path sorting, result caps, truncation notices, and provider result details.
+   - Glob output is newest-first with lexicographic tie-breaks.
+   - Grep uses ripgrep path sorting for deterministic output.
+   - Gemini search/list path inputs still use cwd-contained existing-directory validation from `tools/path.ts`.
+   - Gemini `.geminiignore` handling is explicit for glob/grep/list; list also honors root `.gitignore` unless disabled by Gemini file filtering options.
+   - `respect_git_ignore: false` maps to ripgrep `--no-ignore-vcs` for Gemini glob/search behavior.
+
+9. **Codex plan and image cleanup**
+   - Added `tools/plan-state.ts` for Codex `update_plan` session persistence via Pi public `appendEntry()` custom entries.
+   - `update_plan` now appends `provider-tool-profiles.codex.plan.v1` custom session entries and reloads latest valid plan state from `ctx.sessionManager.getBranch()` on `session_start`.
+   - `view_image` now routes through the shared image read path in `tools/read-adapter.ts` while preserving Codex's read-only absolute-or-relative path policy from `resolveCodexImagePath()`.
+
 ### Important boundaries for the next agent
 
 - Do not edit native Pi packages. All work stays under `pi/extensions/provider-tool-profiles/**` plus CI/docs for that extension.
@@ -116,29 +135,26 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
 
 ### Known remaining gaps
 
-- `tools/shared.ts` still contains legacy compatibility wrappers plus search/list helpers. Read/write/edit/shell adapter migration is done for active Claude/Gemini/Codex tools, but search/list/glob still live in shared.
-- `search-adapter.ts`, `list-adapter.ts`, and `plan-state.ts` are still pending.
-- `update_plan` still stores state in memory only.
 - Shell execution remains backed by `ExtensionAPI.exec` intentionally. `createLocalBashOperations()` has not been adopted because it would bypass extension exec hooks and changes the stdout/stderr shape; this can be revisited inside `tools/shell-adapter.ts` only.
-- Codex shell escalation/approval fields are now denied/unsupported, not implemented. If Pi later exposes approval semantics, add them behind `tools/shell-adapter.ts` before broadening behavior.
-- Search/list/glob still use the shared legacy adapters. They now receive safer paths for Gemini where applicable, but result ordering, ignore policy, caps, and provider-specific continuation notices still need hardening.
-- Codex `view_image` still has a local image helper instead of using the shared read/image adapter; this is safe but duplicate.
+- Codex shell escalation/approval fields are denied/unsupported, not implemented. If Pi later exposes approval semantics, add them behind `tools/shell-adapter.ts` before broadening behavior.
+- `.geminiignore` support is intentionally a simple line-based glob subset. Negated ignore rules are counted in result details but are not translated into ripgrep include overrides.
+- Gemini list `.gitignore` support is also a simple root `.gitignore` line-based subset, not full Git ignore semantics. Ripgrep-backed search/glob still uses ripgrep's native ignore handling.
+- `tools/shared.ts` still contains older file compatibility helpers (`readTextFile`, `writeTextFile`, `applyExactEdits`) for tests/legacy internals, though active provider tools are now routed through dedicated adapters.
+- Blocked vendored Codex tools remain inactive: `exec_command`, `write_stdin`, `shell`, `read_file`, and `list_dir`.
 
 ### Recommended next slice
 
-Implement search/list hardening before broader behavior refactors:
+Recommended next work is polish/risk reduction, not a required adapter migration:
 
-1. Add `search-adapter.ts` and/or `list-adapter.ts` with focused tests:
-   - Preserve provider tool names and argument schemas.
-   - Keep Gemini cwd containment from `tools/path.ts`.
-   - Centralize ripgrep args, ignore policy, stable sorting, caps, and continuation notices.
-   - Keep result shapes concise and provider-compatible.
-   - Do not broaden filesystem access.
-2. Suggested first narrow target:
-   - Move Claude `Glob`, Gemini `glob`, Claude `Grep`, Gemini `grep_search`, and Gemini `search_file_content` to `search-adapter.ts`.
-   - Leave `LS` / `list_directory` for a second commit if the search adapter grows too large.
-3. Alternative narrow target:
-   - Move Codex `view_image` onto the shared read/image adapter to remove duplicate image loading.
+1. Tighten ignore semantics if needed:
+   - Add fuller `.geminiignore` / `.gitignore` semantics, especially negation and nested ignore files, if provider parity requires it.
+   - Keep implementation local to `tools/ignore-policy.ts`, `tools/search-adapter.ts`, and `tools/list-adapter.ts`.
+2. Revisit shell backend only if Pi exposes shape-compatible public approval/exec primitives:
+   - Keep all changes inside `tools/shell-adapter.ts`.
+   - Do not silently implement Codex escalation or approval fields without real Pi approval semantics.
+3. Optional rendering/docs polish:
+   - Add renderer-specific details for capped search/list output if desired.
+   - Update README examples for search/list/plan persistence if exposing this extension to users.
 4. Keep Letta schemas untouched and Pi imports isolated to `tools/pi-compat.ts`.
 5. Run before committing:
 
