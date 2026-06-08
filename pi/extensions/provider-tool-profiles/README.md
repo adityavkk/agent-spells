@@ -98,6 +98,12 @@ Refresh:
 bun pi/extensions/provider-tool-profiles/scripts/update-from-letta.ts
 ```
 
+Drift report:
+
+```bash
+bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main
+```
+
 Sync strategy and future automation plan: `docs/letta-sync.md`.
 
 ## Known gaps

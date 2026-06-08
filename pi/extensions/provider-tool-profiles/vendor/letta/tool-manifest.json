@@ -1,0 +1,471 @@
+{
+  "upstream": "https://github.com/letta-ai/letta-code",
+  "ref": "2eca6e1354e37413e5b0840243ac208b8add7bd5",
+  "tools": [
+    {
+      "upstreamName": "Bash",
+      "provider": "claude",
+      "modelNames": [
+        "Bash"
+      ],
+      "status": "active",
+      "capabilities": [
+        "bash"
+      ]
+    },
+    {
+      "upstreamName": "Read",
+      "provider": "claude",
+      "modelNames": [
+        "Read"
+      ],
+      "status": "active",
+      "capabilities": [
+        "read"
+      ]
+    },
+    {
+      "upstreamName": "Write",
+      "provider": "claude",
+      "modelNames": [
+        "Write"
+      ],
+      "status": "active",
+      "capabilities": [
+        "write"
+      ]
+    },
+    {
+      "upstreamName": "Edit",
+      "provider": "claude",
+      "modelNames": [
+        "Edit"
+      ],
+      "status": "active",
+      "capabilities": [
+        "edit"
+      ]
+    },
+    {
+      "upstreamName": "MultiEdit",
+      "provider": "claude",
+      "modelNames": [
+        "MultiEdit"
+      ],
+      "status": "active",
+      "capabilities": [
+        "edit"
+      ]
+    },
+    {
+      "upstreamName": "Glob",
+      "provider": "claude",
+      "modelNames": [
+        "Glob"
+      ],
+      "status": "active",
+      "capabilities": [
+        "find"
+      ]
+    },
+    {
+      "upstreamName": "Grep",
+      "provider": "claude",
+      "modelNames": [
+        "Grep"
+      ],
+      "status": "active",
+      "capabilities": [
+        "grep"
+      ]
+    },
+    {
+      "upstreamName": "LS",
+      "provider": "claude",
+      "modelNames": [
+        "LS"
+      ],
+      "status": "active",
+      "capabilities": [
+        "ls"
+      ]
+    },
+    {
+      "upstreamName": "ShellCommand",
+      "provider": "codex",
+      "modelNames": [
+        "shell_command"
+      ],
+      "status": "active",
+      "capabilities": [
+        "bash",
+        "grep",
+        "find",
+        "ls"
+      ],
+      "decision": "compatibility Codex shell surface; keep active until exec sessions are designed"
+    },
+    {
+      "upstreamName": "ExecCommand",
+      "provider": "codex",
+      "modelNames": [
+        "exec_command"
+      ],
+      "status": "blocked",
+      "capabilities": [
+        "bash"
+      ],
+      "decision": "requires local process/session manager, stdin polling, cancellation, cleanup, and PTY decision"
+    },
+    {
+      "upstreamName": "WriteStdin",
+      "provider": "codex",
+      "modelNames": [
+        "write_stdin"
+      ],
+      "status": "blocked",
+      "capabilities": [
+        "bash"
+      ],
+      "decision": "requires exec_command session lifecycle"
+    },
+    {
+      "upstreamName": "Shell",
+      "provider": "codex",
+      "modelNames": [
+        "shell"
+      ],
+      "status": "vendored",
+      "capabilities": [
+        "bash"
+      ],
+      "decision": "available for tracking; not an upstream default Codex surface"
+    },
+    {
+      "upstreamName": "ReadFileCodex",
+      "provider": "codex",
+      "modelNames": [
+        "read_file",
+        "ReadFile"
+      ],
+      "status": "vendored",
+      "capabilities": [
+        "read"
+      ],
+      "decision": "candidate read-only Codex wrapper after capability-aware activation lands"
+    },
+    {
+      "upstreamName": "ListDirCodex",
+      "provider": "codex",
+      "modelNames": [
+        "list_dir",
+        "ListDir"
+      ],
+      "status": "vendored",
+      "capabilities": [
+        "ls"
+      ],
+      "decision": "candidate read-only Codex wrapper after capability-aware activation lands"
+    },
+    {
+      "upstreamName": "ApplyPatch",
+      "provider": "codex",
+      "modelNames": [
+        "apply_patch"
+      ],
+      "status": "active",
+      "capabilities": [
+        "edit",
+        "write"
+      ]
+    },
+    {
+      "upstreamName": "UpdatePlan",
+      "provider": "codex",
+      "modelNames": [
+        "update_plan"
+      ],
+      "status": "active",
+      "capabilities": [
+        "update_plan"
+      ]
+    },
+    {
+      "upstreamName": "ViewImage",
+      "provider": "codex",
+      "modelNames": [
+        "view_image"
+      ],
+      "status": "active",
+      "capabilities": [
+        "view_image"
+      ]
+    },
+    {
+      "upstreamName": "RunShellCommandGemini",
+      "provider": "gemini",
+      "modelNames": [
+        "run_shell_command"
+      ],
+      "status": "active",
+      "capabilities": [
+        "bash"
+      ]
+    },
+    {
+      "upstreamName": "ReadFileGemini",
+      "provider": "gemini",
+      "modelNames": [
+        "read_file"
+      ],
+      "status": "active",
+      "capabilities": [
+        "read"
+      ]
+    },
+    {
+      "upstreamName": "ReadManyFilesGemini",
+      "provider": "gemini",
+      "modelNames": [
+        "read_many_files"
+      ],
+      "status": "active",
+      "capabilities": [
+        "read",
+        "find"
+      ]
+    },
+    {
+      "upstreamName": "ListDirectoryGemini",
+      "provider": "gemini",
+      "modelNames": [
+        "list_directory"
+      ],
+      "status": "active",
+      "capabilities": [
+        "ls"
+      ]
+    },
+    {
+      "upstreamName": "GlobGemini",
+      "provider": "gemini",
+      "modelNames": [
+        "glob"
+      ],
+      "status": "active",
+      "capabilities": [
+        "find"
+      ]
+    },
+    {
+      "upstreamName": "SearchFileContentGemini",
+      "provider": "gemini",
+      "modelNames": [
+        "grep_search",
+        "search_file_content"
+      ],
+      "status": "active",
+      "capabilities": [
+        "grep"
+      ]
+    },
+    {
+      "upstreamName": "ReplaceGemini",
+      "provider": "gemini",
+      "modelNames": [
+        "replace"
+      ],
+      "status": "active",
+      "capabilities": [
+        "edit"
+      ]
+    },
+    {
+      "upstreamName": "WriteFileGemini",
+      "provider": "gemini",
+      "modelNames": [
+        "write_file"
+      ],
+      "status": "active",
+      "capabilities": [
+        "write"
+      ]
+    },
+    {
+      "upstreamName": "AskUserQuestion",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "user-interaction tool; out of scope for provider schema translation"
+    },
+    {
+      "upstreamName": "BashOutput",
+      "provider": "claude",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "background shell output requires a background shell registry"
+    },
+    {
+      "upstreamName": "CreateGoal",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta goal system is out of scope"
+    },
+    {
+      "upstreamName": "CreateWorktree",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta worktree lifecycle is out of scope"
+    },
+    {
+      "upstreamName": "GetGoal",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta goal system is out of scope"
+    },
+    {
+      "upstreamName": "GrepFiles",
+      "provider": "codex",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "optional search wrapper; revisit after capability-aware activation"
+    },
+    {
+      "upstreamName": "KillBash",
+      "provider": "claude",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "background shell cancellation requires a background shell registry"
+    },
+    {
+      "upstreamName": "Memory",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta memory system is out of scope"
+    },
+    {
+      "upstreamName": "MemoryApplyPatch",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta memory system is out of scope"
+    },
+    {
+      "upstreamName": "MessageChannel",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta channel runtime is out of scope"
+    },
+    {
+      "upstreamName": "ReadLSP",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "LSP diagnostics need a separate Pi design"
+    },
+    {
+      "upstreamName": "Skill",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta skill runtime is out of scope"
+    },
+    {
+      "upstreamName": "Task",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta task/subagent runtime is out of scope"
+    },
+    {
+      "upstreamName": "TaskCreate",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta task/subagent runtime is out of scope"
+    },
+    {
+      "upstreamName": "TaskGet",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta task/subagent runtime is out of scope"
+    },
+    {
+      "upstreamName": "TaskList",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta task/subagent runtime is out of scope"
+    },
+    {
+      "upstreamName": "TaskOutput",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta task/subagent runtime is out of scope"
+    },
+    {
+      "upstreamName": "TaskStop",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta task/subagent runtime is out of scope"
+    },
+    {
+      "upstreamName": "TaskUpdate",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta task/subagent runtime is out of scope"
+    },
+    {
+      "upstreamName": "TodoWrite",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta todo runtime is out of scope"
+    },
+    {
+      "upstreamName": "UpdateGoal",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta goal system is out of scope"
+    },
+    {
+      "upstreamName": "WriteTodosGemini",
+      "provider": "gemini",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Gemini todo tool is out of scope while Pi uses update_plan"
+    }
+  ]
+}

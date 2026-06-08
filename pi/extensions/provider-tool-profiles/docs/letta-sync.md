@@ -62,6 +62,29 @@ Problems:
 - Activation policy can accidentally lag or overreact to vendored schema changes.
 - No CI guard says "Letta changed; review needed."
 
+## Current streamlined baseline
+
+The first automation slice now exists:
+
+- `vendor/letta/tool-manifest.json` classifies each known upstream tool as `active`, `vendored`, `blocked`, or `ignored`.
+- `vendor/letta/default-toolsets.json` snapshots Letta's extracted default toolsets.
+- `scripts/update-from-letta.ts` reads the manifest instead of a hard-coded file list.
+- `scripts/check-letta-drift.ts` writes a read-only drift report to `.tmp/letta-drift/`.
+
+Use it like this:
+
+```bash
+bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main
+cat .tmp/letta-drift/summary.md
+cat .tmp/letta-drift/recommended-actions.md
+```
+
+When intentionally updating the default toolset snapshot after review:
+
+```bash
+bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref <sha> --update-toolset-snapshot
+```
+
 ## Design principle
 
 Keep a hard boundary:
@@ -343,11 +366,11 @@ bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-t
 
 ### Phase 1: Better drift reporting, no runtime changes
 
-- Add `tool-manifest.json`.
-- Add read-only `check-letta-drift.ts`.
-- Extract upstream toolsets into `vendor/letta/default-toolsets.json`.
-- Make `update-from-letta.ts` read manifest instead of hard-coded `FILES`.
-- Add CI job that fails only on script/test errors, not on upstream drift.
+- Done: add `tool-manifest.json`.
+- Done: add read-only `check-letta-drift.ts`.
+- Done: extract upstream toolsets into `vendor/letta/default-toolsets.json`.
+- Done: make `update-from-letta.ts` read manifest instead of hard-coded `FILES`.
+- Next: add CI job that fails only on script/test errors, not on upstream drift.
 
 ### Phase 2: Safe automation
 

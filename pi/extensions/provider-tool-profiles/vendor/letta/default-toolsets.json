@@ -1,0 +1,76 @@
+{
+  "upstream": "https://github.com/letta-ai/letta-code",
+  "ref": "2eca6e1354e37413e5b0840243ac208b8add7bd5",
+  "toolsets": {
+    "ANTHROPIC_DEFAULT_TOOLS": [
+      "AskUserQuestion",
+      "Bash",
+      "TaskOutput",
+      "CreateWorktree",
+      "Edit",
+      "TaskStop",
+      "memory",
+      "Read",
+      "Skill",
+      "Task",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskUpdate",
+      "Write"
+    ],
+    "OPENAI_DEFAULT_TOOLS": [
+      "exec_command",
+      "write_stdin",
+      "apply_patch",
+      "memory_apply_patch",
+      "update_plan",
+      "view_image"
+    ],
+    "GEMINI_DEFAULT_TOOLS": [
+      "run_shell_command",
+      "read_file_gemini",
+      "list_directory",
+      "glob_gemini",
+      "search_file_content",
+      "memory",
+      "CreateWorktree",
+      "replace",
+      "write_file_gemini",
+      "write_todos",
+      "read_many_files",
+      "Skill",
+      "Task"
+    ],
+    "OPENAI_PASCAL_TOOLS": [
+      "AskUserQuestion",
+      "CreateWorktree",
+      "memory_apply_patch",
+      "Task",
+      "TaskOutput",
+      "TaskStop",
+      "Skill",
+      "exec_command",
+      "write_stdin",
+      "ViewImage",
+      "ApplyPatch",
+      "UpdatePlan"
+    ],
+    "GEMINI_PASCAL_TOOLS": [
+      "AskUserQuestion",
+      "CreateWorktree",
+      "memory",
+      "Skill",
+      "Task",
+      "RunShellCommand",
+      "ReadFileGemini",
+      "ListDirectory",
+      "GlobGemini",
+      "SearchFileContent",
+      "Replace",
+      "WriteFileGemini",
+      "WriteTodos",
+      "ReadManyFiles"
+    ]
+  }
+}
