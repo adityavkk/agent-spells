@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
+import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
 type ThemeLike = {
 	fg?: (color: string, text: string) => string;
@@ -30,18 +31,9 @@ type ComponentLike = {
 	invalidate(): void;
 };
 
-const ANSI_PATTERN = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-
-function stripAnsi(text: string): string {
-	return text.replace(ANSI_PATTERN, "");
-}
-
 function truncateLine(line: string, width: number): string {
 	if (width <= 0) return "";
-	const visible = stripAnsi(line);
-	if (visible.length <= width) return line;
-	if (width === 1) return "…";
-	return `${visible.slice(0, width - 1)}…`;
+	return visibleWidth(line) <= width ? line : truncateToWidth(line, width, "…");
 }
 
 class TextBlock implements ComponentLike {
