@@ -26,10 +26,12 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
   - `a0e94f0 feat: add provider read write adapter foundations`
   - `a03770c feat: wire provider reads and writes through adapters`
   - `30ef63f feat: audit provider edits with read history`
+  - `d3441b2 feat: add provider shell adapter foundation`
+  - `7539ac6 fix: route provider shell tools through adapter`
 - Verified locally after the latest runtime changes:
-  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 93 pass, 0 fail
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-read-adapters` -> green
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-read-adapters` -> green
+  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 99 pass, 0 fail
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-shell-adapter` -> green
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-shell-adapter` -> green
   - `bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main` -> clean (`changed=0 newSchemas=0 toolsetDiffs=0`)
 
 ### What is already done
@@ -88,6 +90,20 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
    - Wired Claude `Edit`, Claude `MultiEdit`, and Gemini `replace` through the adapter.
    - Sequential edit semantics remain provider-compatible via `applyExactEditsToText()`; no delegation to Pi native edit semantics.
 
+7. **Shell adapter hardening**
+   - Added `tools/shell-adapter.ts` for Claude `Bash`, Codex `shell_command`, and Gemini `run_shell_command`.
+   - Centralized shell timeout clamping, abort metadata, result formatting, tail truncation, and cwd/workdir validation.
+   - Routed Codex/Gemini workdir fields through the existing cwd-contained existing-directory policy inside the adapter.
+   - Codex `sandbox_permissions: "require_escalated"` now returns an explicit denied/unsupported result before exec.
+   - Codex `justification` and non-empty `prefix_rule` now return explicit unsupported results before exec instead of being silently accepted without approval semantics.
+   - Nonzero shell exits remain normal provider tool results with exit code details.
+   - `run_in_background` remains explicitly unsupported for Claude `Bash` and is handled by the adapter before exec.
+   - Provider shell invocation is now provider-aware:
+     - Claude `Bash`: `bash -lc`.
+     - Codex `shell_command`: `bash -lc` by default, `bash -c` when `login: false`.
+     - Gemini `run_shell_command`: `bash -c`, matching the vendored schema description.
+   - `createLocalBashOperations()` remains unused intentionally for now. It is public, but `ExtensionAPI.exec` preserves extension exec hooks and stdout/stderr result shape; the adapter keeps a future backend swap localized.
+
 ### Important boundaries for the next agent
 
 - Do not edit native Pi packages. All work stays under `pi/extensions/provider-tool-profiles/**` plus CI/docs for that extension.
@@ -100,32 +116,29 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
 
 ### Known remaining gaps
 
-- `tools/shared.ts` still contains legacy compatibility wrappers plus shell/search/list helpers. Read/write/edit adapter migration is done for active Claude/Gemini file mutation/read tools, but shell/search/list are still mixed in shared.
-- `shell-adapter.ts`, `search-adapter.ts`, `list-adapter.ts`, and `plan-state.ts` are still pending.
+- `tools/shared.ts` still contains legacy compatibility wrappers plus search/list helpers. Read/write/edit/shell adapter migration is done for active Claude/Gemini/Codex tools, but search/list/glob still live in shared.
+- `search-adapter.ts`, `list-adapter.ts`, and `plan-state.ts` are still pending.
 - `update_plan` still stores state in memory only.
-- Shell security-affecting fields are not all explicit yet. Codex `sandbox_permissions: "require_escalated"`, `justification`, and `prefix_rule` still need denied/unsupported behavior unless Pi approval semantics are implemented.
-- Shell process handling still goes through `pi.exec("bash", ["-lc", ...])`; it has not moved to `createLocalBashOperations()` or a dedicated shell adapter.
+- Shell execution remains backed by `ExtensionAPI.exec` intentionally. `createLocalBashOperations()` has not been adopted because it would bypass extension exec hooks and changes the stdout/stderr shape; this can be revisited inside `tools/shell-adapter.ts` only.
+- Codex shell escalation/approval fields are now denied/unsupported, not implemented. If Pi later exposes approval semantics, add them behind `tools/shell-adapter.ts` before broadening behavior.
 - Search/list/glob still use the shared legacy adapters. They now receive safer paths for Gemini where applicable, but result ordering, ignore policy, caps, and provider-specific continuation notices still need hardening.
 - Codex `view_image` still has a local image helper instead of using the shared read/image adapter; this is safe but duplicate.
 
 ### Recommended next slice
 
-Implement shell hardening before broader search/list refactors:
+Implement search/list hardening before broader behavior refactors:
 
-1. Add behavior tests first:
-   - Codex `shell_command` with `sandbox_permissions: "require_escalated"` returns explicit unsupported/denied result and does not execute.
-   - Codex `shell_command.justification` and `prefix_rule` are not silently accepted unless paired with supported semantics.
-   - Shell nonzero exits remain normal provider results with exit code.
-   - Timeout and abort behavior remains bounded and tested.
-2. Add `shell-adapter.ts`:
-   - Keep provider args/results stable for Claude `Bash`, Codex `shell_command`, and Gemini `run_shell_command`.
-   - Use Pi public shell primitives where shape-compatible (`createLocalBashOperations()`), or keep `pi.exec` behind the adapter with a narrow design note if not shape-compatible.
-   - Centralize timeout, abort, truncation, unsupported-field, and workdir handling.
-   - Do not activate Codex `exec_command`, `write_stdin`, `shell`, `read_file`, or `list_dir`.
-3. After shell adapter, pick one narrow follow-up:
-   - Move Codex `view_image` onto the shared read/image adapter, or
-   - Add `search-adapter.ts` for Glob/Grep/Gemini search/list result caps and ordering, or
-   - Add `plan-state.ts` for `update_plan` session persistence.
+1. Add `search-adapter.ts` and/or `list-adapter.ts` with focused tests:
+   - Preserve provider tool names and argument schemas.
+   - Keep Gemini cwd containment from `tools/path.ts`.
+   - Centralize ripgrep args, ignore policy, stable sorting, caps, and continuation notices.
+   - Keep result shapes concise and provider-compatible.
+   - Do not broaden filesystem access.
+2. Suggested first narrow target:
+   - Move Claude `Glob`, Gemini `glob`, Claude `Grep`, Gemini `grep_search`, and Gemini `search_file_content` to `search-adapter.ts`.
+   - Leave `LS` / `list_directory` for a second commit if the search adapter grows too large.
+3. Alternative narrow target:
+   - Move Codex `view_image` onto the shared read/image adapter to remove duplicate image loading.
 4. Keep Letta schemas untouched and Pi imports isolated to `tools/pi-compat.ts`.
 5. Run before committing:
 
