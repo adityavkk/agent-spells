@@ -224,7 +224,7 @@ Design (no session mutation, verified mechanics):
 - Module-level `visibility` state: `full | compact | hidden`.
 - HUD: `full` shows streaming rows; `compact` shows a one-line batch summary; `hidden` clears the widget.
 - Cards: the custom renderer switches per paint: `full` = intent/outcome card honoring expand/collapse; `compact` = one-line summary; `hidden` = a single dim stub line.
-- `pi.registerShortcut(...)` and a `/tool-lens` command cycle/set the state, then call `ctx.ui.setStatus(...)` to force a repaint and reflect the mode in the footer.
+- Register the toggle via `pi.registerShortcut(config.rendering.toggleShortcut, ...)` (default `ctrl+l`), so it is rebindable from config without code changes; `/tool-lens [full|compact|hidden|toggle]` is always available as a fallback. Both cycle/set the state, then call `ctx.ui.setStatus(...)` to force a repaint and reflect the mode in the footer.
 - Caveat: `CustomMessageComponent` always prepends one blank `Spacer(1)` line, so card `hidden` cannot be zero-height; use a one-line stub. True zero-height hide needs a Pi core display flag (separate issue).
 - Global expand/collapse (ctrl+o `setToolsExpanded`) already propagates to custom-message components, so cards get density control for free; visibility is an independent axis.
 - Default visibility and density come from config.
@@ -513,7 +513,7 @@ Config notes:
 - `rendering.liveHud` / `hudPlacement` / `hudMaxRows`: the live transient HUD during execution.
 - `rendering.persistCards`: flush per-tool cards to the transcript at idle.
 - `rendering.stripFromContext`: must stay true so flushed cards are removed in the `context` hook before the next LLM call.
-- `rendering.defaultVisibility` / `visibilityCycle` / `toggleShortcut`: global show/hide for HUD and cards (`full | compact | hidden`).
+- `rendering.defaultVisibility` / `visibilityCycle` / `toggleShortcut`: global three-state show/hide for HUD and cards (`full | compact | hidden`); `toggleShortcut` is user-rebindable (default `ctrl+l`) and `/tool-lens` is always available.
 - `rendering.wrapTools`: deferred Option C list of wrappable tool names; ignored in v1.
 - `capture.*`: per-tier persistence; `toolDetails` captured only for `edit`/`apply_patch` by default.
 - `redaction.onFailure`: `skip` renders a "redaction failed, not analyzed" card and skips the model call.
@@ -747,12 +747,13 @@ Expected:
 - Redaction failure: skip model call, mark `not_analyzed`.
 - Retention: session-embedded only; no cross-session disk log in v1.
 - Digest (Option D) default off; Option C deferred; core annotation API is a separate linked issue.
+- Visibility: three states `full | compact | hidden`, for both HUD and cards.
+- Toggle keybinding: default `ctrl+l`, user-rebindable via `rendering.toggleShortcut` (config) and Pi keybindings; `/tool-lens [full|compact|hidden|toggle]` always available as a fallback.
+- Delivery/cost spike is a build-time gate (implementation step 1), not an open design question.
 
 ## Open items before final issue
 
-1. Delivery/cost spike: confirm append-at-idle adds no LLM turn (build gate). If false, fall back to digest-at-idle.
-2. Visibility keybinding: default `ctrl+l` (note: some terminals map it to clear-screen). Confirm or pick another; `/tool-lens [full|compact|hidden|toggle]` either way.
-3. Keep three visibility states (`full|compact|hidden`) or reduce HUD to binary show/hide.
+None blocking. Build-time gate: the delivery/cost spike (step 1) must prove append-at-idle adds no LLM turn; if it fails, fall back to digest-at-idle.
 
 ## Implementation order
 
