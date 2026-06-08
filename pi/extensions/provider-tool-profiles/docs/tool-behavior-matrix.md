@@ -30,10 +30,11 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
   - `7539ac6 fix: route provider shell tools through adapter`
   - `9d2bd49 feat: harden provider search and list adapters`
   - `18a5346 feat: persist Codex plans and share image reads`
+  - `4a0749a fix: harden provider ignore semantics`
 - Verified locally after the latest runtime changes:
-  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 110 pass, 0 fail
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-final-search-plan` -> green
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-final-search-plan` -> green
+  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 117 pass, 0 fail
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-ignore-hardening` -> green
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-ignore-hardening` -> green
   - `bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main` -> clean (`changed=0 newSchemas=0 toolsetDiffs=0`)
 
 ### What is already done
@@ -115,7 +116,10 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
    - Glob output is newest-first with lexicographic tie-breaks.
    - Grep uses ripgrep path sorting for deterministic output.
    - Gemini search/list path inputs still use cwd-contained existing-directory validation from `tools/path.ts`.
-   - Gemini `.geminiignore` handling is explicit for glob/grep/list; list also honors root `.gitignore` unless disabled by Gemini file filtering options.
+   - Gemini `.geminiignore` handling is explicit for glob/grep/list; list also honors `.gitignore` unless disabled by Gemini file filtering options.
+   - Ignore parsing now supports anchored rules, directory-only rules, escaped leading `#` / `!`, ordered negations, and scoped ignore files.
+   - Gemini list loads `.gitignore` / `.geminiignore` files from `ctx.cwd` through the listed directory, so nested directory listings honor local ignore files.
+   - Gemini glob/grep post-filter provider ignore rules after ripgrep discovery where needed, so negations are applied without unsafe ripgrep include-glob broadening; grep uses internal field separators to filter paths containing `:` safely.
    - `respect_git_ignore: false` maps to ripgrep `--no-ignore-vcs` for Gemini glob/search behavior.
 
 9. **Codex plan and image cleanup**
@@ -137,8 +141,8 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
 
 - Shell execution remains backed by `ExtensionAPI.exec` intentionally. `createLocalBashOperations()` has not been adopted because it would bypass extension exec hooks and changes the stdout/stderr shape; this can be revisited inside `tools/shell-adapter.ts` only.
 - Codex shell escalation/approval fields are denied/unsupported, not implemented. If Pi later exposes approval semantics, add them behind `tools/shell-adapter.ts` before broadening behavior.
-- `.geminiignore` support is intentionally a simple line-based glob subset. Negated ignore rules are counted in result details but are not translated into ripgrep include overrides.
-- Gemini list `.gitignore` support is also a simple root `.gitignore` line-based subset, not full Git ignore semantics. Ripgrep-backed search/glob still uses ripgrep's native ignore handling.
+- Ignore semantics are stronger but still intentionally local, not a full clone of Git's ignore engine. Search/glob load root `.geminiignore`; recursive nested `.geminiignore` discovery for ripgrep-backed search is still future work if provider parity requires it.
+- Ripgrep-backed search/glob still uses ripgrep's native `.gitignore` handling for Git ignore files; the provider ignore engine handles Gemini-specific rules and list-time filtering.
 - `tools/shared.ts` still contains older file compatibility helpers (`readTextFile`, `writeTextFile`, `applyExactEdits`) for tests/legacy internals, though active provider tools are now routed through dedicated adapters.
 - Blocked vendored Codex tools remain inactive: `exec_command`, `write_stdin`, `shell`, `read_file`, and `list_dir`.
 
@@ -146,9 +150,9 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
 
 Recommended next work is polish/risk reduction, not a required adapter migration:
 
-1. Tighten ignore semantics if needed:
-   - Add fuller `.geminiignore` / `.gitignore` semantics, especially negation and nested ignore files, if provider parity requires it.
-   - Keep implementation local to `tools/ignore-policy.ts`, `tools/search-adapter.ts`, and `tools/list-adapter.ts`.
+1. Tighten search ignore parity if needed:
+   - Add recursive nested `.geminiignore` discovery for ripgrep-backed search/glob if provider parity requires it.
+   - Keep implementation local to `tools/ignore-policy.ts`, `tools/search-adapter.ts`, and tests.
 2. Revisit shell backend only if Pi exposes shape-compatible public approval/exec primitives:
    - Keep all changes inside `tools/shell-adapter.ts`.
    - Do not silently implement Codex escalation or approval fields without real Pi approval semantics.
