@@ -47,8 +47,10 @@ The analyzer must work in parallel with the main agent loop: fail open, avoid bl
 - Context default: recent visible conversation only; more context is configurable.
 - Tone: terse operator notes with educational/guiding phrasing.
 - Judgment scope: describe intent and outcome; do not grade the agent broadly.
-- Surface: Option B inline adjacent cards as the only v1 surface.
-- Visibility: a user toggle shows/hides all lens cards globally without mutating the session.
+- Surface: hybrid. A live transient HUD during execution, then persisted inline cards flushed at idle, backed by hidden audit entries.
+- Live-ness: intent streams during the tool run; outcome streams the moment each tool finishes.
+- Cost rule: never append to the transcript while the agent is streaming (that triggers an extra LLM turn); only flush cards when idle.
+- Visibility: one user toggle shows/hides both the HUD and the cards globally without mutating the session.
 
 ## Pushback / important constraint
 
@@ -138,51 +140,119 @@ Best for: opt-in enhancement on common tools, not the generic path.
 
 At `turn_end`/`agent_end`, persist one `tool-lens` summary (also context-stripped). Low noise, good archive, but not per-tool streaming.
 
+## Surface model (hybrid, decided)
+
+Two render surfaces plus a durable store, each used at the moment it is actually allowed by the Pi API.
+
+```
+during execution  ->  live transient HUD      (belowEditor widget, streams now)
+on idle (agent_end) -> persisted inline cards  (transcript custom_message, scrollback)
+throughout         ->  hidden audit entries    (custom entries, no turn, no context)
+```
+
+1. Live HUD: a below-editor widget fed by the in-memory store. Intent streams while the tool runs; outcome streams as each tool finishes. This is the streaming, main-loop-like feel. Ephemeral, shows the current batch, auto-clears at turn end.
+2. Persisted cards: at `agent_end`, when `ctx.isIdle()` is true, flush one `custom_message` card per analyzed tool call in source order. Durable, inline, expandable, toggleable. No extra LLM turn because the agent is idle.
+3. Audit entries: per-phase `custom` entries (`appendEntry`) written during the run. Never in context, never trigger a turn, used to rebuild the store on reload/fork.
+
+### Why hybrid (verified API constraints)
+
+- The only transcript injection path is `pi.sendMessage` (a `custom_message`).
+- During streaming that goes through the steer/followUp queue, which re-enters the agent inner loop and triggers an extra `streamAssistantResponse` call (verified in `pi-agent-core/agent-loop.js`). The `context` strip removes pollution but not the wasted call.
+- Appending only while idle (`ctx.isIdle()` after `agent_end`) avoids the extra turn entirely.
+- So per-tool cards cannot stream inline between a tool start and result today. The HUD covers the live per-tool moment; cards provide permanence.
+
+### Delivery / cost gate (must verify before build)
+
+Load-bearing assumption: append-at-idle adds no LLM call. Prove with a small SDK spike (`createAgentSession` + a fake model counting provider calls): run one tool, flush a card at idle, assert provider call count unchanged. Treat as a build gate; if false, fall back to digest-at-idle.
+
+### terminate:true tools
+
+A batch terminates only if every finalized call returns `terminate: true` (verified `shouldTerminateToolBatch`). For terminating tools (e.g. `structured_output`): never steer/followUp a card; show HUD + write audit during, flush cards at idle like everything else.
+
 ## Async update mechanism
 
-The lens card is appended right after the tool row, then filled in as analysis streams:
+Per tool call, keyed by `toolCallId`:
 
-- `tool_call`/`tool_execution_start`: append the card in `observed` state and start intent analysis. Never await in `tool_call` (it can block execution).
-- `tool_result`: start outcome analysis; return `undefined`, never patch the result.
-- On stream progress/finish: write the latest text to the `toolCallId`-keyed store, then trigger a repaint.
+- `tool_execution_start`: seed the store record; start intent analysis. Never await in `tool_call` (it can block execution). HUD shows the new row immediately.
+- `tool_execution_update`: update store partial state only (HUD ticks).
+- `tool_execution_end`: kick off outcome analysis here (earliest signal, fires per tool in completion order). Capture redacted result/details.
+- On any analysis delta/finish: write latest to the store and call `ctx.ui.setStatus("tool-lens", ...)` (verified to call `requestRender()`), repainting the HUD.
+- `agent_end` + idle: flush persisted cards in source order; append final audit entries; clear the HUD.
 
-Repaint mechanics (verified against Pi source):
+Repaint mechanics (verified):
 
-- The card is a custom component returned by `registerMessageRenderer`. Its `render(width)` runs every paint, so it reads the shared store and renders the latest intent/outcome each frame.
-- To force a frame after async analysis lands, call `ctx.ui.setStatus("tool-lens", ...)`, which internally calls `requestRender()`. The status text doubles as a progress/visibility indicator.
-- Do not block `render()` on the model; rendering only reads cached store state.
+- HUD widget and card components read the shared store on each `render(width)`; never block render on the model.
+- `setStatus` forces a frame and doubles as a footer progress/visibility indicator.
+
+## Parallel tool calls (decided)
+
+Verified event ordering in `pi-agent-core/agent-loop.js` (`executeToolCallsParallel`):
+
+```
+tool_execution_start   SOURCE order, all upfront, before any execution (preflight)
+tool_execution_update  interleaved (concurrent)
+tool_execution_end     COMPLETION order (per tool, as each finishes)
+tool_result messages   SOURCE order (after Promise.all)
+agent_end              once, after the whole batch
+```
+
+Design consequences:
+
+- Fan out all intents at `tool_execution_start`: every start fires before any execution, so all intent analyses run concurrently with the tools. Best case for "ahead of execution."
+- Kick off each outcome at `tool_execution_end`: a fast tool's outcome streams while slow siblings still run. Completion order is only the analysis-kickoff order, never the display order.
+- Display order is always source order, for both HUD rows and flushed cards, matching the tool rows. No scramble.
+- The HUD is multi-row: it shows the whole current batch, one independent row per `toolCallId` (scoped per tool call, not semantically grouped; they coexist because concurrent).
+
+Cost control under fan-out:
+
+- One global analyzer semaphore across the batch (`maxConcurrentAnalyses`), FIFO in source order. A 5-tool batch does not launch 10 concurrent analyses.
+- Late-merge: if a tool reaches `tool_execution_end` before its queued intent analysis has started, skip the standalone intent and run a single combined intent+outcome call. Saves a model call and avoids stale intent (~1 analysis/tool under load instead of 2).
+- Budget overflow: beyond `limits.maxAnalysesPerTurn`, render rows/cards as "not analyzed (batch over budget)" rather than queueing unbounded.
+
+Parallel edge cases:
+
+- Immediate/blocked calls (`preparation.kind === "immediate"`, e.g. blocked by a `tool_call` hook): start + end, no execution, no update. Card/HUD shows "did not execute (blocked/cached)".
+- Sequential mode (`toolExecution: "sequential"` or any `executionMode: "sequential"` tool): start -> end -> result one at a time; HUD shows one active row. Same code path; `toolCallId` keying handles it.
+- Error result: both `tool_execution_end` and `tool_result` carry `isError`; outcome notes it.
 
 ## Visibility toggle
 
-This is a hard requirement: the user can show/hide all lens cards on demand.
+Hard requirement: the user can show/hide all lens output on demand, covering both HUD and cards.
 
 Design (no session mutation, verified mechanics):
 
-- Keep a module-level `visibility` state: `full | compact | hidden`.
-- The custom renderer switches on it every paint:
-  - `full`: intent/outcome card, honoring expand/collapse.
-  - `compact`: one-line summary (tool name + matched/again indicator).
-  - `hidden`: a single dim placeholder line.
-- A keybinding via `pi.registerShortcut(...)` and a `/tool-lens` command both cycle/set the state, then call `ctx.ui.setStatus(...)` to force a repaint and reflect the mode in the footer.
-- Caveat: `CustomMessageComponent` always prepends one blank `Spacer(1)` line, so `hidden` cannot be zero-height; use a minimal one-line stub. Fully removing the gap would need a Pi core display flag (separate issue).
-- Global expand/collapse (ctrl+o `setToolsExpanded`) already propagates to custom-message components, so the card gets density control for free; the visibility toggle is an independent axis.
-- Default visibility and default density come from config.
+- Module-level `visibility` state: `full | compact | hidden`.
+- HUD: `full` shows streaming rows; `compact` shows a one-line batch summary; `hidden` clears the widget.
+- Cards: the custom renderer switches per paint: `full` = intent/outcome card honoring expand/collapse; `compact` = one-line summary; `hidden` = a single dim stub line.
+- `pi.registerShortcut(...)` and a `/tool-lens` command cycle/set the state, then call `ctx.ui.setStatus(...)` to force a repaint and reflect the mode in the footer.
+- Caveat: `CustomMessageComponent` always prepends one blank `Spacer(1)` line, so card `hidden` cannot be zero-height; use a one-line stub. True zero-height hide needs a Pi core display flag (separate issue).
+- Global expand/collapse (ctrl+o `setToolsExpanded`) already propagates to custom-message components, so cards get density control for free; visibility is an independent axis.
+- Default visibility and density come from config.
 
 ## Recommended UX path
 
-1. v1: Option B inline adjacent cards only, context-stripped, with the global visibility toggle and per-card expand/collapse.
-2. Optional behind config: Option A live ticker, Option D digest.
-3. Deferred: Option C same-row wrapper for built-ins/provider-tool-profiles.
-4. Core follow-up for a generic same-row raw/lens toggle and zero-height hide: add a Pi annotation/display API so `renderResult` context exposes annotations keyed by `toolCallId` plus a view mode, removing the need to co-own tool names.
+1. v1: hybrid surface (live HUD + idle-flushed cards + audit entries), with the global visibility toggle and per-card expand/collapse.
+2. Optional behind config: per-turn digest (Option D).
+3. Deferred: same-row `renderResult` wrapper for built-ins/provider-tool-profiles (Option C).
+4. Core follow-up for true inline streaming under each tool row and a generic raw/lens toggle: add a Pi annotation/display API so `renderResult` context exposes annotations keyed by `toolCallId` plus a view mode and streaming updates, removing the need to co-own tool names and the idle-flush compromise.
 
 ## UX sketch
 
-Option B inline adjacent card (default), collapsed then expanded:
+Live HUD during a parallel batch (belowEditor widget, streaming):
+
+```text
+tool-lens · turn 7
+A  read  src/a.ts      intent ✓   done     matched
+B  bash  bun test      intent ✓   running  4.2s
+C  read  src/c.ts      analyzing… running
+```
+
+Persisted cards after idle flush (source order, scrollback), collapsed then expanded:
 
 ```text
 ● apply_patch  config.ts  +12 -3                      (real tool row, untouched)
 
-  lens  apply_patch                                    (adjacent custom card, ctrl+o to expand)
+  lens  apply_patch                                    (idle-flushed card, ctrl+o to expand)
   intent: update defaults, keep project-over-global precedence
   outcome: applied; only normalize/merge changed; matched intent
 ```
@@ -198,29 +268,15 @@ Option B inline adjacent card (default), collapsed then expanded:
   implication: optional broader smoke before shipping
 ```
 
-Visibility toggle states (same session, no data loss):
+Visibility states (same session, no data loss):
 
 ```text
-full     ● bash ...        lens card with intent/outcome
-compact  ● bash ...        lens: verify config; passed ✓
-hidden   ● bash ...        (lens hidden)
+full     ● bash ...   lens card with intent/outcome   | HUD: streaming rows
+compact  ● bash ...   lens: verify config; passed ✓    | HUD: one-line batch
+hidden   ● bash ...   (lens hidden)                    | HUD: cleared
 ```
 
-Option C same-row toggle (deferred, wrappable tools only):
-
-```text
-● read  README.md  42 lines                    [▸ raw | lens]
-  lens: confirm repo layout before editing; expecting extension list
-```
-
-Option A live ticker (optional, belowEditor widget):
-
-```text
-tool-lens
-[2] apply_patch  running 0.4s   intent: keep project>global precedence
-```
-
-Option D per-turn digest message (optional, context-stripped):
+Optional per-turn digest (Option D, context-stripped):
 
 ```text
 Tool lens: 4 calls, 4 analyzed, 1 partial match, 0 errors
@@ -236,75 +292,73 @@ Verified in `core/session-manager.d.ts`: the only mutating APIs are `append*` an
 
 Second verified fact: a `custom_message`'s `content` enters LLM context (we strip it in the `context` hook), but its `details` never enters context. So all analysis text lives in `details`, and `content` stays near-empty. This keeps analysis out of the model even if the strip is ever bypassed.
 
-### Anchor + store + audit model (decided)
+### Store + audit + idle-flushed cards (decided)
 
-Three coordinated pieces, keyed by `toolCallId`:
+The hybrid removes the need for a positioned placeholder. Each persisted card is written once, at idle, with complete data, so append-only is satisfied naturally (no backfill of an existing entry).
 
-1. Anchor (`custom_message`, one per tool call): appended so it renders directly under the tool row. `content` is a near-empty placeholder; `details` holds only `{ schema, toolCallId, turnIndex }`. The anchor is a stable, positioned render slot. It is never rewritten.
-2. Store (in-memory `Map<toolCallId, ToolLensRecordV1>`): the live source of truth. Intent and outcome stream into it. The card renderer reads the store by `toolCallId` (resolved from anchor `details`), so the frozen anchor content does not matter.
-3. Audit (`custom` entries via `pi.appendEntry`): durable, never in context, never rendered in the transcript. Appended per phase so the store can be rebuilt after reload/fork.
+Three pieces, keyed by `toolCallId`:
+
+1. Store (in-memory `Map<toolCallId, ToolLensRecordV1>`): live source of truth during the run. Feeds the HUD. Updated as intent/outcome stream.
+2. Audit entries (`custom` via `pi.appendEntry`): durable, per-phase, written during the run. They never render, never enter context, and do not trigger a turn (verified: custom entries are session-only, not agent messages), so they are safe to append mid-stream. Purpose: crash/reload recovery for analysis that completed before its card was flushed.
+3. Cards (`custom_message` via `pi.sendMessage`): the persisted transcript artifact, flushed only when idle. `content` near-empty, `details` carries the full final `ToolLensRecordV1`, so a reloaded card renders directly from `details` without needing the store.
 
 Lifecycle:
 
-- `tool_execution_start`: append the anchor; seed the store record in `observed`/`intent_streaming`.
-- intent completes: append a hidden `custom` audit entry `{ phase: "intent", ... }`; update store; force repaint.
-- `tool_result` -> outcome completes: append a hidden `custom` audit entry `{ phase: "outcome", ... }`; update store; force repaint.
-- `session_start`: replay `custom` audit entries on the current branch, rebuild the store, so anchors re-render with their analysis.
+- `tool_execution_start`: seed store; start intent analysis; HUD shows the row.
+- intent completes: update store; append `custom` audit `{ phase: "intent" }`; repaint HUD.
+- `tool_execution_end`: start outcome analysis; capture redacted result/details.
+- outcome completes: update store; append `custom` audit `{ phase: "outcome" }`; repaint HUD.
+- `agent_end` + `ctx.isIdle()`: flush one consolidated card per analyzed tool call, source order, full `details`; clear HUD.
+- analysis that completes after `agent_end` while still idle: flush its card immediately; if a new turn has started, defer to the next idle.
+- `session_start`: reconstruct by scanning the current branch. Prefer flushed card `details`; for any tool with audit entries but no card (crash before flush), rebuild from the latest audit phase and flush the missing card while idle.
 
-Why append-per-phase (decided): it survives a mid-tool crash and shows intent immediately on reload, at the cost of up to two audit entries per tool call. Latest phase wins on reconstruction.
+Why per-phase audit (decided): survives a mid-tool crash and preserves intent even if outcome never arrives; cost is up to two small hidden entries per tool. Latest phase wins on reconstruction.
 
 ### Versioned payload
 
 ```ts
 type ToolLensVisibility = "full" | "compact" | "hidden";
+type ToolLensPhase = "intent" | "outcome";
 
-interface ToolLensAnchorV1 {
-  schema: "tool-lens.anchor.v1";
-  toolCallId: string;
-  turnIndex: number;
-}
-
-interface ToolLensAuditEntryV1 {
+// Written to custom audit entries (per phase) and, consolidated, to card details.
+interface ToolLensRecordV1 {
   schema: "tool-lens.analysis.v1";
-  toolCallId: string;         // correlation key
+  toolCallId: string;         // sole correlation key
   turnIndex: number;
+  sourceOrder: number;        // assistant source index, for stable display ordering
   toolName: string;           // as called
   canonicalToolName?: string; // alias-normalized (shell_command -> bash, etc.)
-  phase: "intent" | "outcome";
+  phase?: ToolLensPhase;      // set on audit entries; omitted on consolidated card
   startedAt: number;
-  completedAt: number;
+  completedAt?: number;
   // Tiered capture (decided): intent/outcome text + redacted input snapshot +
   // redacted output summary by default; tool details only for edit/apply_patch.
   input?: RedactedPayload;          // redacted/truncated args snapshot
   outputSummary?: RedactedPayload;  // redacted/truncated visible content summary
   toolDetails?: RedactedPayload;    // only for edit/apply_patch: diff stats, file lists, counts
-  intent?: ToolLensIntent;          // present on phase "intent"
-  outcome?: ToolLensOutcome;        // present on phase "outcome"
-  status: "observed" | "intent_streaming" | "executing" | "outcome_streaming" | "done" | "error";
+  intent?: ToolLensIntent;          // from the intent phase
+  outcome?: ToolLensOutcome;        // from the outcome phase
+  status: "observed" | "intent_streaming" | "executing" | "outcome_streaming" | "done" | "error" | "not_analyzed";
   errors?: string[];
 }
 ```
 
-- `toolCallId` is the only correlation key required (decided); no assistant/toolResult entry-id scanning in v1.
+- `toolCallId` is the only correlation key (decided); no assistant/toolResult entry-id scanning in v1.
+- `sourceOrder` preserves source-order display for HUD rows and flushed cards under parallel batches.
 - A tolerant `normalize()` (same pattern as `render`/`answer`) ignores unknown fields and renders missing fields as `unknown`.
 - Reconstruction walks only the current branch (`getBranch`); off-branch tool calls show no lens (decided).
 
 Rules:
 
-- The `context` hook MUST drop every `tool-lens` anchor message from the copy sent to the LLM.
+- The `context` hook MUST drop every `tool-lens` card message from the copy sent to the LLM (cards flushed at idle still enter context on the next turn otherwise).
 - All analysis text stays in `details`/audit entries, never in `content`.
 - Never store raw secrets or unredacted long outputs.
 - Never mutate existing tool result `details`; lens data is separate.
 - Retention is session-embedded only in v1; no separate cross-session disk log (a disk log is a distinct future consent from send-to-analyzer).
 
-### Open decision: anchor timing
+### Resolved: no start-time anchor
 
-One genuine tradeoff remains. Append the anchor at:
-
-- `tool_execution_start` (recommended): anchor lands right under the tool row, correct position even under parallel/fast tools. Risk: if a tool never resolves, a near-empty anchor is left behind (renders as a one-line stub).
-- `tool_result`: anchor only exists for completed calls, but position can drift after sibling output in parallel mode.
-
-Recommendation: `tool_execution_start`, accept the rare orphan stub.
+Earlier drafts considered appending a positioned placeholder at `tool_execution_start`. The hybrid makes that unnecessary: the live HUD covers the per-tool moment during execution, and cards are flushed once at idle with complete data. This avoids orphan placeholders for tools that never resolve and avoids any extra-turn risk from streaming-time appends.
 
 ### Desired Pi core support
 
@@ -351,7 +405,8 @@ Config files:
 Project overrides global. Env escape hatches:
 
 - `PI_TOOL_LENS=0` disables
-- `PI_TOOL_LENS_RENDER=inline-card|ticker|digest|off` overrides render surface where supported
+- `PI_TOOL_LENS_RENDER=full|compact|hidden` overrides default visibility
+- `PI_TOOL_LENS_HUD=0` disables the live HUD (cards only); `PI_TOOL_LENS_CARDS=0` disables persisted cards (HUD only)
 
 Suggested schema:
 
@@ -386,7 +441,10 @@ Suggested schema:
     "includeNextStepImplication": true,
     "stream": true,
     "timeoutMs": 20000,
-    "maxConcurrentAnalyses": 2
+    "intentKickoff": "tool_execution_start",
+    "outcomeKickoff": "tool_execution_end",
+    "maxConcurrentAnalyses": 2,
+    "lateMerge": true
   },
   "context": {
     "preset": "visible-recent",
@@ -411,7 +469,7 @@ Suggested schema:
     "extraPatterns": []
   },
   "persistence": {
-    "anchorTiming": "tool_execution_start",
+    "cardFlush": "on-idle",
     "auditEntries": "per-phase",
     "reconstructFrom": "current-branch",
     "crossSessionLog": false
@@ -419,22 +477,21 @@ Suggested schema:
   "limits": {
     "maxInputChars": 4000,
     "maxOutputChars": 8000,
-    "maxRenderedCalls": 12,
-    "maxPersistedCalls": 50
+    "maxAnalysesPerTurn": 24
   },
   "rendering": {
-    "surface": "inline-card",
+    "liveHud": true,
+    "hudPlacement": "belowEditor",
+    "hudMaxRows": 8,
+    "persistCards": true,
     "stripFromContext": true,
     "defaultVisibility": "full",
     "visibilityCycle": ["full", "compact", "hidden"],
     "toggleShortcut": "ctrl+l",
+    "order": "assistant-source",
     "showRawInputs": "redacted-collapsed",
     "showRawOutputs": "summary-only",
-    "order": "assistant-source",
     "expandedByDefault": false,
-    "persistAuditEntry": false,
-    "liveTicker": false,
-    "tickerPlacement": "belowEditor",
     "persistDigestMessage": false,
     "wrapTools": []
   },
@@ -450,16 +507,20 @@ Config notes:
 
 - `mode`: `intent-only | outcome-only | intent-and-outcome`.
 - `tools.allowList`/`tools.blockList`: match tool names after alias normalization; blocklist wins.
-- `rendering.surface`: `inline-card` (Option B, default, the only supported v1 surface) | `ticker` (Option A) | `digest` (Option D) | `off`.
-- `rendering.stripFromContext`: must stay true so analysis is removed in the `context` hook before the LLM call.
-- `rendering.defaultVisibility` / `visibilityCycle` / `toggleShortcut`: drive the global show/hide toggle (`full | compact | hidden`).
+- `analysis.intentKickoff` / `outcomeKickoff`: intent at `tool_execution_start` (concurrent with the tool), outcome at `tool_execution_end` (per tool, earliest signal).
+- `analysis.maxConcurrentAnalyses`: one global semaphore across the whole batch, FIFO in source order.
+- `analysis.lateMerge`: if a tool ends before its intent analysis started, run a single combined intent+outcome call.
+- `rendering.liveHud` / `hudPlacement` / `hudMaxRows`: the live transient HUD during execution.
+- `rendering.persistCards`: flush per-tool cards to the transcript at idle.
+- `rendering.stripFromContext`: must stay true so flushed cards are removed in the `context` hook before the next LLM call.
+- `rendering.defaultVisibility` / `visibilityCycle` / `toggleShortcut`: global show/hide for HUD and cards (`full | compact | hidden`).
 - `rendering.wrapTools`: deferred Option C list of wrappable tool names; ignored in v1.
 - `capture.*`: per-tier persistence; `toolDetails` captured only for `edit`/`apply_patch` by default.
 - `redaction.onFailure`: `skip` renders a "redaction failed, not analyzed" card and skips the model call.
-- `persistence.anchorTiming`: `tool_execution_start` (default) positions cards correctly under each tool row.
+- `persistence.cardFlush`: `on-idle` only; never append cards while the agent is streaming.
 - `persistence.auditEntries`: `per-phase` appends intent then outcome `custom` entries; latest phase wins on reload.
 - `persistence.crossSessionLog`: must stay false in v1; a disk log is a separate future consent.
-- A generic same-row toggle for all tools needs the core annotation/view-mode API (separate issue).
+- A generic same-row toggle and true inline streaming need the core annotation/view-mode API (separate issue).
 - Analyzer model should receive no tools in its context.
 
 ## Architecture plan
@@ -475,58 +536,66 @@ Create `pi/extensions/tool-lens/`:
 - `context.ts`: build compact session/tool context for analyzer prompts.
 - `redaction.ts`: redact/truncate tool inputs/results before render/model calls/persistence.
 - `prompts.ts`: intent and outcome prompt builders.
-- `analyzer.ts`: streaming model runner, queue, cancellation, retries/timeouts.
-- `store.ts`: in-memory `toolCallId`-keyed analysis store plus optional audit-entry read/write.
-- `card.ts`: custom message renderer for the inline lens card (full/compact/hidden states).
+- `analyzer.ts`: streaming model runner, global batch semaphore, late-merge, cancellation, retries/timeouts.
+- `store.ts`: in-memory `toolCallId`-keyed analysis store; audit-entry append + reconstruction.
+- `hud.ts`: live transient HUD widget (multi-row, source-ordered) fed by the store.
+- `flush.ts`: idle-gated card flush at `agent_end` (`ctx.isIdle()`), source order, full `details`.
+- `card.ts`: custom message renderer for flushed cards (full/compact/hidden states).
 - `visibility.ts`: global visibility state, shortcut + `/tool-lens` command, repaint trigger.
-- `README.md`: install, config, smoke prompts, privacy warnings.
-- `*.test.ts`: config, redaction, context builder, store, state machine, renderer.
+- `README.md`: install, config, privacy warnings, the delivery/cost gate spike, smoke prompts.
+- `*.test.ts`: config, redaction, context builder, store/reconstruction, semaphore/late-merge, state machine, HUD/card renderers, idle-flush.
 
 ### Event flow
 
 Use Pi extension events documented in `docs/extensions.md`:
 
-- `session_start`: load config, register `registerMessageRenderer("tool-lens", ...)`, register the visibility shortcut and `/tool-lens` command, restore visibility state, initialize footer status, and rebuild the store by replaying `tool-lens` `custom` audit entries on the current branch (`getBranch`); latest phase per `toolCallId` wins.
-- `context`: remove every `tool-lens` anchor message from the deep-copied message list so analysis never reaches the LLM. This is mandatory.
-- `before_agent_start`: capture current user prompt and optional context metadata summary, not full system prompt by default.
-- `turn_start`: initialize per-turn state.
-- `tool_execution_start` (anchor timing default): seed the store record; append the anchor `custom_message` (near-empty `content`, `details = {schema, toolCallId, turnIndex}`) so the card renders under the tool row; kick off intent analysis with `void queueIntentAnalysis(...)`.
-  - If instead hooking `tool_call`, return immediately; never await the analyzer model there because `tool_call` can block execution.
-  - On intent completion: append a hidden `custom` audit entry `{phase: "intent"}`, update store, force repaint.
-- `tool_execution_update`: update store partial state only.
-- `tool_result`: capture redacted input/output/details and kick off outcome analysis; on completion append a hidden `custom` audit entry `{phase: "outcome"}`, update store, force repaint; return `undefined`, never patch result.
-- `tool_execution_end`: finalize duration/error metadata.
-- On any analysis delta/finish: update the store and call `ctx.ui.setStatus("tool-lens", ...)` to force a repaint of the card.
-- `turn_end`/`agent_end`: optional digest only if enabled (per-call audit entries are already written per phase).
-- `session_shutdown`: abort pending analyzer streams and clear footer status.
+- `session_start`: load config; register the card renderer (`registerMessageRenderer("tool-lens", ...)`), the visibility shortcut, and `/tool-lens`; restore visibility; init footer status and HUD; rebuild the store by scanning the current branch (`getBranch`), preferring flushed card `details`, else latest audit phase per `toolCallId`; while idle, flush any card that has audit data but no card.
+- `context`: remove every `tool-lens` card message from the deep-copied message list so analysis never reaches the LLM. Mandatory.
+- `before_agent_start`: capture the user prompt and optional context metadata summary, not the full system prompt by default.
+- `turn_start`: initialize per-turn batch state and HUD for the new batch.
+- `tool_execution_start` (all fire upfront, source order): seed the store record; show the HUD row; start intent analysis via `void queueIntent(...)` through the batch semaphore. Never append to the transcript here.
+  - If hooking `tool_call` instead, return immediately; never await the analyzer there because `tool_call` can block execution.
+- `tool_execution_update`: update store partial state; HUD ticks.
+- `tool_execution_end` (per tool, completion order): start outcome analysis (or a combined intent+outcome call if late-merge applies); capture redacted result/details; on intent/outcome completion append the matching `custom` audit entry and repaint the HUD.
+- `tool_result`: capture redacted visible content if not already taken; return `undefined`, never patch the result.
+- `agent_end` + `ctx.isIdle()`: flush one consolidated card per analyzed tool call in source order with full `details`; clear the HUD. If analysis is still pending, flush a partial card now and a corrected one at the next idle.
+- analysis completing after `agent_end` while idle: flush immediately; if a new turn already started, defer to the next idle.
+- On any analysis delta/finish: update the store and call `ctx.ui.setStatus("tool-lens", ...)` to force a repaint.
+- `turn_end`: optional digest only if enabled.
+- `session_shutdown`: abort pending analyzer streams; clear HUD and footer status.
+
+Cost rule (verified): appending a `custom_message` while streaming is queued via steer/followUp and triggers an extra LLM turn. All card appends happen only when `ctx.isIdle()`. Audit `custom` entries are session-only and safe to append mid-stream.
 
 ### State machine
 
-Per tool call:
+Per tool call (keyed by `toolCallId`):
 
 ```text
 observed
-  -> intent_streaming
+  -> intent_streaming        (or skipped if late-merge)
   -> executing
-  -> outcome_streaming
+  -> outcome_streaming       (combined intent+outcome if late-merge)
   -> done
 ```
 
-Failure branches:
+Failure / special branches:
 
 ```text
-intent_error -> executing -> outcome_streaming -> done
-outcome_error -> done
-cancelled -> done
+intent_error    -> executing -> outcome_streaming -> done
+outcome_error   -> done (intent preserved)
+redaction_error -> not_analyzed
+blocked/immediate -> not_analyzed (did not execute)
+cancelled       -> done
 ```
 
 Rules:
 
-- Key by `toolCallId`.
-- Display each call independently; no grouping by default.
-- Preserve assistant source order for display, but allow completion-order updates.
-- Analyzer failure never fails the main agent turn.
-- Backpressure: max concurrent analyzer model streams, queue or skip older/lower-priority calls.
+- Key by `toolCallId`; carry `sourceOrder` for display.
+- Display in source order (HUD rows and flushed cards); completion order only drives analysis kickoff.
+- Each tool call is independent; no semantic grouping.
+- Analyzer failure/timeout never fails or mutates the main tool call.
+- Backpressure: one global batch semaphore (`maxConcurrentAnalyses`), FIFO by source order; beyond budget, mark `not_analyzed`.
+- Cards are written once at idle from the final store record; reconstruction prefers card `details`, else latest audit phase.
 
 ### Analyzer prompt contract
 
@@ -555,31 +624,32 @@ Prompt constraints:
 
 ### Rendering plan
 
-Default (Option B), extension-only and context-safe:
+Hybrid v1, extension-only and context-safe:
 
-- `pi.sendMessage({ customType: "tool-lens", display: true, details })` to append an inline card after each analyzed tool result.
-- `pi.registerMessageRenderer("tool-lens", ...)` for collapsed/expanded card rendering.
-- `context` hook removes all `tool-lens` custom messages from the copy sent to the LLM.
-- `pi.appendEntry("tool-lens", data)` only if a hidden, non-context audit record is also wanted; otherwise the custom message detail carries state.
-- On streamed analysis updates, re-render the card component for that `toolCallId`.
+Live HUD (during execution):
 
-Opt-in (Option C), same-row toggle on wrappable tools:
+- `ctx.ui.setWidget("tool-lens", factory, { placement: "belowEditor" })` for a multi-row, source-ordered widget fed by the store.
+- `ctx.ui.setStatus("tool-lens", ...)` to force frames as analysis streams and to show batch progress.
+- Auto-clear the widget at `agent_end`.
 
-- Reconstruct built-ins via `createReadTool`/`createBashTool`/`createEditTool`/`createWriteTool`, or import in-repo `provider-tool-profiles` tools.
-- Register a wrapper that delegates `execute` to the original and composes `renderResult` raw/lens.
-- Store lens state by `toolCallId`; call captured `context.invalidate()` when analysis lands.
-- Document load-order/ownership coordination with `provider-tool-profiles`.
+Persisted cards (at idle):
 
-Optional surfaces:
+- `pi.sendMessage({ customType: "tool-lens", display: true, details })` only when `ctx.isIdle()`, one card per analyzed tool call in source order; `details` carries the full final record, `content` near-empty.
+- `pi.registerMessageRenderer("tool-lens", ...)` renders full/compact/hidden, honoring expand/collapse.
+- `context` hook removes all `tool-lens` card messages from the copy sent to the LLM.
 
-- Option A live ticker via `ctx.ui.setWidget` / `ctx.ui.setStatus`.
-- Option D digest via a separate context-stripped `tool-lens-digest` custom message.
+Audit (during execution):
 
-Core-enhanced target rendering (separate Pi issue):
+- `pi.appendEntry("tool-lens", record)` per phase for crash/reload recovery; never rendered, never in context.
 
-- Tool render context exposes annotations keyed by `toolCallId`.
-- Tool row gains a raw/lens view mode distinct from expand.
-- tool-lens streams updates into the annotation; no tool-name co-ownership required.
+Optional:
+
+- Option D digest via a separate context-stripped `tool-lens-digest` custom message at idle.
+
+Deferred (Option C) and core-enhanced target rendering (separate Pi issue):
+
+- Reconstruct built-ins via `createReadTool`/`createBashTool`/`createEditTool`/`createWriteTool` or import in-repo `provider-tool-profiles` tools; wrap `execute` + compose `renderResult` raw/lens (load-order coordination required).
+- Core API: `renderResult` context exposes annotations keyed by `toolCallId`, a raw/lens view mode, and streaming updates, enabling true inline per-row streaming without tool co-ownership or the idle-flush compromise.
 
 ### Privacy/security
 
@@ -601,10 +671,12 @@ Unit tests:
 - Input/output truncation metadata.
 - Session context builder from fake branch entries.
 - Prompt builders include required fields and omit system/context files by default.
-- State machine handles interleaved parallel tool events.
-- Store reconstructs latest metadata by `toolCallId` across custom entries.
-- Queue respects concurrency, timeout, cancellation.
-- Renderer produces stable collapsed/expanded text.
+- State machine handles interleaved parallel tool events (start source order, end completion order).
+- Store reconstructs latest metadata by `toolCallId`, preferring card `details` over audit phase.
+- Batch semaphore respects `maxConcurrentAnalyses`; late-merge collapses to one combined call when intent had not started.
+- Idle-flush gate: cards append only when idle; a fake provider-call counter proves no extra LLM turn (the delivery/cost spike).
+- HUD renders multi-row in source order; visibility toggle switches HUD and cards across full/compact/hidden.
+- Renderer produces stable collapsed/expanded text; `not_analyzed` path renders on redaction failure / over-budget / blocked.
 
 Manual smoke:
 
@@ -621,10 +693,12 @@ Prompts:
 
 Expected:
 
-- Intent appears before/while the tool executes.
-- Outcome appears after result.
+- Intent appears in the live HUD while the tool executes.
+- Outcome appears in the HUD as each tool finishes (per tool under parallel).
+- At idle, persisted cards appear in source order and survive reload/fork.
+- No extra LLM turn is triggered by card flushing (watch token/turn count).
 - Main tool execution is not blocked by analyzer latency.
-- Redacted/truncated inputs/outputs appear in UI and persisted metadata.
+- Redacted/truncated inputs/outputs appear in HUD, cards, and audit entries.
 
 ## Acceptance criteria
 
@@ -632,23 +706,26 @@ Expected:
 - [ ] Declarative config loads from global and project paths, project wins, env can disable.
 - [ ] Analyzer observes all allowed tool calls across built-in and provider-tool-profile names.
 - [ ] Tool allowlist/blocklist and alias normalization work; blocklist wins.
-- [ ] Intent analysis starts on tool call start without awaiting model completion in blocking hooks.
-- [ ] Outcome analysis starts after final tool result.
-- [ ] Inline lens cards render per tool call, update as analysis streams, and are stripped from LLM context via the `context` hook.
-- [ ] A global visibility toggle (shortcut + `/tool-lens`) cycles full/compact/hidden for all cards without mutating the session, and persists the choice for the session.
+- [ ] Intent analysis kicks off at `tool_execution_start` (concurrent with the tool), without awaiting the model in any blocking hook.
+- [ ] Outcome analysis kicks off at `tool_execution_end` per tool; under parallel batches a fast tool's outcome can stream while siblings run.
+- [ ] Live HUD streams intent during execution and outcome as each tool finishes, multi-row in source order.
+- [ ] Persisted cards are flushed only when `ctx.isIdle()` (at `agent_end`); flushing triggers no extra LLM turn (proven by the delivery/cost spike).
+- [ ] Flushed cards are stripped from LLM context via the `context` hook.
+- [ ] A global visibility toggle (shortcut + `/tool-lens`) cycles full/compact/hidden for HUD and cards without mutating the session, persisted for the session.
 - [ ] Per-card expand/collapse works and reacts to global ctrl+o.
-- [ ] Anchor + store + per-phase `custom` audit model: cards survive reload/fork by replaying current-branch audit entries; latest phase per `toolCallId` wins.
-- [ ] Treats sessions as append-only: no attempt to edit/replace an existing entry; outcome arrives via a new audit entry, not a rewrite.
-- [ ] All analysis text lives in `details`/audit entries; anchor `content` stays near-empty so nothing leaks even if the context strip is bypassed.
+- [ ] Store + per-phase `custom` audit + idle-flushed cards: state survives reload/fork by scanning the current branch (card `details` preferred, else latest audit phase).
+- [ ] Treats sessions as append-only: each card is written once with complete data; no edit/replace of any entry; no start-time placeholder.
+- [ ] All analysis text lives in `details`/audit entries; card `content` stays near-empty so nothing leaks even if the context strip is bypassed.
 - [ ] Capture tiers honored: intent/outcome + redacted input + redacted output summary by default; tool `details` only for `edit`/`apply_patch`.
-- [ ] Redaction failure skips the model call and renders a "not analyzed" card.
+- [ ] Redaction failure skips the model call and marks the call `not_analyzed`.
 - [ ] Retention is session-embedded only; no cross-session disk log in v1.
 - [ ] Configurable model selection supports explicit provider/model and cheap model-profile roles (`tool-lens`, `smol`).
 - [ ] Default context is recent visible conversation; system prompt/context files/tool descriptions are opt-in.
 - [ ] Inputs/outputs are redacted and truncated before analyzer model calls and before persistence.
-- [ ] Parallel tool calls render independently and tolerate interleaved updates.
+- [ ] Parallel tool calls: intents fan out at start, outcomes stream per tool at end, display stays source-ordered, cost bounded by one batch semaphore + late-merge.
+- [ ] Blocked/immediate and `terminate:true` tools are handled (no extra turn; HUD + audit + idle card).
 - [ ] Analyzer errors/timeouts are visible but never fail or mutate the main tool call.
-- [ ] Unit tests cover config, redaction, context building, store reconstruction, state transitions, and queue behavior.
+- [ ] Unit tests cover config, redaction, context building, store reconstruction, semaphore/late-merge, idle-flush (no extra turn), state transitions, HUD/card rendering.
 - [ ] README documents config, privacy implications, UX modes, and smoke prompts.
 
 ## Core follow-up acceptance criteria for raw/lens toggle
@@ -659,24 +736,35 @@ Expected:
 - [ ] TUI has a per-tool raw/lens toggle distinct from expand/collapse.
 - [ ] Existing built-in and provider-profile tool renderers can opt into lens rendering without re-registering/replacing tools.
 
-## Remaining grill questions
+## Resolved decisions
 
-1. Digest/audit entries default off in v1 (inline cards are the surface). Confirm.
-2. Should output analysis include tool `details` objects by default, or only visible `content`? Recommendation: include redacted/truncated details for file mutation counts/diffs, but cap aggressively.
-3. For ultra-fast tools, still render the card and fill it when analysis lands (no skipping). Confirm.
-4. Visibility toggle default keybinding `ctrl+l` and `/tool-lens [full|compact|hidden|toggle]`. Confirm keybinding choice.
-5. Should the core annotation API be part of the same issue or separate follow-up? Recommendation: separate issue linked from this one unless toggle is mandatory for v1.
+- Surface: hybrid live HUD + idle-flushed persisted cards + hidden audit entries.
+- Intent at `tool_execution_start`, outcome at `tool_execution_end`.
+- Cards flush only when `ctx.isIdle()`; never append while streaming (avoids extra LLM turn).
+- Parallel: fan out intents at start, stream outcomes per tool at end, display in source order, one batch semaphore + late-merge.
+- Persistence: append-only; one consolidated card per call written once; per-phase audit for recovery; reconstruct from current branch.
+- Capture tiers: intent/outcome + redacted input + redacted output summary; tool `details` only for `edit`/`apply_patch`.
+- Redaction failure: skip model call, mark `not_analyzed`.
+- Retention: session-embedded only; no cross-session disk log in v1.
+- Digest (Option D) default off; Option C deferred; core annotation API is a separate linked issue.
+
+## Open items before final issue
+
+1. Delivery/cost spike: confirm append-at-idle adds no LLM turn (build gate). If false, fall back to digest-at-idle.
+2. Visibility keybinding: default `ctrl+l` (note: some terminals map it to clear-screen). Confirm or pick another; `/tool-lens [full|compact|hidden|toggle]` either way.
+3. Keep three visibility states (`full|compact|hidden`) or reduce HUD to binary show/hide.
 
 ## Implementation order
 
-1. Scaffold `tool-lens` extension, config loader, README stub.
-2. Implement redaction/truncation and tests first.
-3. Implement state machine and fake event tests.
-4. Implement in-memory store and optional audit-entry persistence with tests.
-5. Implement context/prompt builders and tests.
-6. Implement analyzer streaming runner with fake stream tests.
-7. Implement the inline card renderer (full/compact/hidden) and visibility module (shortcut + `/tool-lens`).
-8. Wire Pi events with fail-open behavior, including the mandatory `context` strip.
-9. Add optional audit-entry and digest renderers behind config.
-10. Add smoke docs and manual test notes.
-11. Open a separate Pi core issue for tool annotations + generic same-row toggle if desired.
+1. Delivery/cost spike: SDK harness with a fake provider-call counter; prove append-at-idle adds no LLM turn. Gate the rest on this.
+2. Scaffold `tool-lens` extension, config loader, README stub.
+3. Implement redaction/truncation + tiered capture, tests first.
+4. Implement the store, per-phase audit append, and branch reconstruction with tests.
+5. Implement the analyzer runner: streaming, global batch semaphore, late-merge, timeout/cancel, with fake-stream tests.
+6. Implement context/prompt builders and tests.
+7. Implement the live HUD widget (multi-row, source order) from the store.
+8. Implement the idle-flush card path and `tool-lens` card renderer (full/compact/hidden).
+9. Implement the visibility module (shortcut + `/tool-lens`) over HUD and cards.
+10. Wire Pi events with fail-open behavior, including the mandatory `context` strip and `terminate:true`/blocked handling.
+11. Add optional digest behind config; add smoke docs and manual test notes.
+12. Open a separate Pi core issue for tool annotations + inline streaming + generic raw/lens toggle.
