@@ -180,6 +180,28 @@ describe("resolveModelRole", () => {
 		expect(resolved?.source).toBe("current-model");
 	});
 
+	it("does not bleed defaultRole candidates when allowModelFallbacks is false", async () => {
+		const registry = makeRegistry([
+			makeModel("openai-codex", "gpt-5.4-mini"),
+			makeModel("openai-codex", "gpt-5.4"),
+			makeModel("anthropic", "claude-opus-4-1"),
+		], [
+			"openai-codex/gpt-5.4",
+			"anthropic/claude-opus-4-1",
+		]);
+
+		// role "missing" doesn't exist; with allowModelFallbacks=false we must
+		// NOT silently fall through to the profile's defaultRole ("workhorse").
+		const resolved = await resolveModelRole({
+			modelRegistry: registry,
+			config,
+			role: { value: "missing", source: "flag" },
+			allowModelFallbacks: false,
+		});
+
+		expect(resolved).toBeNull();
+	});
+
 	it("can disable fallback to current or first available models", async () => {
 		const currentModel = makeModel("openai", "gpt-4.1");
 		const registry = makeRegistry([

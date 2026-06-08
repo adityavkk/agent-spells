@@ -9,25 +9,39 @@ import type { ExtensionAPI, ExtensionContext, ModelRegistry, Theme } from "@mari
 import { BorderedLoader } from "@mariozechner/pi-coding-agent";
 import type { TUI } from "@mariozechner/pi-tui";
 import { loadModelProfilesConfig } from "../model-profiles/config";
-import { resolveModelRole } from "../model-profiles/resolve";
+import { resolveExtensionExtractionModel } from "../model-profiles/extension-resolver";
+import { readModelProfilesState } from "../model-profiles/resolve";
 import { completeWithModelRoleFallback } from "../model-profiles/runtime";
 import type { ResolvedRoleResult } from "../model-profiles/types";
 import { buildBamlExtractionContext, parseBamlExtractionResult } from "./extraction";
+import { DEFAULT_ANSWER_ROLE_CANDIDATES, loadAnswerConfig } from "./config";
 import { debugAnswer } from "./debug";
 import { type AnswerSubmission, type ExtractionResult, type ExtractionUiResult } from "./core";
 import { AnswerComponent } from "./ui";
 
 async function resolveExtractionModelRole(
+	ctx: ExtensionContext,
 	currentModel: Model<Api>,
 	modelRegistry: ModelRegistry,
 	cwd: string,
 ): Promise<ResolvedRoleResult | null> {
-	const loadedConfig = loadModelProfilesConfig(cwd);
-	const resolved = await resolveModelRole({
+	const loadedProfilesConfig = loadModelProfilesConfig(cwd);
+	const loadedAnswerConfig = loadAnswerConfig(cwd);
+	for (const error of loadedProfilesConfig.errors) {
+		ctx.ui.notify(`model-profiles config error: ${error.path}: ${error.message}`, "warning");
+	}
+	for (const error of loadedAnswerConfig.errors) {
+		ctx.ui.notify(`answer config error: ${error.path}: ${error.message}`, "warning");
+	}
+
+	const state = readModelProfilesState(ctx.sessionManager.getBranch());
+	const resolved = await resolveExtensionExtractionModel({
 		modelRegistry,
-		config: loadedConfig.mergedConfig,
+		config: loadedProfilesConfig.mergedConfig,
+		selection: loadedAnswerConfig.mergedConfig.modelSelection,
+		state,
 		currentModel,
-		role: { value: "small", source: "config" },
+		defaultRoleCandidates: DEFAULT_ANSWER_ROLE_CANDIDATES,
 	});
 
 	if (resolved) {
@@ -39,7 +53,8 @@ async function resolveExtractionModelRole(
 			matchedRole: resolved.matchedRole,
 			candidates: resolved.candidates.map((candidate) => `${candidate.ref.provider}/${candidate.ref.model}`),
 			trace: resolved.trace,
-			configErrors: loadedConfig.errors,
+			profileConfigErrors: loadedProfilesConfig.errors,
+			answerConfigErrors: loadedAnswerConfig.errors,
 		});
 		return resolved;
 	}
@@ -47,7 +62,8 @@ async function resolveExtractionModelRole(
 	debugAnswer("select-model", {
 		selected: `${currentModel.provider}/${currentModel.id}`,
 		reason: "resolver-returned-null",
-		configErrors: loadedConfig.errors,
+		profileConfigErrors: loadedProfilesConfig.errors,
+		answerConfigErrors: loadedAnswerConfig.errors,
 	});
 	return null;
 }
@@ -115,7 +131,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const extractionResolved = await resolveExtractionModelRole(ctx.model, ctx.modelRegistry, ctx.cwd);
+		const extractionResolved = await resolveExtractionModelRole(ctx, ctx.model, ctx.modelRegistry, ctx.cwd);
 		if (!extractionResolved) {
 			ctx.ui.notify("No extraction model available", "error");
 			return;
@@ -144,11 +160,14 @@ export default function (pi: ExtensionAPI) {
 					resolved: extractionResolved,
 					modelRegistry: ctx.modelRegistry,
 					context: extractionContext,
-					buildOptions: (candidate, auth) => ({
+					// Intentionally NOT setting `temperature`. Several providers
+					// (e.g. anthropic claude-opus-4-7) reject `temperature` outright,
+					// and a per-provider denylist gets stale fast. BAML extraction is
+					// resilient enough at provider defaults.
+					buildOptions: (_candidate, auth) => ({
 						apiKey: auth.apiKey,
 						headers: auth.headers,
 						signal: loader.signal,
-						...(candidate.model.provider === "openai-codex" ? {} : { temperature: 0 }),
 					}),
 				});
 				const response = completion.response;

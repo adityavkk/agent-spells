@@ -196,7 +196,9 @@ Selection behavior:
 - otherwise use active `/profile` session state first
 - then choose role candidates in configured order
 - `rolesByProfile` lets each model-profile choose a different extraction role
-- if no configured role resolves, render falls back to normal model-role resolution
+- each role candidate is matched against the active profile only; missing roles do NOT silently fall through to the profile's `defaultRole` (avoids picking heavy `smart`/Opus models for cheap extraction)
+- if no configured role resolves, render falls back to current session model, then first available
+- `temperature` is intentionally omitted from completion options. Several providers (e.g. anthropic claude-opus-4-7) reject `temperature` outright; BAML extraction is robust at provider defaults
 
 Useful pattern:
 - define hidden per-profile extraction role names in `model-profiles.json`, like `render`

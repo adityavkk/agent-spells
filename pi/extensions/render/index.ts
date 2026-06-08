@@ -166,11 +166,11 @@ async function runExtraction(ctx: ExtensionContext, source: AssistantSource, res
 				resolved,
 				modelRegistry: ctx.modelRegistry,
 				context: extractionContext,
-				buildOptions: (candidate, auth) => ({
+				// See answer/index.ts for rationale on omitting `temperature`.
+				buildOptions: (_candidate, auth) => ({
 					apiKey: auth.apiKey,
 					headers: auth.headers,
 					signal: loader.signal,
-					...(candidate.model.provider === "openai-codex" ? {} : { temperature: 0 }),
 				}),
 			});
 			const response = completion.response;

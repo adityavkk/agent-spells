@@ -63,7 +63,9 @@ describe("render model selection", () => {
 		});
 
 		expect(resolved?.profile).toBe(DEFAULT_RENDER_E2E_PROFILE);
-		expect(resolved?.role).toBe("render");
+		// candidate iteration walks ["render","small","smol"]; render is absent so
+		// resolver advances to small without bleeding into the profile's defaultRole.
+		expect(resolved?.role).toBe(DEFAULT_RENDER_E2E_ROLE);
 		expect(resolved?.matchedRole).toBe(DEFAULT_RENDER_E2E_ROLE);
 		expect(resolved?.model.provider).toBe("openai-codex");
 		expect(resolved?.model.id).toBe("gpt-5.4-mini");

@@ -198,7 +198,12 @@ export async function resolveModelRole(input: ResolveModelRoleInput): Promise<Re
 
 	if (profile && roleName) {
 		const candidateRoles = expandRoleCandidates(profile, roleName, trace);
-		appendUnique(candidateRoles, defaultRole && defaultRole !== roleName ? defaultRole : undefined);
+		// defaultRole acts as a model-level fallback. Skip it when the caller asked
+		// for strict resolution (allowModelFallbacks: false) so explicit role picks
+		// don't silently bleed into the profile's default heavy role.
+		if (input.allowModelFallbacks !== false) {
+			appendUnique(candidateRoles, defaultRole && defaultRole !== roleName ? defaultRole : undefined);
+		}
 		const candidates: ResolvedRoleCandidate[] = [];
 		for (const candidateRoleName of candidateRoles) {
 			const resolvedCandidates = await resolveConfiguredCandidates(candidateRoleName, profile.roles[candidateRoleName], input, trace);
