@@ -181,6 +181,19 @@ describe("providerToolProfilesExtension", () => {
 		expect(h.execCalls).toEqual([]);
 	});
 
+	it("denies Codex shell escalation and approval fields before exec", async () => {
+		const h = harness({ provider: "openai-codex", id: "gpt-5.4" });
+
+		const escalated = await h.tools.get("shell_command").execute("1", { command: "id", sandbox_permissions: "require_escalated", justification: "Need root" }, undefined, () => {}, h.ctx);
+		const justified = await h.tools.get("shell_command").execute("2", { command: "git pull", justification: "Approve pull" }, undefined, () => {}, h.ctx);
+		const prefixed = await h.tools.get("shell_command").execute("3", { command: "git pull", prefix_rule: ["git", "pull"] }, undefined, () => {}, h.ctx);
+
+		expect(h.execCalls).toEqual([]);
+		expect(escalated.details).toMatchObject({ unsupported: true, denied: true, unsupportedField: "sandbox_permissions" });
+		expect(justified.details).toMatchObject({ unsupported: true, unsupportedField: "justification" });
+		expect(prefixed.details).toMatchObject({ unsupported: true, unsupportedField: "prefix_rule" });
+	});
+
 	it("enforces Codex shell workdir containment before exec", async () => {
 		const base = mkdtempSync(join(tmpdir(), "provider-codex-shell-"));
 		const root = join(base, "root");

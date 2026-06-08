@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "./pi-compat";
 import { editProviderTextFile } from "./edit-adapter";
 import { GEMINI_POLICY } from "./policies";
 import { readProviderFile } from "./read-adapter";
+import { runProviderShell } from "./shell-adapter";
 import { writeProviderTextFile } from "./write-adapter";
 import { createProviderToolRuntime, type ProviderToolRuntime } from "./runtime";
 import {
@@ -15,7 +16,7 @@ import {
 	writeFileParams,
 } from "./schemas";
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
-import { globFiles, grepFiles, listDirectory, runShell, textResult } from "./shared";
+import { globFiles, grepFiles, listDirectory, textResult } from "./shared";
 import { requireResolvedPath, resolveExistingDirectoryUnderCwd, resolveGeminiPath } from "./path";
 
 async function geminiPath(cwd: string, rawPath: string, label: string): Promise<string> {
@@ -76,8 +77,15 @@ export function registerGeminiTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		promptSnippet: "Run a shell command",
 		parameters: runShellCommandParams,
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const workdir = await optionalGeminiDirectory(ctx.cwd, params.dir_path, "dir_path");
-			return runShell({ pi, ctx, command: params.command, workdir, signal });
+			return runProviderShell({
+				pi,
+				cwd: ctx.cwd,
+				profile: "gemini",
+				toolName: "run_shell_command",
+				command: params.command,
+				workdir: params.dir_path,
+				signal,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderShellCall(args, theme, context, "$");

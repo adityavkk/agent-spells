@@ -1,10 +1,11 @@
 import type { ExtensionAPI } from "./pi-compat";
 import { editProviderTextFile } from "./edit-adapter";
 import { readProviderFile } from "./read-adapter";
+import { runProviderShell } from "./shell-adapter";
 import { writeProviderTextFile } from "./write-adapter";
 import { bashParams, editParams, globParams, grepParams, lsParams, multiEditParams, readParams, writeParams } from "./schemas";
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
-import { globFiles, grepFiles, listDirectory, resolveToolPath, runShell } from "./shared";
+import { globFiles, grepFiles, listDirectory, resolveToolPath } from "./shared";
 import { createProviderToolRuntime, type ProviderToolRuntime } from "./runtime";
 
 export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRuntime = createProviderToolRuntime()): void {
@@ -105,10 +106,16 @@ export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		promptSnippet: "Run a bash command",
 		parameters: bashParams,
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			if (params.run_in_background) {
-				return { content: [{ type: "text", text: "run_in_background is not supported by provider-tool-profiles v1. Run a foreground command instead." }], details: { unsupported: "run_in_background" } };
-			}
-			return runShell({ pi, ctx, command: params.command, timeoutMs: params.timeout, signal });
+			return runProviderShell({
+				pi,
+				cwd: ctx.cwd,
+				profile: "claude",
+				toolName: "Bash",
+				command: params.command,
+				timeoutMs: params.timeout,
+				runInBackground: params.run_in_background,
+				signal,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderShellCall(args, theme, context, "$");
