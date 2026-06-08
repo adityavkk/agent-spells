@@ -21,8 +21,10 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
 - Shipped commits:
   - `f8d1222 feat: harden codex apply_patch path policy and preflight`
   - `290aeba ci: add provider tool Pi compatibility checks`
-- Verified locally:
-  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 58 pass, 0 fail
+  - `f524441 fix: enforce provider tool path policies`
+  - `b174b4c fix: use Pi mutation queue for provider files`
+- Verified locally after the latest runtime changes:
+  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 70 pass, 0 fail
   - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked` -> green
   - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest` -> green
   - `bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main` -> clean (`changed=0 newSchemas=0 toolsetDiffs=0`)
@@ -49,6 +51,20 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
      - PRs block on provider-tool tests and locked Pi compatibility.
      - Schedule/dispatch runs latest canary and opens/updates `provider-tool-profiles: Pi compatibility drift` on failure.
 
+3. **Active-tool path policy**
+   - Expanded `tools/path.ts` into the explicit provider path-policy table.
+   - Added `resolveClaudePath()` preserving current Claude behavior: absolute allowed, relative against `ctx.cwd`, leading `@` stripped, `~`/`~/` expanded, no `$VAR` expansion, NUL rejected early.
+   - Added `resolveGeminiPath()` for cwd-contained Gemini file/search/list paths: relative allowed, absolute allowed only under `ctx.cwd`, parent segments/NUL/symlink escapes rejected.
+   - Added `resolveExistingDirectoryUnderCwd()` for Codex `shell_command.workdir` and Gemini `run_shell_command.dir_path`: must exist, must be a directory, must stay under cwd.
+   - Added `resolveCodexImagePath()` for Codex `view_image.path`: read-only absolute or relative path, leading `@` stripped, no cwd containment.
+   - Wired Gemini `read_file`, `read_many_files`, `write_file`, `replace`, `glob.dir_path`, `grep_search.dir_path`, `search_file_content.dir_path`, `list_directory.dir_path`, and `run_shell_command.dir_path` through those policies.
+   - Wired Codex `shell_command.workdir` and `view_image.path` through those policies.
+   - Added helper-level and extension-level integration tests proving policy enforcement before mutation/exec.
+
+4. **Pi mutation serialization**
+   - Replaced the local provider-tool file queue with Pi's public `withFileMutationQueue()` through `tools/pi-compat.ts`.
+   - Existing `withPathQueue()` remains as the provider-tool wrapper, so current adapters and `apply_patch` use Pi mutation serialization without broader rewrites.
+
 ### Important boundaries for the next agent
 
 - Do not edit native Pi packages. All work stays under `pi/extensions/provider-tool-profiles/**` plus CI/docs for that extension.
@@ -61,33 +77,32 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
 
 ### Known remaining gaps
 
-- `tools/path.ts` currently implements only the Codex `apply_patch` policy. Gemini cwd-containment, Codex shell workdir containment, Codex image read-only path policy, and explicit Claude path policy are still pending.
-- Gemini tools and Codex `shell_command.workdir` still flow through the broad legacy `resolveToolPath()` in `tools/shared.ts`.
-- `tools/shared.ts` still has local queue/truncation/shell helpers. The Pi import boundary is in place, but runtime adapters have not yet migrated to `withFileMutationQueue()`, Pi truncation helpers, or `createLocalBashOperations()`.
+- `tools/shared.ts` still has local truncation helpers and a mixed bag of read/write/edit/shell/search/list behavior. Pi mutation queue migration is done, but Pi truncation helpers and shell operations are not fully adopted yet.
 - `read-history.ts`, `results.ts`, `policies.ts`, `read-adapter.ts`, `write-adapter.ts`, `edit-adapter.ts`, `shell-adapter.ts`, `search-adapter.ts`, `list-adapter.ts`, and `plan-state.ts` are still pending.
 - `update_plan` still stores state in memory only.
 - Provider read behavior is still too blunt: Claude text reads are not line-numbered `cat -n` style, Gemini media/deferred handling is incomplete, and read-history audit is absent.
+- Shell security-affecting fields are not all explicit yet. Codex `sandbox_permissions: "require_escalated"`, `justification`, and `prefix_rule` still need denied/unsupported behavior unless Pi approval semantics are implemented.
+- Search/list/glob still use the shared legacy adapters. They now receive safer paths for Gemini where applicable, but result ordering, ignore policy, caps, and provider-specific continuation notices still need hardening.
 
 ### Recommended next slice
 
-Implement path policy for the remaining active tool args before touching read/write/shell behavior:
+Implement the read/write adapter foundation before broader search or shell refactors:
 
-1. Extend `tools/path.ts` with tested helpers:
-   - Claude resolver: absolute allowed; relative against `ctx.cwd`; strip leading `@`; expand `~`/`~/`; do not expand `$VAR`.
-   - Cwd-contained resolver for Gemini file/search/list args: relative allowed; absolute allowed only under `ctx.cwd`; reject `..`, cwd escapes, NUL, and symlink escapes after canonicalization.
-   - Existing-directory-under-cwd resolver for Codex `shell_command.workdir`.
-   - Read-only image resolver for Codex `view_image.path`: absolute or relative allowed; strip leading `@`; no mutation.
-2. Wire only path resolution/policy, not broad runtime refactors:
-   - Gemini `read_file`, `read_many_files`, `write_file`, `replace`, `glob.dir_path`, `grep_search.dir_path`, `search_file_content.dir_path`, `list_directory.dir_path`.
-   - Codex `shell_command.workdir`.
-   - Optionally move Claude tools onto the explicit Claude resolver to preserve current behavior with tests.
-3. Add tests before/with wiring:
-   - Gemini absolute path under cwd allowed.
-   - Gemini absolute path outside cwd rejected.
-   - Gemini `..` and symlink escape rejected.
-   - Codex shell workdir rejects missing path, file path, absolute/outside cwd, and symlink escape.
-   - Claude absolute paths, `~`, relative paths, and leading `@` behavior preserved.
-4. Run before committing:
+1. Add small foundation modules, each with direct unit tests:
+   - `policies.ts` for provider constants that are not Letta schema data.
+   - `results.ts` for concise text results, unsupported/deferred results, and truncation notices built on Pi public truncation helpers.
+   - `read-history.ts` for session-local read audit keying, hashing, and freshness checks exactly as described below.
+2. Add `read-adapter.ts` and migrate only provider read tools first:
+   - Claude `Read`: preserve provider args, add line-numbered `cat -n`-style text output, use 1-based offsets, keep image support path through Pi-compatible behavior where possible.
+   - Gemini `read_file`: preserve 0-based offsets and cwd-contained paths, return explicit unsupported/deferred text for PDF/audio/notebook until scoped.
+   - Gemini `read_many_files`: keep cwd containment for resolved files, add total caps and binary/deferred handling.
+   - Successful text reads should update `read-history.ts`.
+3. Add `write-adapter.ts` only after read-history exists:
+   - Use existing path policies and Pi mutation serialization.
+   - Before overwrites, attach read-history audit details (`missing`, `stale`, `fresh`) without blocking.
+   - Preserve provider-facing result text shape.
+4. Keep Letta schemas untouched and Pi imports isolated to `tools/pi-compat.ts`.
+5. Run before committing:
 
 ```bash
 bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts
