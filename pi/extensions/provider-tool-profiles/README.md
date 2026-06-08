@@ -136,6 +136,7 @@ Reports are written to `.tmp/pi-compat/`. CI runs locked compatibility on PRs an
   - Gemini search/glob discovers nested `.geminiignore` files under the searched directory with a bounded traversal; `rg` still handles native `.gitignore` behavior for search/glob.
 - Codex `update_plan` persists through Pi custom session entries with custom type `provider-tool-profiles.codex.plan.v1`.
 - Codex `view_image` uses the shared provider image-read adapter.
+- Provider preview rendering surfaces capped search/list output and bounded ignore-discovery truncation status.
 
 ## Known gaps
 

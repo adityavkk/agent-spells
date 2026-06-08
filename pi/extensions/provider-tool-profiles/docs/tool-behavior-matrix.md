@@ -33,10 +33,11 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
   - `4a0749a fix: harden provider ignore semantics`
   - `ff4076a fix: discover nested Gemini search ignores`
   - `a75ef1b refactor: trim legacy provider shared helpers`
+  - `307e29e fix: surface capped provider preview status`
 - Verified locally after the latest runtime changes:
-  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 121 pass, 0 fail
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-final-leftovers` -> green
-  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-final-leftovers` -> green
+  - `bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts` -> 122 pass, 0 fail
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked-rendering-final` -> green
+  - `bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest --output .tmp/pi-compat/latest-rendering-final` -> green
   - `bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main` -> clean (`changed=0 newSchemas=0 toolsetDiffs=0`)
 
 ### What is already done
@@ -124,6 +125,7 @@ Status as of 2026-06-08 on branch `docs/provider-tool-behavior-matrix-9`:
    - Gemini glob/grep now load `.geminiignore` files recursively under the searched directory with bounded, rule-aware traversal that prunes ignored directories.
    - Gemini glob/grep post-filter provider ignore rules after ripgrep discovery where needed, so negations are applied without unsafe ripgrep include-glob broadening; grep uses internal field separators to filter paths containing `:` safely.
    - `respect_git_ignore: false` maps to ripgrep `--no-ignore-vcs` for Gemini glob/search behavior.
+   - Provider preview rendering now surfaces capped output and bounded ignore-discovery truncation status instead of hiding those details behind raw tool text only.
 
 9. **Codex plan and image cleanup**
    - Added `tools/plan-state.ts` for Codex `update_plan` session persistence via Pi public `appendEntry()` custom entries.
@@ -156,10 +158,8 @@ Recommended next work is polish/risk reduction, not a required adapter migration
 1. Revisit shell backend only if Pi exposes shape-compatible public approval/exec primitives:
    - Keep all changes inside `tools/shell-adapter.ts`.
    - Do not silently implement Codex escalation or approval fields without real Pi approval semantics.
-2. Optional rendering/docs polish:
-   - Add renderer-specific details for capped search/list output if desired.
-3. Keep Letta schemas untouched and Pi imports isolated to `tools/pi-compat.ts`.
-4. Run before committing:
+2. Keep Letta schemas untouched and Pi imports isolated to `tools/pi-compat.ts`.
+3. Run before committing:
 
 ```bash
 bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts
