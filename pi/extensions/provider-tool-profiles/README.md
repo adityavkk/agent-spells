@@ -98,6 +98,8 @@ Refresh:
 bun pi/extensions/provider-tool-profiles/scripts/update-from-letta.ts
 ```
 
+Sync strategy and future automation plan: `docs/letta-sync.md`.
+
 ## Known gaps
 
 - Claude `Bash.run_in_background` returns an unsupported message in v1.
