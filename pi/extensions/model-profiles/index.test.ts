@@ -11,6 +11,7 @@ interface TestHarness {
 	setModelCalls: Array<{ provider: string; id: string }>;
 	statusCalls: Array<{ key: string; value: string | undefined }>;
 	runtimeAppends: unknown[];
+	eventHandlers: Map<string, Function[]>;
 	modelRegistry: any;
 	pi: any;
 	ctx: any;
@@ -25,6 +26,7 @@ function buildHarness(opts: {
 	const setModelCalls: Array<{ provider: string; id: string }> = [];
 	const statusCalls: Array<{ key: string; value: string | undefined }> = [];
 	const runtimeAppends: unknown[] = [];
+	const eventHandlers = new Map<string, Function[]>();
 
 	const branchEntries: Array<{ type: string; customType: string; data: unknown }> = [];
 	if (opts.persistedProfileState) {
@@ -69,6 +71,17 @@ function buildHarness(opts: {
 			return true;
 		},
 		setThinkingLevel() {},
+		events: {
+			emit(channel: string, data: unknown) {
+				for (const handler of eventHandlers.get(channel) ?? []) handler(data);
+			},
+			on(channel: string, handler: Function) {
+				eventHandlers.set(channel, [...(eventHandlers.get(channel) ?? []), handler]);
+				return () => {
+					eventHandlers.set(channel, (eventHandlers.get(channel) ?? []).filter((candidate) => candidate !== handler));
+				};
+			},
+		},
 		registerCommand() {},
 	} satisfies Partial<ExtensionAPI> as ExtensionAPI;
 
@@ -90,7 +103,7 @@ function buildHarness(opts: {
 		},
 	} satisfies Partial<ExtensionContext> as ExtensionContext;
 
-	return { handlers, setModelCalls, statusCalls, runtimeAppends, modelRegistry, pi, ctx, currentModel };
+	return { handlers, setModelCalls, statusCalls, runtimeAppends, eventHandlers, modelRegistry, pi, ctx, currentModel };
 }
 
 describe("model-profiles session_start", () => {

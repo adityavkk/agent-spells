@@ -173,6 +173,28 @@ export function getAppliedThinkingLevel(resolved: ResolvedRoleResult): ModelProf
 	return resolved.thinkingLevel ?? "off";
 }
 
+export function getEffectiveModelProfilesThinkingLevel(input: {
+	profile?: string;
+	role?: string;
+	resolved?: ResolvedRoleResult | null;
+	runtimeSelection?: ModelProfilesRuntimeSelectionState;
+}): ModelProfilesThinkingLevel | undefined {
+	if (input.runtimeSelection?.thinkingOverride !== undefined) {
+		return input.runtimeSelection.thinkingOverride;
+	}
+	if (input.runtimeSelection?.lastWinner) {
+		return input.runtimeSelection.lastWinner.thinkingLevel ?? "off";
+	}
+	if (
+		input.resolved
+		&& (!input.profile || input.resolved.profile === input.profile)
+		&& (!input.role || input.resolved.role === input.role)
+	) {
+		return getAppliedThinkingLevel(input.resolved);
+	}
+	return undefined;
+}
+
 export function formatResolvedRoleSummary(resolved: ResolvedRoleResult): string {
 	const parts = [`${resolved.ref.provider}/${resolved.ref.model}`];
 	parts.push(`thinking:${getAppliedThinkingLevel(resolved)}`);

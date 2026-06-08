@@ -15,6 +15,7 @@ import { readModelProfilesState, resolveModelRole } from "./resolve";
 import {
 	formatModelProfilesStateSummary,
 	formatModelProfilesStatus,
+	getEffectiveModelProfilesThinkingLevel,
 	formatResolvedRoleSummary,
 	getAppliedThinkingLevel,
 	getModelProfilesSelectionKey,
@@ -40,6 +41,19 @@ import {
 } from "./types";
 
 const STATUS_KEY = "model-profiles";
+const GET_EFFECTIVE_THINKING_EVENT = "model-profiles:get-effective-thinking";
+const SET_THINKING_OVERRIDE_EVENT = "model-profiles:set-thinking-override";
+const THINKING_LEVELS = new Set<ModelProfilesThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeThinkingLevel(value: unknown): ModelProfilesThinkingLevel | undefined {
+	return typeof value === "string" && THINKING_LEVELS.has(value as ModelProfilesThinkingLevel)
+		? value as ModelProfilesThinkingLevel
+		: undefined;
+}
 
 function modelLabel(model: Model<any> | undefined): string | undefined {
 	if (!model) return undefined;
@@ -94,6 +108,49 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 
 	function getThinkingOverride(profile: string | undefined, role: string | undefined): ModelProfilesThinkingLevel | undefined {
 		return getRuntimeSelectionState(profile, role)?.thinkingOverride;
+	}
+
+	function getActiveSyntheticSelection(ctx: ExtensionContext | undefined): { profile: string; role: string } | undefined {
+		const syntheticSelection = parseSyntheticProfileModelId(ctx?.model?.provider === MODEL_PROFILES_PROVIDER ? ctx.model.id : "");
+		if (syntheticSelection) return syntheticSelection;
+		if (!ctx && activeState.activeProfile && activeState.activeRole) {
+			return { profile: activeState.activeProfile, role: activeState.activeRole };
+		}
+		return undefined;
+	}
+
+	function getActiveEffectiveThinking(ctx: ExtensionContext | undefined): {
+		profile: string;
+		role: string;
+		level: ModelProfilesThinkingLevel | undefined;
+		sessionLevel: ModelProfilesThinkingLevel | undefined;
+		source: "override" | "winner" | "resolved" | "session" | "unknown";
+	} | undefined {
+		const selection = getActiveSyntheticSelection(ctx);
+		if (!selection) return undefined;
+		const runtimeSelection = getRuntimeSelectionState(selection.profile, selection.role);
+		const level = getEffectiveModelProfilesThinkingLevel({
+			profile: selection.profile,
+			role: selection.role,
+			resolved: lastResolved,
+			runtimeSelection,
+		});
+		const sessionLevel = normalizeThinkingLevel(pi.getThinkingLevel?.());
+		const source = runtimeSelection?.thinkingOverride !== undefined
+			? "override"
+			: runtimeSelection?.lastWinner
+				? "winner"
+				: level !== undefined
+					? "resolved"
+					: sessionLevel !== undefined
+						? "session"
+						: "unknown";
+		return {
+			...selection,
+			level: level ?? sessionLevel,
+			sessionLevel,
+			source,
+		};
 	}
 
 	function getDisplayModel(ctx: ExtensionContext): Model<any> | undefined {
@@ -454,6 +511,47 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			role: { value: target.role, source: "session" },
 		});
 	}
+
+	pi.events.on(GET_EFFECTIVE_THINKING_EVENT, (data) => {
+		if (!isRecord(data)) return;
+		const state = getActiveEffectiveThinking(latestCtx);
+		if (!state) return;
+		data.result = {
+			isProfile: true,
+			profile: state.profile,
+			role: state.role,
+			level: state.level,
+			sessionLevel: state.sessionLevel,
+			source: state.source,
+		};
+	});
+
+	pi.events.on(SET_THINKING_OVERRIDE_EVENT, (data) => {
+		if (!isRecord(data)) return;
+		const level = normalizeThinkingLevel(data.level);
+		if (!level) return;
+		const state = getActiveEffectiveThinking(latestCtx);
+		if (!state) return;
+
+		setRuntimeThinkingOverride(state.profile, state.role, level);
+		lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(state.profile, state.role);
+		if (latestCtx) {
+			displayModel = getDisplayModel(latestCtx);
+			updateStatus(latestCtx);
+		}
+
+		data.handled = true;
+		data.result = {
+			isProfile: true,
+			profile: state.profile,
+			role: state.role,
+			level,
+			previousLevel: state.level,
+			sessionLevel: state.sessionLevel,
+			source: "override",
+		};
+		pi.setThinkingLevel(level);
+	});
 
 	refreshSyntheticProvider();
 
