@@ -4,7 +4,8 @@ import type { ExtensionAPI } from "./pi-compat";
 import { applyPatchParams, shellCommandParams, updatePlanParams, viewImageParams } from "./schemas";
 import { applyPatch } from "./apply-patch";
 import { renderImageCall, renderImageResult, renderPatchCall, renderPlanCall, renderPlanResult, renderPreviewResult, renderShellCall, renderShellResult } from "./rendering";
-import { resolveToolPath, runShell, textResult } from "./shared";
+import { runShell, textResult } from "./shared";
+import { requireResolvedPath, resolveCodexImagePath, resolveExistingDirectoryUnderCwd } from "./path";
 
 type PlanItem = { step: string; status: string };
 
@@ -20,6 +21,12 @@ function planSummary(plan: PlanItem[]): string {
 	return plan.map((item) => `- [${item.status}] ${item.step}`).join("\n");
 }
 
+async function optionalCodexWorkdir(cwd: string, rawPath: unknown): Promise<string | undefined> {
+	if (rawPath === undefined) return undefined;
+	if (typeof rawPath !== "string") throw new Error("workdir: expected string");
+	return requireResolvedPath(await resolveExistingDirectoryUnderCwd(cwd, rawPath), "workdir").absolutePath;
+}
+
 export function registerCodexTools(pi: ExtensionAPI): void {
 	let currentPlan: PlanItem[] = [];
 
@@ -30,7 +37,8 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 		promptSnippet: "Run a shell command",
 		parameters: shellCommandParams,
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			return runShell({ pi, ctx, command: params.command, workdir: params.workdir, timeoutMs: params.timeout_ms, signal });
+			const workdir = await optionalCodexWorkdir(ctx.cwd, params.workdir);
+			return runShell({ pi, ctx, command: params.command, workdir, timeoutMs: params.timeout_ms, signal });
 		},
 		renderCall(args, theme, context) {
 			return renderShellCall(args, theme, context, "$");
@@ -83,7 +91,7 @@ export function registerCodexTools(pi: ExtensionAPI): void {
 		promptSnippet: "View a local image file",
 		parameters: viewImageParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const path = resolveToolPath(ctx.cwd, params.path);
+			const path = requireResolvedPath(resolveCodexImagePath(ctx.cwd, params.path), "path").absolutePath;
 			const mediaType = IMAGE_TYPES[extname(path).toLowerCase()];
 			if (!mediaType) return textResult(`Unsupported image type for ${path}`, { path, unsupported: true });
 			const data = await readFile(path, "base64");

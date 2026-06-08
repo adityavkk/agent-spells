@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import providerToolProfilesExtension from "./index";
 import { CLAUDE_TOOLS } from "./types";
 
@@ -87,6 +90,59 @@ describe("providerToolProfilesExtension", () => {
 		const result = await h.tools.get("Bash").execute("1", { command: "pwd", timeout: 1234 }, signal, () => {}, h.ctx);
 		expect(h.execCalls).toEqual([{ command: "bash", args: ["-lc", "pwd"], options: { cwd: h.ctx.cwd, timeout: 1234, signal } }]);
 		expect(result.content[0]?.text).toContain("ok");
+	});
+
+	it("enforces Gemini cwd containment before file mutation", async () => {
+		const base = mkdtempSync(join(tmpdir(), "provider-gemini-tool-"));
+		const root = join(base, "root");
+		const outside = join(base, "outside.txt");
+		mkdirSync(root);
+		const h = harness({ provider: "google", id: "gemini-3-pro" });
+		h.ctx.cwd = root;
+
+		await expect(h.tools.get("write_file").execute("1", { file_path: outside, content: "nope" }, undefined, () => {}, h.ctx)).rejects.toThrow("escapes the working directory");
+
+		expect(existsSync(outside)).toBe(false);
+	});
+
+	it("enforces Gemini shell dir_path as an existing directory under cwd", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-gemini-shell-"));
+		writeFileSync(join(root, "file.txt"), "not a directory");
+		const h = harness({ provider: "google", id: "gemini-3-pro" });
+		h.ctx.cwd = root;
+
+		await expect(h.tools.get("run_shell_command").execute("1", { command: "pwd", dir_path: "file.txt" }, undefined, () => {}, h.ctx)).rejects.toThrow("not a directory");
+
+		expect(h.execCalls).toEqual([]);
+	});
+
+	it("enforces Codex shell workdir containment before exec", async () => {
+		const base = mkdtempSync(join(tmpdir(), "provider-codex-shell-"));
+		const root = join(base, "root");
+		const outside = join(base, "outside");
+		mkdirSync(root);
+		mkdirSync(outside);
+		const h = harness({ provider: "openai-codex", id: "gpt-5.4" });
+		h.ctx.cwd = root;
+
+		await expect(h.tools.get("shell_command").execute("1", { command: "pwd", workdir: outside }, undefined, () => {}, h.ctx)).rejects.toThrow("escapes the working directory");
+
+		expect(h.execCalls).toEqual([]);
+	});
+
+	it("keeps Codex view_image read-only paths outside cwd available", async () => {
+		const base = mkdtempSync(join(tmpdir(), "provider-codex-image-"));
+		const root = join(base, "root");
+		const outside = join(base, "outside.png");
+		mkdirSync(root);
+		writeFileSync(outside, "fake image bytes");
+		const h = harness({ provider: "openai-codex", id: "gpt-5.4" });
+		h.ctx.cwd = root;
+
+		const result = await h.tools.get("view_image").execute("1", { path: outside }, undefined, () => {}, h.ctx);
+
+		expect(result.content[0]?.text).toContain(`Loaded image ${outside}`);
+		expect(result.content[1]).toMatchObject({ type: "image", mimeType: "image/png", data: Buffer.from("fake image bytes").toString("base64") });
 	});
 
 	it("renders long shell output compactly until expanded", () => {

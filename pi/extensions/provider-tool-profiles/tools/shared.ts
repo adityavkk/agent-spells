@@ -1,8 +1,8 @@
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative } from "node:path";
 import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "./pi-compat";
+import { requireResolvedPath, resolveClaudePath } from "./path";
 
 export const MAX_BYTES = 50 * 1024;
 export const MAX_LINES = 2000;
@@ -35,10 +35,7 @@ export function textResult(text: string, details: TextResultDetails = {}): ToolT
 }
 
 export function resolveToolPath(cwd: string, input: string): string {
-	let path = input.trim().replace(/^@/, "");
-	if (path === "~") path = homedir();
-	else if (path.startsWith("~/")) path = resolve(homedir(), path.slice(2));
-	return isAbsolute(path) ? resolve(path) : resolve(cwd, path);
+	return requireResolvedPath(resolveClaudePath(cwd, input)).absolutePath;
 }
 
 export function displayPath(cwd: string, path: string): string {

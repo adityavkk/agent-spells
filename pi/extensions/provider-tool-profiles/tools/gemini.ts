@@ -10,7 +10,22 @@ import {
 	writeFileParams,
 } from "./schemas";
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
-import { applyExactEdits, globFiles, grepFiles, listDirectory, readTextFile, resolveToolPath, runShell, textResult, writeTextFile } from "./shared";
+import { applyExactEdits, globFiles, grepFiles, listDirectory, readTextFile, runShell, textResult, writeTextFile } from "./shared";
+import { requireResolvedPath, resolveExistingDirectoryUnderCwd, resolveGeminiPath } from "./path";
+
+async function geminiPath(cwd: string, rawPath: string, label: string): Promise<string> {
+	return requireResolvedPath(await resolveGeminiPath(cwd, rawPath), label).absolutePath;
+}
+
+async function geminiDirectory(cwd: string, rawPath: string, label: string): Promise<string> {
+	return requireResolvedPath(await resolveExistingDirectoryUnderCwd(cwd, rawPath), label).absolutePath;
+}
+
+async function optionalGeminiDirectory(cwd: string, rawPath: unknown, label: string): Promise<string | undefined> {
+	if (rawPath === undefined) return undefined;
+	if (typeof rawPath !== "string") throw new Error(`${label}: expected string`);
+	return geminiDirectory(cwd, rawPath, label);
+}
 
 async function readMany(cwd: string, params: { include: string[]; exclude?: string[]; useDefaultExcludes?: boolean }) {
 	const defaultExcludes = params.useDefaultExcludes === false ? [] : ["node_modules/**", ".git/**", "dist/**", "coverage/**"];
@@ -27,7 +42,7 @@ async function readMany(cwd: string, params: { include: string[]; exclude?: stri
 
 	const sections: string[] = [];
 	for (const file of files) {
-		const path = resolveToolPath(cwd, file);
+		const path = await geminiPath(cwd, file, "read_many_files path");
 		const result = await readTextFile(path, { offsetBase: 0 });
 		sections.push(`--- ${file} ---\n${result.content[0]?.text ?? ""}`);
 	}
@@ -42,7 +57,8 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		promptSnippet: "Run a shell command",
 		parameters: runShellCommandParams,
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			return runShell({ pi, ctx, command: params.command, workdir: params.dir_path, signal });
+			const workdir = await optionalGeminiDirectory(ctx.cwd, params.dir_path, "dir_path");
+			return runShell({ pi, ctx, command: params.command, workdir, signal });
 		},
 		renderCall(args, theme, context) {
 			return renderShellCall(args, theme, context, "$");
@@ -59,7 +75,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		promptSnippet: "Read a file",
 		parameters: readFileParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return readTextFile(resolveToolPath(ctx.cwd, params.file_path), { offset: params.offset, limit: params.limit, offsetBase: 0 });
+			return readTextFile(await geminiPath(ctx.cwd, params.file_path, "file_path"), { offset: params.offset, limit: params.limit, offsetBase: 0 });
 		},
 		renderCall(args, theme, context) {
 			return renderReadCall("read_file", args?.file_path, args, theme, context);
@@ -93,7 +109,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		promptSnippet: "List directory contents",
 		parameters: listDirectoryParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return listDirectory(resolveToolPath(ctx.cwd, params.dir_path), params.ignore);
+			return listDirectory(await geminiDirectory(ctx.cwd, params.dir_path, "dir_path"), params.ignore);
 		},
 		renderCall(args, theme, context) {
 			return renderListCall("list_directory", args?.dir_path, theme, context);
@@ -111,7 +127,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		parameters: geminiGlobParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return globFiles(ctx.cwd, params.pattern, {
-				dir: params.dir_path,
+				dir: await optionalGeminiDirectory(ctx.cwd, params.dir_path, "dir_path"),
 				caseSensitive: params.case_sensitive,
 				respectGitIgnore: params.respect_git_ignore,
 			});
@@ -133,7 +149,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return grepFiles(ctx.cwd, {
 				pattern: params.pattern,
-				path: params.dir_path,
+				path: await optionalGeminiDirectory(ctx.cwd, params.dir_path, "dir_path"),
 				glob: params.include,
 				output_mode: "content",
 				lineNumbers: true,
@@ -156,7 +172,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		promptSnippet: "Replace exact text in a file",
 		parameters: replaceParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return applyExactEdits(resolveToolPath(ctx.cwd, params.file_path), [{ ...params, expected_replacements: params.expected_replacements ?? 1 }]);
+			return applyExactEdits(await geminiPath(ctx.cwd, params.file_path, "file_path"), [{ ...params, expected_replacements: params.expected_replacements ?? 1 }]);
 		},
 		renderCall(args, theme, context) {
 			return renderEditCall("replace", args?.file_path, args, theme, context);
@@ -173,7 +189,7 @@ export function registerGeminiTools(pi: ExtensionAPI): void {
 		promptSnippet: "Create or overwrite a file",
 		parameters: writeFileParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return writeTextFile(resolveToolPath(ctx.cwd, params.file_path), params.content);
+			return writeTextFile(await geminiPath(ctx.cwd, params.file_path, "file_path"), params.content);
 		},
 		renderCall(args, theme, context) {
 			return renderWriteCall("write_file", args?.file_path, args?.content, theme, context);
