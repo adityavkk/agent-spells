@@ -1,5 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import { spawn } from "node:child_process";
 import { withFileMutationQueue } from "./pi-compat";
 import { requireResolvedPath, resolveClaudePath } from "./path";
@@ -51,32 +50,6 @@ export function truncateTail(text: string, maxLines = MAX_LINES, maxBytes = MAX_
 	};
 }
 
-export async function readTextFile(path: string, options: { offset?: number; limit?: number; offsetBase?: 0 | 1 } = {}): Promise<ToolTextResult> {
-	const content = await readFile(path, "utf8");
-	const lines = content.split("\n");
-	const offsetBase = options.offsetBase ?? 1;
-	const start = typeof options.offset === "number" ? Math.max(0, Math.floor(options.offset) - offsetBase) : 0;
-	const end = typeof options.limit === "number" ? start + Math.max(0, Math.floor(options.limit)) : lines.length;
-	const selected = lines.slice(start, end).join("\n");
-	const truncated = truncateHead(selected);
-	return textResult(truncated.text, {
-		path,
-		lineCount: lines.length,
-		bytes: Buffer.byteLength(content, "utf8"),
-		truncated: truncated.truncated || end < lines.length,
-		offset: options.offset,
-		limit: options.limit,
-	});
-}
-
-export async function writeTextFile(path: string, content: string): Promise<ToolTextResult> {
-	return withPathQueue(path, async () => {
-		await mkdir(dirname(path), { recursive: true });
-		await writeFile(path, content, "utf8");
-		return textResult(`Wrote ${path}`, { path, bytes: Buffer.byteLength(content, "utf8") });
-	});
-}
-
 function countOccurrences(text: string, needle: string): number {
 	if (needle.length === 0) return 0;
 	let count = 0;
@@ -112,16 +85,6 @@ export function applyExactEditsToText(input: string, edits: ExactEdit[]): { text
 		replacements.push(1);
 	}
 	return { text, replacements };
-}
-
-export async function applyExactEdits(path: string, edits: ExactEdit[]): Promise<ToolTextResult> {
-	return withPathQueue(path, async () => {
-		const current = await readFile(path, "utf8");
-		const { text, replacements } = applyExactEditsToText(current, edits);
-		await writeFile(path, text, "utf8");
-		const total = replacements.reduce((sum, count) => sum + count, 0);
-		return textResult(`Applied ${total} replacement(s) to ${path}`, { path, replacements, bytes: Buffer.byteLength(text, "utf8") });
-	});
 }
 
 export interface ProcessResult {
