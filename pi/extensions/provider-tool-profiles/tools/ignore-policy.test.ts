@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isIgnoredPath, loadIgnoreHierarchy, parseIgnorePatterns, toRipgrepExcludeGlob } from "./ignore-policy";
+import { isIgnoredPath, loadIgnoreHierarchy, loadIgnoreTree, parseIgnorePatterns, toRipgrepExcludeGlob } from "./ignore-policy";
 
 function tempRoot(): string {
 	return mkdtempSync(join(tmpdir(), "provider-ignore-policy-"));
@@ -40,6 +40,30 @@ describe("provider ignore policy", () => {
 		expect(isIgnoredPath("src/nested/root.log", false, rules.rules)).toBe(true);
 		expect(isIgnoredPath("src/nested/nested.log", false, rules.rules)).toBe(true);
 		expect(isIgnoredPath("src/nested/keep.log", false, rules.rules)).toBe(false);
+	});
+
+	it("loads scoped ignore files recursively and prunes ignored directories", async () => {
+		const root = tempRoot();
+		mkdirSync(join(root, "src", "nested"), { recursive: true });
+		mkdirSync(join(root, "ignored", "nested"), { recursive: true });
+		writeFileSync(join(root, ".geminiignore"), "ignored/\n");
+		writeFileSync(join(root, "src", ".geminiignore"), "*.tmp\n!keep.tmp\n");
+		writeFileSync(join(root, "ignored", ".geminiignore"), "!nested/keep.tmp\n");
+
+		const result = await loadIgnoreTree(root, root, ".geminiignore", "gemini");
+
+		expect(isIgnoredPath("src/drop.tmp", false, result.rules.rules)).toBe(true);
+		expect(isIgnoredPath("src/keep.tmp", false, result.rules.rules)).toBe(false);
+		expect(isIgnoredPath("ignored/nested/keep.tmp", false, result.rules.rules)).toBe(true);
+		expect(result.truncated).toBe(false);
+	});
+
+	it("supports globstar patterns matching direct and nested descendants", () => {
+		const rules = parseIgnorePatterns("gemini", ["docs/**/*.tmp"]);
+
+		expect(isIgnoredPath("docs/direct.tmp", false, rules.rules)).toBe(true);
+		expect(isIgnoredPath("docs/nested/deep.tmp", false, rules.rules)).toBe(true);
+		expect(isIgnoredPath("other/direct.tmp", false, rules.rules)).toBe(false);
 	});
 
 	it("does not translate negated rules into ripgrep include globs", () => {

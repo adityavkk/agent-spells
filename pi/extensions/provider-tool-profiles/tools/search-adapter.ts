@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import { requireResolvedPath, resolveClaudePath, resolveExistingDirectoryUnderCwd } from "./path";
 import { runProcess } from "./shared";
 import { textResult, truncateTextHead, type TextResultDetails, type ToolTextResult } from "./results";
-import { isIgnoredPath, loadIgnoreFile, mergeIgnoreRuleSets, parseIgnorePatterns, toPosixPath, toRipgrepExcludeGlob, type IgnoreRuleSet } from "./ignore-policy";
+import { isIgnoredPath, loadIgnoreTree, mergeIgnoreRuleSets, parseIgnorePatterns, toPosixPath, toRipgrepExcludeGlob, type IgnoreRuleSet } from "./ignore-policy";
 
 export type SearchProvider = "claude" | "gemini";
 export type GrepOutputMode = "content" | "files_with_matches" | "count";
@@ -61,6 +61,7 @@ export interface SearchResultDetails extends TextResultDetails {
 	capped?: boolean;
 	geminiIgnoreRules?: number;
 	unsupportedGeminiIgnoreNegations?: number;
+	geminiIgnoreDiscoveryTruncated?: boolean;
 }
 
 interface SearchTarget {
@@ -68,6 +69,11 @@ interface SearchTarget {
 	cwdForRg: string;
 	rgTarget: string;
 	isDirectory: boolean;
+}
+
+interface SearchIgnoreRules {
+	ruleSet: IgnoreRuleSet;
+	geminiDiscoveryTruncated: boolean;
 }
 
 function optionalString(value: unknown, label: string): string | undefined {
@@ -99,10 +105,11 @@ async function resolveSearchTarget(input: Pick<ProviderGrepInput, "cwd" | "profi
 	return { absolutePath, cwdForRg: dirname(absolutePath), rgTarget: absolutePath, isDirectory: false };
 }
 
-async function ignoreRules(input: { cwd: string; profile: SearchProvider; respectGeminiIgnore?: boolean; exclude?: readonly string[] }): Promise<IgnoreRuleSet> {
+async function ignoreRules(input: { cwd: string; profile: SearchProvider; root: string; respectGeminiIgnore?: boolean; exclude?: readonly string[] }): Promise<SearchIgnoreRules> {
 	const explicit = parseIgnorePatterns("explicit", input.exclude);
-	if (input.profile !== "gemini" || input.respectGeminiIgnore === false) return explicit;
-	return mergeIgnoreRuleSets(explicit, await loadIgnoreFile(input.cwd, ".geminiignore", "gemini"));
+	if (input.profile !== "gemini" || input.respectGeminiIgnore === false) return { ruleSet: explicit, geminiDiscoveryTruncated: false };
+	const gemini = await loadIgnoreTree(input.cwd, input.root, ".geminiignore", "gemini");
+	return { ruleSet: mergeIgnoreRuleSets(explicit, gemini.rules), geminiDiscoveryTruncated: gemini.truncated };
 }
 
 function addRipgrepGitIgnoreArg(args: string[], respectGitIgnore: boolean | undefined): void {
@@ -192,16 +199,16 @@ function appendCapNotice(text: string, capped: boolean, limit: number, noun: str
 
 export async function runProviderGlob(input: ProviderGlobInput): Promise<ToolTextResult<SearchResultDetails>> {
 	const root = await resolveSearchDirectory(input);
-	const ignores = await ignoreRules({ cwd: input.cwd, profile: input.profile, respectGeminiIgnore: input.respectGeminiIgnore, exclude: input.exclude });
+	const ignores = await ignoreRules({ cwd: input.cwd, profile: input.profile, root, respectGeminiIgnore: input.respectGeminiIgnore, exclude: input.exclude });
 	const args = ["--files", "--color=never"];
 	addRipgrepGitIgnoreArg(args, input.respectGitIgnore);
 	args.push(input.caseSensitive === false ? "--iglob" : "--glob", input.pattern);
-	if (canPreFilterWithRipgrep(ignores, root, input.cwd)) addRipgrepExcludeArgs(args, ignores, input.caseSensitive === false);
+	if (canPreFilterWithRipgrep(ignores.ruleSet, root, input.cwd)) addRipgrepExcludeArgs(args, ignores.ruleSet, input.caseSensitive === false);
 
 	const result = await runProcess("rg", args, { cwd: root, timeoutMs: RIPGREP_TIMEOUT_MS, signal: input.signal });
 	if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `rg exited ${result.code}`);
 	const discovered = (result.code === 1 ? [] : result.stdout.trim().split("\n").filter(Boolean))
-		.filter((path) => !ignoredRgPath(input.cwd, root, path, ignores));
+		.filter((path) => !ignoredRgPath(input.cwd, root, path, ignores.ruleSet));
 	const sorted = await sortPathsByMtime(root, discovered);
 	const capped = capLines(sorted, MAX_GLOB_RESULTS);
 	const rawOutput = capped.lines.join("\n");
@@ -218,18 +225,19 @@ export async function runProviderGlob(input: ProviderGlobInput): Promise<ToolTex
 		results: capped.lines.length,
 		capped: capped.capped,
 		truncated: truncated.truncated,
-		geminiIgnoreRules: ignores.rules.filter((rule) => rule.source === "gemini").length,
-		unsupportedGeminiIgnoreNegations: ignores.unsupportedNegations,
+		geminiIgnoreRules: ignores.ruleSet.rules.filter((rule) => rule.source === "gemini").length,
+		unsupportedGeminiIgnoreNegations: ignores.ruleSet.unsupportedNegations,
+		geminiIgnoreDiscoveryTruncated: ignores.geminiDiscoveryTruncated,
 	});
 }
 
 export async function runProviderGrep(input: ProviderGrepInput): Promise<ToolTextResult<SearchResultDetails>> {
 	const target = await resolveSearchTarget(input);
-	const ignores = await ignoreRules({ cwd: input.cwd, profile: input.profile, respectGeminiIgnore: input.respectGeminiIgnore });
+	const ignores = await ignoreRules({ cwd: input.cwd, profile: input.profile, root: target.absolutePath, respectGeminiIgnore: input.respectGeminiIgnore });
 	const mode = input.outputMode ?? "files_with_matches";
 	const args = ["--color=never", "--sort", "path"];
 	addRipgrepGitIgnoreArg(args, input.respectGitIgnore);
-	const postFilterIgnores = ignores.rules.length > 0;
+	const postFilterIgnores = ignores.ruleSet.rules.length > 0;
 	if (mode === "files_with_matches") args.push("--files-with-matches");
 	else if (mode === "count") args.push("--count");
 	else {
@@ -242,7 +250,7 @@ export async function runProviderGrep(input: ProviderGrepInput): Promise<ToolTex
 		if (typeof input.after === "number") args.push("-A", String(Math.max(0, Math.floor(input.after))));
 	}
 	if (input.glob) args.push("--glob", input.glob);
-	if (canPreFilterWithRipgrep(ignores, target.cwdForRg, input.cwd)) addRipgrepExcludeArgs(args, ignores);
+	if (canPreFilterWithRipgrep(ignores.ruleSet, target.cwdForRg, input.cwd)) addRipgrepExcludeArgs(args, ignores.ruleSet);
 	if (input.caseInsensitive) args.push("--ignore-case");
 	if (input.type) args.push("--type", input.type);
 	if (input.multiline) args.push("--multiline", "--multiline-dotall");
@@ -267,7 +275,7 @@ export async function runProviderGrep(input: ProviderGrepInput): Promise<ToolTex
 		lines = lines
 			.filter((line) => {
 				const path = grepLinePath(line, mode);
-				return path === undefined || !ignoredRgPath(input.cwd, target.cwdForRg, path, ignores);
+				return path === undefined || !ignoredRgPath(input.cwd, target.cwdForRg, path, ignores.ruleSet);
 			})
 			.map(restoreGrepSeparators);
 	}
@@ -292,7 +300,8 @@ export async function runProviderGrep(input: ProviderGrepInput): Promise<ToolTex
 		matches: capped.lines.length,
 		capped: capped.capped,
 		truncated: truncated.truncated,
-		geminiIgnoreRules: ignores.rules.filter((rule) => rule.source === "gemini").length,
-		unsupportedGeminiIgnoreNegations: ignores.unsupportedNegations,
+		geminiIgnoreRules: ignores.ruleSet.rules.filter((rule) => rule.source === "gemini").length,
+		unsupportedGeminiIgnoreNegations: ignores.ruleSet.unsupportedNegations,
+		geminiIgnoreDiscoveryTruncated: ignores.geminiDiscoveryTruncated,
 	});
 }

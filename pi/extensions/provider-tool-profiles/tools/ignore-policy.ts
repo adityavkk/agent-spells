@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, relative, resolve } from "node:path";
 
 export type IgnoreSource = "explicit" | "gemini" | "git";
@@ -17,6 +17,18 @@ export interface IgnoreRuleSet {
 	negatedRules: number;
 	unsupportedNegations: number;
 }
+
+export interface IgnoreTreeResult {
+	rules: IgnoreRuleSet;
+	scannedDirectories: number;
+	truncated: boolean;
+}
+
+export interface LoadIgnoreTreeOptions {
+	maxDirectories?: number;
+}
+
+export const DEFAULT_MAX_IGNORE_DIRECTORIES = 10_000;
 
 const EMPTY_RULE_SET: IgnoreRuleSet = { rules: [], negatedRules: 0, unsupportedNegations: 0 };
 
@@ -74,15 +86,60 @@ export async function loadIgnoreFile(cwd: string, fileName: ".geminiignore" | ".
 	return loadIgnoreFileAt(cwd, "", fileName, source);
 }
 
-export async function loadIgnoreHierarchy(cwd: string, directory: string, fileName: ".geminiignore" | ".gitignore", source: IgnoreSource): Promise<IgnoreRuleSet> {
+function relativeDirectoryUnderCwd(cwd: string, directory: string): string | undefined {
 	const relativeDirectory = toPosixPath(relative(cwd, directory));
-	if (relativeDirectory.startsWith("..")) return loadIgnoreFile(cwd, fileName, source);
+	if (relativeDirectory === "") return "";
+	if (relativeDirectory === ".." || relativeDirectory.startsWith("../")) return undefined;
+	return relativeDirectory;
+}
+
+export async function loadIgnoreHierarchy(cwd: string, directory: string, fileName: ".geminiignore" | ".gitignore", source: IgnoreSource): Promise<IgnoreRuleSet> {
+	const relativeDirectory = relativeDirectoryUnderCwd(cwd, directory);
+	if (relativeDirectory === undefined) return loadIgnoreFile(cwd, fileName, source);
 	const parts = relativeDirectory === "" ? [] : relativeDirectory.split("/").filter(Boolean);
 	const sets: IgnoreRuleSet[] = [];
 	for (let index = 0; index <= parts.length; index += 1) {
 		sets.push(await loadIgnoreFileAt(cwd, parts.slice(0, index).join("/"), fileName, source));
 	}
 	return mergeIgnoreRuleSets(...sets);
+}
+
+function appendIgnoreRules(target: IgnoreRuleSet, source: IgnoreRuleSet): void {
+	target.rules.push(...source.rules);
+	target.negatedRules += source.negatedRules;
+	target.unsupportedNegations += source.unsupportedNegations;
+}
+
+export async function loadIgnoreTree(cwd: string, rootDirectory: string, fileName: ".geminiignore" | ".gitignore", source: IgnoreSource, options: LoadIgnoreTreeOptions = {}): Promise<IgnoreTreeResult> {
+	const rootRelativeDirectory = relativeDirectoryUnderCwd(cwd, rootDirectory);
+	if (rootRelativeDirectory === undefined) {
+		return { rules: await loadIgnoreFile(cwd, fileName, source), scannedDirectories: 0, truncated: false };
+	}
+	const root = rootRelativeDirectory;
+	const rules = mergeIgnoreRuleSets(await loadIgnoreHierarchy(cwd, rootDirectory, fileName, source));
+	const maxDirectories = Math.max(1, Math.floor(options.maxDirectories ?? DEFAULT_MAX_IGNORE_DIRECTORIES));
+	const queue = [root];
+	let scannedDirectories = 0;
+	let truncated = false;
+
+	while (queue.length > 0) {
+		const relativeDirectory = queue.shift() ?? "";
+		if (scannedDirectories >= maxDirectories) {
+			truncated = true;
+			break;
+		}
+		scannedDirectories += 1;
+
+		if (relativeDirectory !== root) appendIgnoreRules(rules, await loadIgnoreFileAt(cwd, relativeDirectory, fileName, source));
+		const entries = await readdir(resolve(cwd, relativeDirectory), { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			const child = [relativeDirectory, entry.name].filter(Boolean).join("/");
+			if (!isIgnoredPath(child, true, rules.rules)) queue.push(child);
+		}
+	}
+
+	return { rules, scannedDirectories, truncated };
 }
 
 export function mergeIgnoreRuleSets(...sets: IgnoreRuleSet[]): IgnoreRuleSet {
@@ -93,14 +150,32 @@ export function mergeIgnoreRuleSets(...sets: IgnoreRuleSet[]): IgnoreRuleSet {
 	};
 }
 
+function escapeRegExpCharacter(value: string): string {
+	return /[.+^${}()|[\]\\]/.test(value) ? `\\${value}` : value;
+}
+
 function globToRegExp(pattern: string): RegExp {
-	const escaped = pattern
-		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
-		.replace(/\*\*/g, "\0")
-		.replace(/\*/g, "[^/]*")
-		.replace(/\?/g, "[^/]")
-		.replace(/\0/g, ".*");
-	return new RegExp(`^${escaped}$`);
+	let expression = "";
+	for (let index = 0; index < pattern.length;) {
+		const char = pattern[index];
+		const next = pattern[index + 1];
+		const afterNext = pattern[index + 2];
+		if (char === "*" && next === "*" && afterNext === "/") {
+			expression += "(?:.*/)?";
+			index += 3;
+			continue;
+		}
+		if (char === "*" && next === "*") {
+			expression += ".*";
+			index += 2;
+			continue;
+		}
+		if (char === "*") expression += "[^/]*";
+		else if (char === "?") expression += "[^/]";
+		else expression += escapeRegExpCharacter(char);
+		index += 1;
+	}
+	return new RegExp(`^${expression}$`);
 }
 
 function pathSegments(path: string): string[] {
