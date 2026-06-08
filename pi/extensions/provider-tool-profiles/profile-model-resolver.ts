@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "./tools/pi-compat";
 import { loadModelProfilesConfig } from "../model-profiles/config";
 import { parseSyntheticProfileModelId } from "../model-profiles/provider";
 import { readModelProfilesState, resolveModelRole } from "../model-profiles/resolve";

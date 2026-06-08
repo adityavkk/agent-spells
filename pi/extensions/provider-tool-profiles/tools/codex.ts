@@ -1,6 +1,6 @@
 import { extname } from "node:path";
 import { readFile } from "node:fs/promises";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "./pi-compat";
 import { applyPatchParams, shellCommandParams, updatePlanParams, viewImageParams } from "./schemas";
 import { applyPatch } from "./apply-patch";
 import { renderImageCall, renderImageResult, renderPatchCall, renderPlanCall, renderPlanResult, renderPreviewResult, renderShellCall, renderShellResult } from "./rendering";

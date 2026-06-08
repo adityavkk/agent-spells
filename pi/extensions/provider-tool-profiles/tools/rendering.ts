@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "./pi-compat";
 
 type ThemeLike = {
 	fg?: (color: string, text: string) => string;

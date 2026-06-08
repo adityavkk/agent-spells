@@ -1,0 +1,114 @@
+name: Pi compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      pi_version:
+        description: "Pi package version for latest/canary check"
+        required: false
+        default: "latest"
+  schedule:
+    # Weekly, Wednesday morning UTC, offset from Letta drift.
+    - cron: "37 8 * * 3"
+  pull_request:
+    paths:
+      - "pi/extensions/provider-tool-profiles/**"
+      - "package.json"
+      - "bun.lock"
+      - ".github/workflows/pi-compat.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: Check provider-tool Pi compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run provider-tool-profiles tests
+        run: bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts
+
+      - name: Locked Pi compatibility
+        run: bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked --output .tmp/pi-compat/locked
+
+      - name: Summarize locked Pi compatibility
+        if: always()
+        shell: bash
+        run: |
+          if [ -f .tmp/pi-compat/locked/summary.md ]; then
+            cat .tmp/pi-compat/locked/summary.md >> "$GITHUB_STEP_SUMMARY"
+            echo >> "$GITHUB_STEP_SUMMARY"
+            cat .tmp/pi-compat/locked/recommended-actions.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload locked Pi compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-compat-locked-report
+          path: .tmp/pi-compat/locked
+
+      - name: Latest Pi canary
+        id: latest
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.pi_version || 'latest' }}"
+          if [ -z "$version" ]; then version="latest"; fi
+          bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version "$version" --output .tmp/pi-compat/latest
+
+      - name: Summarize latest Pi canary
+        if: github.event_name != 'pull_request' && always()
+        shell: bash
+        run: |
+          if [ -f .tmp/pi-compat/latest/summary.md ]; then
+            echo >> "$GITHUB_STEP_SUMMARY"
+            cat .tmp/pi-compat/latest/summary.md >> "$GITHUB_STEP_SUMMARY"
+            echo >> "$GITHUB_STEP_SUMMARY"
+            cat .tmp/pi-compat/latest/recommended-actions.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload latest Pi canary report
+        if: github.event_name != 'pull_request' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-compat-latest-report
+          path: .tmp/pi-compat/latest
+
+      - name: Open or update Pi compatibility drift issue
+        if: github.event_name != 'pull_request' && steps.latest.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="provider-tool-profiles: Pi compatibility drift"
+          body_file=".tmp/pi-compat/latest/issue-body.md"
+          {
+            cat .tmp/pi-compat/latest/summary.md
+            echo
+            cat .tmp/pi-compat/latest/recommended-actions.md
+            echo
+            echo "Workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "$body_file"
+
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body_file"
+            gh issue edit "$existing" --add-label "area:provider-tool-profiles,pi-compat,needs-design" || true
+          else
+            url=$(gh issue create --title "$title" --body-file "$body_file")
+            gh issue edit "$url" --add-label "area:provider-tool-profiles,pi-compat,needs-design" || true
+          fi

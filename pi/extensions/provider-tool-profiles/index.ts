@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "./tools/pi-compat";
 import { loadProviderToolProfilesConfig } from "./config";
 import { detectProviderToolProfile } from "./provider-detect";
 import { resolveProfileBackedModel } from "./profile-model-resolver";

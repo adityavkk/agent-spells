@@ -106,6 +106,24 @@ bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts --ref main
 
 Sync strategy and future automation plan: `docs/letta-sync.md`.
 
+## Pi compatibility boundary
+
+Provider-tool runtime code imports Pi public APIs only through `tools/pi-compat.ts`. The compatibility checker enforces that boundary, rejects private Pi imports (`dist/**`, `core/**`, `src/**`, mode internals), and smoke-tests the public Pi exports/native tool factories the extension depends on.
+
+Locked dependency check:
+
+```bash
+bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked
+```
+
+Latest/canary check without mutating this repo's lockfile:
+
+```bash
+bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode latest --pi-version latest
+```
+
+Reports are written to `.tmp/pi-compat/`. CI runs locked compatibility on PRs and latest canary on schedule/dispatch.
+
 ## Known gaps
 
 - Claude `Bash.run_in_background` returns an unsupported message in v1.
@@ -123,4 +141,5 @@ See `docs/smoke-prompts.md` for manual A/B prompts across Claude, Codex/GPT, and
 
 ```bash
 bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts
+bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts --mode locked
 ```

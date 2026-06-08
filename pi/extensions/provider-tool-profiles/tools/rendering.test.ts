@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "./pi-compat";
 import { registerClaudeTools } from "./claude";
 import { registerCodexTools } from "./codex";
 import { registerGeminiTools } from "./gemini";
