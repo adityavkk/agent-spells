@@ -7,6 +7,7 @@ import { PROVIDER_TOOL_PROFILES_STATUS_KEY, type LoadedProviderToolProfilesConfi
 import { registerClaudeTools } from "./tools/claude";
 import { registerCodexTools } from "./tools/codex";
 import { registerGeminiTools } from "./tools/gemini";
+import { createProviderToolRuntime } from "./tools/runtime";
 
 function status(profile: ProviderToolProfile | undefined): string | undefined {
 	return profile ? `tools:${profile}` : undefined;
@@ -20,10 +21,11 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 	let loadedConfig: LoadedProviderToolProfilesConfig = loadProviderToolProfilesConfig(process.cwd());
 	let activationState: ToolActivationState = {};
 	let activeProfile: ProviderToolProfile | undefined;
+	const runtime = createProviderToolRuntime();
 
-	registerClaudeTools(pi);
+	registerClaudeTools(pi, runtime);
 	registerCodexTools(pi);
-	registerGeminiTools(pi);
+	registerGeminiTools(pi, runtime);
 
 	function refreshConfig(cwd: string): void {
 		loadedConfig = loadProviderToolProfilesConfig(cwd);
@@ -52,6 +54,7 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		runtime.readHistory.clear();
 		refreshConfig(ctx.cwd);
 		notifyConfigErrors(ctx);
 		if (isSubagentChild()) {

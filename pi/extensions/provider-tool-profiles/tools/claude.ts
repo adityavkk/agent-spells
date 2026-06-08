@@ -1,9 +1,12 @@
 import type { ExtensionAPI } from "./pi-compat";
+import { readProviderFile } from "./read-adapter";
+import { writeProviderTextFile } from "./write-adapter";
 import { bashParams, editParams, globParams, grepParams, lsParams, multiEditParams, readParams, writeParams } from "./schemas";
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
-import { applyExactEdits, globFiles, grepFiles, listDirectory, readTextFile, resolveToolPath, runShell, writeTextFile } from "./shared";
+import { applyExactEdits, globFiles, grepFiles, listDirectory, resolveToolPath, runShell } from "./shared";
+import { createProviderToolRuntime, type ProviderToolRuntime } from "./runtime";
 
-export function registerClaudeTools(pi: ExtensionAPI): void {
+export function registerClaudeTools(pi: ExtensionAPI, runtime: ProviderToolRuntime = createProviderToolRuntime()): void {
 	pi.registerTool({
 		name: "Read",
 		label: "Read",
@@ -11,7 +14,14 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 		promptSnippet: "Read a file from the local workspace",
 		parameters: readParams,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return readTextFile(resolveToolPath(ctx.cwd, params.file_path), { offset: params.offset, limit: params.limit, offsetBase: 1 });
+			return readProviderFile({
+				path: resolveToolPath(ctx.cwd, params.file_path),
+				profile: "claude",
+				toolName: "Read",
+				offset: params.offset,
+				limit: params.limit,
+				readHistory: runtime.readHistory,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderReadCall("Read", args?.file_path, args, theme, context);
@@ -27,8 +37,13 @@ export function registerClaudeTools(pi: ExtensionAPI): void {
 		description: "Create or overwrite a file using Claude Code-style arguments.",
 		promptSnippet: "Create or overwrite a file",
 		parameters: writeParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return writeTextFile(resolveToolPath(ctx.cwd, params.file_path), params.content);
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return writeProviderTextFile({
+				path: resolveToolPath(ctx.cwd, params.file_path),
+				content: params.content,
+				readHistory: runtime.readHistory,
+				signal,
+			});
 		},
 		renderCall(args, theme, context) {
 			return renderWriteCall("Write", args?.file_path, args?.content, theme, context);

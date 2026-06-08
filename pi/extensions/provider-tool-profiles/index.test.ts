@@ -92,6 +92,59 @@ describe("providerToolProfilesExtension", () => {
 		expect(result.content[0]?.text).toContain("ok");
 	});
 
+	it("formats Claude reads and audits subsequent writes with read history", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-claude-read-"));
+		writeFileSync(join(root, "note.txt"), "alpha\nbeta\ngamma\n");
+		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
+		h.ctx.cwd = root;
+
+		const read = await h.tools.get("Read").execute("1", { file_path: "note.txt", offset: 1, limit: 2 }, undefined, () => {}, h.ctx);
+		const write = await h.tools.get("Write").execute("2", { file_path: "note.txt", content: "updated\n" }, undefined, () => {}, h.ctx);
+
+		expect(read.content[0]?.text).toContain("     1\talpha");
+		expect(read.content[0]?.text).toContain("     2\tbeta");
+		expect(read.details).toMatchObject({ offsetBase: 1, textFormat: "cat-n", mediaKind: "text" });
+		expect(write.details).toMatchObject({ overwrote: true, readHistory: "fresh" });
+	});
+
+	it("reports stale read history on provider writes after external changes", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-read-stale-"));
+		const path = join(root, "note.txt");
+		writeFileSync(path, "alpha\n");
+		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
+		h.ctx.cwd = root;
+
+		await h.tools.get("Read").execute("1", { file_path: "note.txt" }, undefined, () => {}, h.ctx);
+		writeFileSync(path, "changed elsewhere\n");
+		const write = await h.tools.get("Write").execute("2", { file_path: "note.txt", content: "updated\n" }, undefined, () => {}, h.ctx);
+
+		expect(write.details).toMatchObject({ overwrote: true, readHistory: "stale" });
+	});
+
+	it("keeps Gemini read_file plain and 0-based", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-gemini-read-"));
+		writeFileSync(join(root, "note.txt"), "alpha\nbeta\ngamma\n");
+		const h = harness({ provider: "google", id: "gemini-3-pro" });
+		h.ctx.cwd = root;
+
+		const result = await h.tools.get("read_file").execute("1", { file_path: "note.txt", offset: 1, limit: 1 }, undefined, () => {}, h.ctx);
+
+		expect(result.content[0]?.text).toBe("beta\n\n[Showing lines 2-2 of 3. Use offset 2 to continue.]");
+		expect(result.details).toMatchObject({ offsetBase: 0, textFormat: "plain", mediaKind: "text" });
+	});
+
+	it("returns explicit deferred media results from Gemini read_file", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-gemini-pdf-"));
+		writeFileSync(join(root, "file.pdf"), "%PDF fake");
+		const h = harness({ provider: "google", id: "gemini-3-pro" });
+		h.ctx.cwd = root;
+
+		const result = await h.tools.get("read_file").execute("1", { file_path: "file.pdf" }, undefined, () => {}, h.ctx);
+
+		expect(result.content[0]?.text).toContain("PDF support is deferred");
+		expect(result.details).toMatchObject({ unsupported: true, mediaKind: "PDF" });
+	});
+
 	it("enforces Gemini cwd containment before file mutation", async () => {
 		const base = mkdtempSync(join(tmpdir(), "provider-gemini-tool-"));
 		const root = join(base, "root");
