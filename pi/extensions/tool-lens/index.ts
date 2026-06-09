@@ -19,7 +19,7 @@ import { flushCards } from "./flush";
 import { createModelRunner } from "./model-runner";
 import { resolveToolLensModel } from "./model-selection";
 import { ANALYZER_SYSTEM_PROMPT } from "./prompts";
-import { buildAuditPayload, reconstructFromBranch, ToolLensStore, type BranchEntryLike } from "./store";
+import { buildAuditPayload, reconstructWithProvenance, ToolLensStore, type BranchEntryLike } from "./store";
 import { buildCardText, createHudComponent, type HudView } from "./ui";
 import {
 	TOOL_LENS_AUDIT_CUSTOM_TYPE,
@@ -153,10 +153,11 @@ export default function toolLensExtension(pi: ExtensionAPI): void {
 		}
 
 		// Reconstruct prior records so reloaded/forked sessions keep their lens
-		// state and flushed cards are not re-emitted.
-		for (const record of reconstructFromBranch(ctx.sessionManager.getBranch() as BranchEntryLike[])) {
+		// state. Only card-backed records are marked flushed; audit-only records
+		// (a crash before flush) are flushed below while idle.
+		for (const { record, fromCard } of reconstructWithProvenance(ctx.sessionManager.getBranch() as BranchEntryLike[])) {
 			store.put(record);
-			flushed.add(record.toolCallId);
+			if (fromCard) flushed.add(record.toolCallId);
 		}
 		analyzer = await buildAnalyzer(ctx);
 		ensureHud(ctx);

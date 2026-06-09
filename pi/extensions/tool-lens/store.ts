@@ -169,13 +169,19 @@ function isAuditEntry(entry: BranchEntryLike): boolean {
 	return entry.type === "custom" && entry.customType === TOOL_LENS_AUDIT_CUSTOM_TYPE;
 }
 
+export interface ReconstructedRecord {
+	record: ToolLensRecordV1;
+	/** True when the record came from a flushed card (already persisted). */
+	fromCard: boolean;
+}
+
 /**
- * Reconstruct records from a session branch. Walks in order so the latest entry
- * per `toolCallId` wins; card `details` take precedence over audit phases
- * because cards are the final consolidated artifact.
+ * Reconstruct records (with provenance) from a session branch. Walks in order so
+ * the latest entry per `toolCallId` wins; card `details` take precedence over
+ * audit phases because cards are the final consolidated artifact.
  */
-export function reconstructFromBranch(branch: BranchEntryLike[]): ToolLensRecordV1[] {
-	const byId = new Map<string, { record: ToolLensRecordV1; fromCard: boolean }>();
+export function reconstructWithProvenance(branch: BranchEntryLike[]): ReconstructedRecord[] {
+	const byId = new Map<string, ReconstructedRecord>();
 	for (const entry of branch) {
 		let candidate: ToolLensRecordV1 | null = null;
 		let fromCard = false;
@@ -192,5 +198,10 @@ export function reconstructFromBranch(branch: BranchEntryLike[]): ToolLensRecord
 		if (existing && existing.fromCard && !fromCard) continue;
 		byId.set(candidate.toolCallId, { record: candidate, fromCard });
 	}
-	return [...byId.values()].map((entry) => entry.record).sort(compareSourceOrder);
+	return [...byId.values()].sort((a, b) => compareSourceOrder(a.record, b.record));
+}
+
+/** Reconstruct records from a session branch (provenance discarded). */
+export function reconstructFromBranch(branch: BranchEntryLike[]): ToolLensRecordV1[] {
+	return reconstructWithProvenance(branch).map((entry) => entry.record);
 }

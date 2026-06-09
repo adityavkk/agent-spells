@@ -5,6 +5,7 @@ import {
 	buildAuditPayload,
 	buildCardDetails,
 	reconstructFromBranch,
+	reconstructWithProvenance,
 	ToolLensStore,
 } from "./store";
 import {
@@ -105,6 +106,16 @@ describe("reconstructFromBranch", () => {
 		const records = reconstructFromBranch(branch);
 		expect(records).toHaveLength(1);
 		expect(records[0]!.outcome?.matched).toBe("partial");
+	});
+
+	it("reports provenance so audit-only records can be flushed on reload", () => {
+		const branch: BranchEntryLike[] = [
+			{ type: "custom", customType: TOOL_LENS_AUDIT_CUSTOM_TYPE, data: { ...baseRecord("audit-only", 0), phase: "outcome", outcome: { result: "x", matched: "yes" } } },
+			{ type: "message", message: { role: "custom", customType: TOOL_LENS_CARD_CUSTOM_TYPE, details: buildCardDetails(baseRecord("carded", 1)) } },
+		];
+		const provenance = reconstructWithProvenance(branch);
+		expect(provenance.find((p) => p.record.toolCallId === "audit-only")?.fromCard).toBe(false);
+		expect(provenance.find((p) => p.record.toolCallId === "carded")?.fromCard).toBe(true);
 	});
 
 	it("orders reconstructed records by source order and ignores foreign entries", () => {
