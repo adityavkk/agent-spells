@@ -33,8 +33,7 @@ type ResolvedOperation =
 			kind: "update";
 			relativePath: string;
 			absolutePath: string;
-			nextText: string;
-			replacements: number[];
+			hunks: Array<{ oldText: string; newText: string }>;
 			move?: { relativePath: string; absolutePath: string };
 	  };
 
@@ -183,7 +182,7 @@ async function preflight(cwd: string, ops: PatchOperation[]): Promise<ResolvedOp
 		}
 		const current = await readExisting(absolutePath, relativePath, "Update File");
 		reserveMutation(reservedMutations, absolutePath, relativePath, "Update File");
-		const { text, replacements } = applyExactEditsToText(
+		applyExactEditsToText(
 			current,
 			op.hunks.map((hunk) => ({ old_string: hunk.oldText, new_string: hunk.newText })),
 		);
@@ -196,7 +195,7 @@ async function preflight(cwd: string, ops: PatchOperation[]): Promise<ResolvedOp
 				move = target;
 			}
 		}
-		resolved.push({ kind: "update", relativePath, absolutePath, nextText: text, replacements, move });
+		resolved.push({ kind: "update", relativePath, absolutePath, hunks: op.hunks, move });
 	}
 	return resolved;
 }
@@ -279,11 +278,11 @@ async function commit(plan: ResolvedOperation[]): Promise<ToolTextResult> {
 				changed.push(`deleted ${op.relativePath}`);
 				continue;
 			}
-			await commitUpdate(op, undos);
+			const replacements = await commitUpdate(op, undos);
 			changed.push(
 				op.move
 					? `moved ${op.relativePath} -> ${op.move.relativePath}`
-					: `updated ${op.relativePath} (${op.replacements.reduce((sum, count) => sum + count, 0)} hunk replacement(s))`,
+					: `updated ${op.relativePath} (${replacements.reduce((sum, count) => sum + count, 0)} hunk replacement(s))`,
 			);
 		}
 	} catch (error) {
@@ -295,17 +294,23 @@ async function commit(plan: ResolvedOperation[]): Promise<ToolTextResult> {
 	return textResult(changed.join("\n") || "No patch operations", { operations: plan.length });
 }
 
-async function commitUpdate(op: Extract<ResolvedOperation, { kind: "update" }>, undos: Array<() => Promise<void>>): Promise<void> {
-	await withPathQueue(op.absolutePath, async () => {
+async function commitUpdate(op: Extract<ResolvedOperation, { kind: "update" }>, undos: Array<() => Promise<void>>): Promise<number[]> {
+	return withPathQueue(op.absolutePath, async () => {
 		const beforeSource = await readSnapshot(op.absolutePath);
+		const current = await readExisting(op.absolutePath, op.relativePath, "Update File");
+		const { text, replacements } = applyExactEditsToText(
+			current,
+			op.hunks.map((hunk) => ({ old_string: hunk.oldText, new_string: hunk.newText })),
+		);
+
 		if (!op.move) {
-			await writeFile(op.absolutePath, op.nextText, "utf8");
+			await writeFile(op.absolutePath, text, "utf8");
 			undos.push(() => restoreSnapshot(op.absolutePath, beforeSource));
-			return;
+			return replacements;
 		}
 
 		const move = op.move;
-		await withPathQueue(move.absolutePath, async () => {
+		return withPathQueue(move.absolutePath, async () => {
 			const beforeTarget = await readSnapshot(move.absolutePath);
 			await assertPathDoesNotExist(move.absolutePath, move.relativePath, "Move to");
 
@@ -319,11 +324,12 @@ async function commitUpdate(op: Extract<ResolvedOperation, { kind: "update" }>, 
 				await restoreSnapshot(op.absolutePath, beforeSource);
 			});
 
-			await writeFile(op.absolutePath, op.nextText, "utf8");
+			await writeFile(op.absolutePath, text, "utf8");
 			await mkdir(dirname(move.absolutePath), { recursive: true });
 			await assertPathDoesNotExist(move.absolutePath, move.relativePath, "Move to");
 			await rename(op.absolutePath, move.absolutePath);
 			moved = true;
+			return replacements;
 		});
 	});
 }

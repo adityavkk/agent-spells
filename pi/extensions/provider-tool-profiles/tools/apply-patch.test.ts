@@ -140,6 +140,32 @@ describe("applyPatch", () => {
 
 		expect(readFileSync(join(root, "file.txt"), "utf8")).toBe("alpha\none\nomega\n");
 	});
+
+	it("rejects stale concurrent updates instead of clobbering a prior patch", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-patch-concurrent-"));
+		writeFileSync(join(root, "file.txt"), "old\n");
+
+		const first = applyPatch(root, `*** Begin Patch
+*** Update File: file.txt
+@@
+-old
++one
+*** End Patch`);
+		const second = applyPatch(root, `*** Begin Patch
+*** Update File: file.txt
+@@
+-old
++two
+*** End Patch`);
+
+		const results = await Promise.allSettled([first, second]);
+		const fulfilled = results.filter((result) => result.status === "fulfilled");
+		const rejected = results.filter((result) => result.status === "rejected");
+
+		expect(fulfilled).toHaveLength(1);
+		expect(rejected).toHaveLength(1);
+		expect(["one\n", "two\n"]).toContain(readFileSync(join(root, "file.txt"), "utf8"));
+	});
 });
 
 describe("applyPatch path policy", () => {
