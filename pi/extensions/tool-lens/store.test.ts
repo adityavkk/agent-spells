@@ -130,6 +130,6 @@ describe("normalizeRecord", () => {
 		expect(record?.toolName).toBe("unknown");
 		expect(record?.status).toBe("observed");
 		expect(record?.outcome?.matched).toBe("unknown");
-		expect((record as Record<string, unknown>).bogus).toBeUndefined();
+		expect((record as unknown as Record<string, unknown>).bogus).toBeUndefined();
 	});
 });

@@ -116,6 +116,33 @@ export class ToolLensStore {
 	}
 }
 
+/** Forward-only progression ranks for the non-terminal status enums. */
+const STATUS_RANK: Record<string, number> = {
+	observed: 0,
+	executing: 1,
+	intent_streaming: 2,
+	outcome_streaming: 3,
+	done: 4,
+};
+
+/**
+ * Advance a record's status forward through the progression, never regressing
+ * and never overriding the terminal `not_analyzed`. A transient `error` is
+ * allowed to be superseded by real progress.
+ */
+export function advanceStatus(store: ToolLensStore, toolCallId: string, target: ToolLensStatus): void {
+	const record = store.get(toolCallId);
+	if (!record) return;
+	if (record.status === "not_analyzed") return;
+	if (record.status === "error") {
+		store.setStatus(toolCallId, target);
+		return;
+	}
+	const current = STATUS_RANK[record.status] ?? 0;
+	const next = STATUS_RANK[target] ?? 0;
+	if (next >= current) store.setStatus(toolCallId, target);
+}
+
 export function compareSourceOrder(a: ToolLensRecordV1, b: ToolLensRecordV1): number {
 	if (a.turnIndex !== b.turnIndex) return a.turnIndex - b.turnIndex;
 	if (a.sourceOrder !== b.sourceOrder) return a.sourceOrder - b.sourceOrder;
