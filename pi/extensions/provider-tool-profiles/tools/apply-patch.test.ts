@@ -81,6 +81,65 @@ describe("applyPatch", () => {
 		expect(readFileSync(join(root, "nested", "new.txt"), "utf8")).toBe("alpha\nnew\nomega\n");
 		expect(result.content[0]?.text).toContain("moved old.txt -> nested/new.txt");
 	});
+
+	it("rejects Add File when the target already exists", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-patch-add-exists-"));
+		writeFileSync(join(root, "existing.txt"), "old\n");
+
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Add File: existing.txt
++new
+*** End Patch`),
+		).rejects.toThrow('Add File "existing.txt": file already exists');
+
+		expect(readFileSync(join(root, "existing.txt"), "utf8")).toBe("old\n");
+	});
+
+	it("rejects moves when the target already exists", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-patch-move-exists-"));
+		writeFileSync(join(root, "old.txt"), "alpha\nold\nomega\n");
+		writeFileSync(join(root, "new.txt"), "keep me\n");
+
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Update File: old.txt
+*** Move to: new.txt
+@@
+ alpha
+-old
++new
+ omega
+*** End Patch`),
+		).rejects.toThrow('Move to "new.txt": file already exists');
+
+		expect(readFileSync(join(root, "old.txt"), "utf8")).toBe("alpha\nold\nomega\n");
+		expect(readFileSync(join(root, "new.txt"), "utf8")).toBe("keep me\n");
+	});
+
+	it("rejects multiple mutations of one patch path", async () => {
+		const root = mkdtempSync(join(tmpdir(), "provider-apply-patch-conflict-"));
+		writeFileSync(join(root, "file.txt"), "alpha\none\nomega\n");
+
+		await expect(
+			applyPatch(root, `*** Begin Patch
+*** Update File: file.txt
+@@
+ alpha
+-one
++two
+ omega
+*** Update File: file.txt
+@@
+ alpha
+-one
++three
+ omega
+*** End Patch`),
+		).rejects.toThrow("path is already modified");
+
+		expect(readFileSync(join(root, "file.txt"), "utf8")).toBe("alpha\none\nomega\n");
+	});
 });
 
 describe("applyPatch path policy", () => {

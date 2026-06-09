@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { withFileMutationQueue } from "./pi-compat";
-import type { ReadFreshness, ReadHistory } from "./read-history";
+import type { ReadCoverageState, ReadFreshness, ReadHistory } from "./read-history";
+import { describeReadCoverage } from "./read-history";
 import { textResult, type ToolTextResult } from "./results";
 import { applyExactEditsToText, type ExactEdit } from "./shared";
 
@@ -16,6 +17,7 @@ export interface EditTextDetails {
 	replacements: number[];
 	bytes: number;
 	readHistory: ReadFreshness;
+	readCoverage: ReadCoverageState;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -26,6 +28,7 @@ export async function editProviderTextFile(input: EditProviderTextFileInput): Pr
 	return withFileMutationQueue(input.path, async () => {
 		throwIfAborted(input.signal);
 		const readHistory = input.readHistory ? await input.readHistory.checkFreshness(input.path) : "missing";
+		const readCoverage = describeReadCoverage(input.readHistory ? await input.readHistory.getCoverage(input.path) : undefined, readHistory);
 		throwIfAborted(input.signal);
 		const current = await readFile(input.path, "utf8");
 		throwIfAborted(input.signal);
@@ -39,6 +42,7 @@ export async function editProviderTextFile(input: EditProviderTextFileInput): Pr
 			replacements,
 			bytes: Buffer.byteLength(text, "utf8"),
 			readHistory,
+			readCoverage,
 		});
 	});
 }

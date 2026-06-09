@@ -86,6 +86,29 @@ describe("providerToolProfilesExtension", () => {
 		}
 	});
 
+	it("restores the pre-profile tool set when the profile is later disabled", async () => {
+		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
+		for (const handler of h.handlers.get("session_start") ?? []) await handler({}, h.ctx);
+		expect(h.activeTools).toEqual([...CLAUDE_TOOLS, "answer"]);
+
+		const previous = process.env.PI_PROVIDER_TOOL_PROFILES;
+		process.env.PI_PROVIDER_TOOL_PROFILES = "0";
+		try {
+			for (const handler of h.handlers.get("model_select") ?? []) {
+				await handler({ model: { provider: "anthropic", id: "claude-sonnet-4" } }, h.ctx);
+			}
+		} finally {
+			if (previous === undefined) delete process.env.PI_PROVIDER_TOOL_PROFILES;
+			else process.env.PI_PROVIDER_TOOL_PROFILES = previous;
+		}
+
+		expect(h.activeTools).toEqual(["read", "bash", "edit", "write", "answer"]);
+		expect(h.statusCalls.at(-1)).toEqual({ key: "provider-tools", value: undefined });
+
+		const handler = (h.handlers.get("before_agent_start") ?? [])[0]!;
+		expect(await handler({ systemPrompt: "base" }, h.ctx)).toBeUndefined();
+	});
+
 	it("provider shell tools execute through pi.exec", async () => {
 		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
 		const signal = new AbortController().signal;

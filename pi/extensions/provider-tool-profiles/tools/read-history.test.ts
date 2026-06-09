@@ -45,6 +45,43 @@ describe("provider tool read history", () => {
 		expect(await history.checkFreshness(path, { kind: "image" })).toBe("fresh");
 	});
 
+	it("accumulates partial read ranges and reports coverage", async () => {
+		const root = tempRoot();
+		const path = join(root, "file.txt");
+		writeFileSync(path, "l1\nl2\nl3\nl4\n");
+		const history = createReadHistory();
+
+		await history.recordRead({ path, profile: "claude", toolName: "Read", kind: "text", fileLines: 4, range: { start: 0, end: 2 } });
+		expect(await history.getCoverage(path)).toMatchObject({ full: false, coveredLines: 2, fileLines: 4 });
+
+		await history.recordRead({ path, profile: "claude", toolName: "Read", kind: "text", fileLines: 4, range: { start: 2, end: 4 } });
+		expect(await history.getCoverage(path)).toMatchObject({ full: true, coveredLines: 4, fileLines: 4 });
+	});
+
+	it("treats a whole-file read with no range as full coverage", async () => {
+		const root = tempRoot();
+		const path = join(root, "file.txt");
+		writeFileSync(path, "l1\nl2\n");
+		const history = createReadHistory();
+
+		await history.recordRead({ path, profile: "claude", toolName: "Read", kind: "text", fileLines: 2 });
+
+		expect(await history.getCoverage(path)).toMatchObject({ full: true });
+	});
+
+	it("resets accumulated coverage when the file changes between reads", async () => {
+		const root = tempRoot();
+		const path = join(root, "file.txt");
+		writeFileSync(path, "l1\nl2\nl3\nl4\n");
+		const history = createReadHistory();
+		await history.recordRead({ path, profile: "claude", toolName: "Read", kind: "text", fileLines: 4, range: { start: 0, end: 2 } });
+
+		writeFileSync(path, "l1\nl2\nl3\nl4\nl5\n");
+		await history.recordRead({ path, profile: "claude", toolName: "Read", kind: "text", fileLines: 5, range: { start: 4, end: 5 } });
+
+		expect(await history.getCoverage(path)).toMatchObject({ full: false, coveredLines: 1, fileLines: 5 });
+	});
+
 	it("canonicalizes through existing symlinks", async () => {
 		const root = tempRoot();
 		mkdirSync(join(root, "real"));

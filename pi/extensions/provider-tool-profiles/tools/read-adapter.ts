@@ -123,7 +123,14 @@ async function readText(input: ReadProviderFileInput): Promise<ProviderToolResul
 		? [truncated.text, continuationNotice(start, end, lines.length, nextOffset)].filter(Boolean).join("\n\n")
 		: truncated.text;
 
-	await input.readHistory?.recordRead({ path: input.path, profile: input.profile, toolName: input.toolName, kind: "text" });
+	await input.readHistory?.recordRead({
+		path: input.path,
+		profile: input.profile,
+		toolName: input.toolName,
+		kind: "text",
+		fileLines: lines.length,
+		range: { start, end },
+	});
 
 	return textResult(output, {
 		path: input.path,

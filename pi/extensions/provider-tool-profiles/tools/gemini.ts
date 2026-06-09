@@ -1,3 +1,5 @@
+import { stat } from "node:fs/promises";
+import { relative } from "node:path";
 import type { ExtensionAPI } from "./pi-compat";
 import { editProviderTextFile } from "./edit-adapter";
 import { listProviderDirectory } from "./list-adapter";
@@ -20,18 +22,81 @@ import {
 import { renderEditCall, renderEditResult, renderGlobCall, renderListCall, renderPreviewResult, renderReadCall, renderReadResult, renderSearchCall, renderShellCall, renderShellResult, renderWriteCall, renderWriteResult } from "./rendering";
 import { textResult } from "./shared";
 import { requireResolvedPath, resolveGeminiPath } from "./path";
+import { toPosixPath } from "./ignore-policy";
 
 async function geminiPath(cwd: string, rawPath: string, label: string): Promise<string> {
 	return requireResolvedPath(await resolveGeminiPath(cwd, rawPath), label).absolutePath;
 }
 
-async function readMany(cwd: string, params: { include: string[]; exclude?: string[]; useDefaultExcludes?: boolean }, runtime: ProviderToolRuntime) {
+interface ReadManyFileFilteringOptions {
+	respect_git_ignore?: boolean;
+	respect_gemini_ignore?: boolean;
+}
+
+interface ReadManyParams {
+	include: string[];
+	exclude?: string[];
+	recursive?: boolean;
+	useDefaultExcludes?: boolean;
+	file_filtering_options?: ReadManyFileFilteringOptions;
+}
+
+const GLOB_META_PATTERN = /[*?[\]{}]/;
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) throw new Error("Operation aborted");
+}
+
+function hasGlobSyntax(pattern: string): boolean {
+	return GLOB_META_PATTERN.test(pattern);
+}
+
+function relativeReadManyPath(cwd: string, absolutePath: string): string {
+	return toPosixPath(relative(cwd, absolutePath) || ".");
+}
+
+function directoryIncludePattern(relativePath: string, recursive: boolean): string {
+	const directory = relativePath.replace(/^\.\/?$/, "").replace(/\/+$/g, "");
+	if (!directory) return recursive ? "**" : "*";
+	return `${directory}/${recursive ? "**" : "*"}`;
+}
+
+async function readManyIncludePattern(cwd: string, include: string, recursive: boolean): Promise<string> {
+	const trimmed = include.trim();
+	if (!trimmed) throw new Error("read_many_files include: empty path");
+	if (hasGlobSyntax(trimmed)) return trimmed;
+
+	const resolved = requireResolvedPath(await resolveGeminiPath(cwd, trimmed), "read_many_files include");
+	const relativePath = relativeReadManyPath(cwd, resolved.absolutePath);
+	try {
+		const info = await stat(resolved.absolutePath);
+		return info.isDirectory() ? directoryIncludePattern(relativePath, recursive) : relativePath;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		return trimmed.endsWith("/") ? directoryIncludePattern(relativePath, recursive) : relativePath;
+	}
+}
+
+async function readMany(cwd: string, params: ReadManyParams, runtime: ProviderToolRuntime, signal?: AbortSignal) {
 	const policy = GEMINI_POLICY.readMany;
 	const defaultExcludes = params.useDefaultExcludes === false ? [] : [...policy.defaultExcludes];
 	const exclude = [...defaultExcludes, ...(params.exclude ?? [])];
+	const filtering = params.file_filtering_options ?? {};
+	const recursive = params.recursive !== false;
 	const files = new Set<string>();
 	for (const include of params.include) {
-		const result = await runProviderGlob({ cwd, profile: "gemini", toolName: "read_many_files", pattern: include, exclude });
+		throwIfAborted(signal);
+		const pattern = await readManyIncludePattern(cwd, include, recursive);
+		const result = await runProviderGlob({
+			cwd,
+			profile: "gemini",
+			toolName: "read_many_files",
+			pattern,
+			exclude,
+			respectGitIgnore: filtering.respect_git_ignore,
+			respectGeminiIgnore: filtering.respect_gemini_ignore,
+			signal,
+		});
 		const text = result.content[0]?.text ?? "";
 		for (const line of text.split("\n")) {
 			const file = line.trim();
@@ -45,6 +110,7 @@ async function readMany(cwd: string, params: { include: string[]; exclude?: stri
 	let totalBytes = 0;
 	let cappedByBytes = false;
 	for (const file of files) {
+		throwIfAborted(signal);
 		const path = await geminiPath(cwd, file, "read_many_files path");
 		const result = await readProviderFile({ path, profile: "gemini", toolName: "read_many_files", readHistory: runtime.readHistory });
 		const text = result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
@@ -117,8 +183,8 @@ export function registerGeminiTools(pi: ExtensionAPI, runtime: ProviderToolRunti
 		description: "Read many files selected by glob patterns.",
 		promptSnippet: "Read multiple files selected by glob",
 		parameters: readManyFilesParams,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return readMany(ctx.cwd, params, runtime);
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return readMany(ctx.cwd, params, runtime, signal);
 		},
 		renderCall(args, theme, context) {
 			return renderGlobCall("read_many_files", Array.isArray(args?.include) ? args.include.join(", ") : args?.include, ".", theme, context);

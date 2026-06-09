@@ -39,6 +39,34 @@ describe("provider write adapter", () => {
 		expect(stale.details?.readHistory).toBe("stale");
 	});
 
+	it("flags partial vs full read coverage before overwrites", async () => {
+		const root = tempRoot();
+		const partialPath = join(root, "partial.txt");
+		const fullPath = join(root, "full.txt");
+		writeFileSync(partialPath, "l1\nl2\nl3\nl4\n");
+		writeFileSync(fullPath, "l1\nl2\n");
+		const readHistory = createReadHistory();
+		await readHistory.recordRead({ path: partialPath, profile: "claude", toolName: "Read", kind: "text", fileLines: 4, range: { start: 0, end: 1 } });
+		await readHistory.recordRead({ path: fullPath, profile: "claude", toolName: "Read", kind: "text", fileLines: 2, range: { start: 0, end: 2 } });
+
+		const partial = await writeProviderTextFile({ path: partialPath, content: "new\n", readHistory });
+		const full = await writeProviderTextFile({ path: fullPath, content: "new\n", readHistory });
+
+		expect(partial.details).toMatchObject({ readHistory: "fresh", readCoverage: "partial" });
+		expect(full.details).toMatchObject({ readHistory: "fresh", readCoverage: "full" });
+	});
+
+	it("reports unknown coverage when no read is on record", async () => {
+		const root = tempRoot();
+		const path = join(root, "file.txt");
+		writeFileSync(path, "old\n");
+		const readHistory = createReadHistory();
+
+		const result = await writeProviderTextFile({ path, content: "new\n", readHistory });
+
+		expect(result.details).toMatchObject({ readHistory: "missing", readCoverage: "unknown" });
+	});
+
 	it("does not write when already aborted", async () => {
 		const root = tempRoot();
 		const path = join(root, "file.txt");

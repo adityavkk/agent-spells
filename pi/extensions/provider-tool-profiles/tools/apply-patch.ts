@@ -15,7 +15,7 @@
  *    it is.
  */
 
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { resolvePatchPath } from "./path";
 import { applyExactEditsToText, textResult, withPathQueue, type ToolTextResult } from "./shared";
@@ -166,18 +166,23 @@ async function resolveOrThrow(cwd: string, rawPath: string, directive: string): 
  */
 async function preflight(cwd: string, ops: PatchOperation[]): Promise<ResolvedOperation[]> {
 	const resolved: ResolvedOperation[] = [];
+	const reservedMutations = new Map<string, string>();
 	for (const op of ops) {
 		const { absolutePath, relativePath } = await resolveOrThrow(cwd, op.path, directiveLabel(op.kind));
 		if (op.kind === "add") {
+			await assertPathDoesNotExist(absolutePath, relativePath, "Add File");
+			reserveMutation(reservedMutations, absolutePath, relativePath, "Add File");
 			resolved.push({ kind: "add", relativePath, absolutePath, content: op.content });
 			continue;
 		}
 		if (op.kind === "delete") {
 			await readExisting(absolutePath, relativePath, "Delete File");
+			reserveMutation(reservedMutations, absolutePath, relativePath, "Delete File");
 			resolved.push({ kind: "delete", relativePath, absolutePath });
 			continue;
 		}
 		const current = await readExisting(absolutePath, relativePath, "Update File");
+		reserveMutation(reservedMutations, absolutePath, relativePath, "Update File");
 		const { text, replacements } = applyExactEditsToText(
 			current,
 			op.hunks.map((hunk) => ({ old_string: hunk.oldText, new_string: hunk.newText })),
@@ -185,7 +190,11 @@ async function preflight(cwd: string, ops: PatchOperation[]): Promise<ResolvedOp
 		let move: { relativePath: string; absolutePath: string } | undefined;
 		if (op.moveTo) {
 			const target = await resolveOrThrow(cwd, op.moveTo, "Move to");
-			if (target.absolutePath !== absolutePath) move = target;
+			if (target.absolutePath !== absolutePath) {
+				await assertPathDoesNotExist(target.absolutePath, target.relativePath, "Move to");
+				reserveMutation(reservedMutations, target.absolutePath, target.relativePath, "Move to");
+				move = target;
+			}
 		}
 		resolved.push({ kind: "update", relativePath, absolutePath, nextText: text, replacements, move });
 	}
@@ -194,6 +203,22 @@ async function preflight(cwd: string, ops: PatchOperation[]): Promise<ResolvedOp
 
 function directiveLabel(kind: PatchOperation["kind"]): string {
 	return kind === "add" ? "Add File" : kind === "delete" ? "Delete File" : "Update File";
+}
+
+function reserveMutation(reserved: Map<string, string>, absolutePath: string, relativePath: string, directive: string): void {
+	const previous = reserved.get(absolutePath);
+	if (previous) throw new Error(`${directive} "${relativePath}": path is already modified by ${previous}`);
+	reserved.set(absolutePath, `${directive} "${relativePath}"`);
+}
+
+async function assertPathDoesNotExist(absolutePath: string, relativePath: string, directive: string): Promise<void> {
+	try {
+		await lstat(absolutePath);
+		throw new Error(`${directive} "${relativePath}": file already exists`);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
 }
 
 async function readExisting(absolutePath: string, relativePath: string, directive: string): Promise<string> {
@@ -237,8 +262,9 @@ async function commit(plan: ResolvedOperation[]): Promise<ToolTextResult> {
 			if (op.kind === "add") {
 				await withPathQueue(op.absolutePath, async () => {
 					const before = await readSnapshot(op.absolutePath);
+					await assertPathDoesNotExist(op.absolutePath, op.relativePath, "Add File");
 					await mkdir(dirname(op.absolutePath), { recursive: true });
-					await writeFile(op.absolutePath, op.content, "utf8");
+					await writeFile(op.absolutePath, op.content, { encoding: "utf8", flag: "wx" });
 					undos.push(() => restoreSnapshot(op.absolutePath, before));
 				});
 				changed.push(`added ${op.relativePath}`);
@@ -272,23 +298,32 @@ async function commit(plan: ResolvedOperation[]): Promise<ToolTextResult> {
 async function commitUpdate(op: Extract<ResolvedOperation, { kind: "update" }>, undos: Array<() => Promise<void>>): Promise<void> {
 	await withPathQueue(op.absolutePath, async () => {
 		const beforeSource = await readSnapshot(op.absolutePath);
-		await writeFile(op.absolutePath, op.nextText, "utf8");
 		if (!op.move) {
+			await writeFile(op.absolutePath, op.nextText, "utf8");
 			undos.push(() => restoreSnapshot(op.absolutePath, beforeSource));
 			return;
 		}
+
 		const move = op.move;
 		await withPathQueue(move.absolutePath, async () => {
 			const beforeTarget = await readSnapshot(move.absolutePath);
-			await mkdir(dirname(move.absolutePath), { recursive: true });
-			await rename(op.absolutePath, move.absolutePath);
+			await assertPathDoesNotExist(move.absolutePath, move.relativePath, "Move to");
+
+			let moved = false;
 			undos.push(async () => {
-				// Undo in reverse: move the file back, then restore both endpoints.
-				await rm(op.absolutePath, { force: true });
-				await rename(move.absolutePath, op.absolutePath).catch(() => undefined);
+				if (moved) {
+					await rm(op.absolutePath, { force: true });
+					await rename(move.absolutePath, op.absolutePath).catch(() => undefined);
+				}
 				await restoreSnapshot(move.absolutePath, beforeTarget);
 				await restoreSnapshot(op.absolutePath, beforeSource);
 			});
+
+			await writeFile(op.absolutePath, op.nextText, "utf8");
+			await mkdir(dirname(move.absolutePath), { recursive: true });
+			await assertPathDoesNotExist(move.absolutePath, move.relativePath, "Move to");
+			await rename(op.absolutePath, move.absolutePath);
+			moved = true;
 		});
 	});
 }

@@ -44,6 +44,21 @@ describe("provider read adapter", () => {
 		expect(await readHistory.checkFreshness(path)).toBe("fresh");
 	});
 
+	it("records read coverage ranges so partial reads are auditable", async () => {
+		const root = tempRoot();
+		const path = join(root, "file.txt");
+		writeFileSync(path, "l1\nl2\nl3\nl4\n");
+		const readHistory = createReadHistory();
+
+		await readProviderFile({ path, profile: "claude", toolName: "Read", offset: 1, limit: 2, readHistory });
+
+		expect(await readHistory.getCoverage(path)).toMatchObject({ full: false, coveredLines: 2, fileLines: 4 });
+
+		await readProviderFile({ path, profile: "claude", toolName: "Read", readHistory });
+
+		expect(await readHistory.getCoverage(path)).toMatchObject({ full: true, fileLines: 4 });
+	});
+
 	it("returns images as text plus image content", async () => {
 		const root = tempRoot();
 		const path = join(root, "image.png");

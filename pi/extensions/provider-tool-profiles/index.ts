@@ -48,6 +48,21 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 		ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, status(activeProfile));
 	}
 
+	// Restore the tool set captured before this extension activated a profile.
+	// Only touches active tools when a profile is currently active, so disabling
+	// the extension (or running inside a subagent child) reverts provider-native
+	// tools instead of leaving them stranded, without clobbering a tool set this
+	// extension never modified.
+	function deactivateTools(ctx: ExtensionContext): void {
+		if (activeProfile) {
+			const result = buildProviderToolActivation(pi.getActiveTools(), undefined, loadedConfig.mergedConfig, activationState);
+			activationState = result.state;
+			activeProfile = result.profile;
+			pi.setActiveTools(result.tools);
+		}
+		ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
+	}
+
 	function notifyConfigErrors(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		for (const error of loadedConfig.errors) {
@@ -60,13 +75,8 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 		codexPlanState.loadFromSession(ctx);
 		refreshConfig(ctx.cwd);
 		notifyConfigErrors(ctx);
-		if (isSubagentChild()) {
-			activeProfile = undefined;
-			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
-			return;
-		}
-		if (!loadedConfig.mergedConfig.enabled) {
-			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
+		if (isSubagentChild() || !loadedConfig.mergedConfig.enabled) {
+			deactivateTools(ctx);
 			return;
 		}
 		await syncTools(ctx);
@@ -74,13 +84,8 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 
 	pi.on("model_select", async (event, ctx) => {
 		refreshConfig(ctx.cwd);
-		if (isSubagentChild()) {
-			activeProfile = undefined;
-			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
-			return;
-		}
-		if (!loadedConfig.mergedConfig.enabled) {
-			ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
+		if (isSubagentChild() || !loadedConfig.mergedConfig.enabled) {
+			deactivateTools(ctx);
 			return;
 		}
 		await syncTools(ctx, event.model);

@@ -1,7 +1,8 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { withFileMutationQueue } from "./pi-compat";
-import type { ReadFreshness, ReadHistory } from "./read-history";
+import type { ReadCoverageState, ReadFreshness, ReadHistory } from "./read-history";
+import { describeReadCoverage } from "./read-history";
 import { textResult, type ToolTextResult } from "./results";
 
 export interface WriteProviderTextFileInput {
@@ -16,6 +17,7 @@ export interface WriteTextDetails {
 	bytes: number;
 	overwrote: boolean;
 	readHistory: ReadFreshness;
+	readCoverage: ReadCoverageState;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -37,6 +39,7 @@ export async function writeProviderTextFile(input: WriteProviderTextFileInput): 
 		throwIfAborted(input.signal);
 		const overwrote = await fileExists(input.path);
 		const readHistory = overwrote && input.readHistory ? await input.readHistory.checkFreshness(input.path) : "missing";
+		const readCoverage = describeReadCoverage(overwrote && input.readHistory ? await input.readHistory.getCoverage(input.path) : undefined, readHistory);
 		throwIfAborted(input.signal);
 		await mkdir(dirname(input.path), { recursive: true });
 		throwIfAborted(input.signal);
@@ -47,6 +50,7 @@ export async function writeProviderTextFile(input: WriteProviderTextFileInput): 
 			bytes: Buffer.byteLength(input.content, "utf8"),
 			overwrote,
 			readHistory,
+			readCoverage,
 		});
 	});
 }

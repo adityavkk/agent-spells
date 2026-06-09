@@ -243,7 +243,7 @@ Directly delegating `Read`/`read_file` to Pi native read is too blunt. Prior art
 | Shell | Use Pi `createLocalBashOperations()` or equivalent shell backend. Nonzero exit is a normal provider result with exit code. Timeout/abort are errors. Security-affecting unsupported args are denied, not ignored. | Provider harnesses expose command failures as inspectable output; sandbox escalation must never be silently accepted. |
 | Search/glob/list | Keep provider result-set semantics by profile. Claude Glob uses vendored Letta cap 2000 for now. Borrow Pi limits, long-line caps, notices, and abort handling. | Provider defaults conflict with Pi native `find`/`grep`; vendored docs win until Letta drift changes. |
 | Image | Prefer Pi native image read/resize/capability behavior. Keep Codex `view_image` wrapper. | Avoid oversized image payloads and non-vision confusion. |
-| Apply patch | Keep custom. Enforce Codex relative-path-only policy. Preflight into an in-memory write plan, then commit under stable ordered queues with best-effort in-memory rollback on commit error. | Codex grammar has no Pi native equivalent and absolute paths are explicitly forbidden. Crash-safe multi-file atomicity is out of scope. |
+| Apply patch | Keep custom. Enforce Codex relative-path-only policy. Preflight into an in-memory write plan, then commit under stable ordered queues with best-effort in-memory rollback on commit error. `Add File` and `Move to` refuse to overwrite an existing target, and a single patch cannot mutate the same path twice. | Codex grammar has no Pi native equivalent and absolute paths are explicitly forbidden. `Add File`/`Move to` are create-only in Codex, so silent clobbering would lose work. Crash-safe multi-file atomicity is out of scope. |
 | Update plan | Keep custom. Validate one `in_progress`. Persist plan in session entries and restore on `session_start`. | Inputs are the important artifact; output can stay minimal. |
 
 ## Path policy
@@ -265,14 +265,19 @@ Implement this before changing behavior. Tests must cover absolute paths, relati
 Default for this issue: audit only, never block. Strict enforcement can be a later config flag.
 
 - Store session-local `Map<canonicalPath, ReadRecord>`.
-- `ReadRecord`: `{ path, profile, toolName, mtimeMs, size, sha256, readAtTurnId? }`.
+- `ReadRecord`: `{ path, profile, toolName, mtimeMs, size, sha256, fileLines, ranges, readAtTurnId? }`.
 - Canonicalize with realpath for existing files; resolved absolute path for missing files.
 - Successful `Read`, `read_file`, and `read_many_files` text reads count. Image reads count only for image overwrite audit, not text edit confidence.
 - Shell commands do not count as reads in v1. Recognizing `cat`/`sed`/`grep` can be a later narrow feature.
+- Freshness means "file bytes unchanged since a read", not "the model saw the lines it is editing". Track which line ranges each read served so the audit can tell a whole-file read from a partial one. Ranges accumulate across reads only while the bytes/line-count are unchanged; any external edit resets accumulated coverage.
 - Before write/edit, stat and hash the file if it exists:
   - no record -> details include `readHistory: "missing"`
   - hash/mtime mismatch -> details include `readHistory: "stale"`
   - match -> details include `readHistory: "fresh"`
+- Write/edit details also include `readCoverage`, derived from the read ranges:
+  - no usable text read -> `readCoverage: "unknown"`
+  - fresh but only part of the file was read -> `readCoverage: "partial"`
+  - fresh and every line was read -> `readCoverage: "full"`
 - Renderers may show audit state in compact form, but LLM-facing text stays concise.
 
 ## Media scope
