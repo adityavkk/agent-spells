@@ -1,0 +1,982 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>provider-tool-profiles — how it actually works</title>
+<!--
+  Self-contained explainer for the provider-tool-profiles Pi extension.
+  Prose written in the Mechanism Explainer (patio11) voice per the writing-well skill:
+  walk the gears in the order they turn, name each actor and its incentive, surface the
+  one hinge fact, ground every claim in a specific, state the downsides, keep em-dashes rare.
+  The CSS and the four interactive demos are preserved verbatim from the validated build;
+  they port real logic from path.ts, read-adapter.ts, provider-detect.ts, apply-patch.ts.
+  No external CDNs, no build step. Opens by double-click.
+-->
+<style>
+  :root {
+    --true-blue:    #0053E2;
+    --bentonville:  #001E60;
+    --everyday-blue:#0071CE;
+    --sky-blue:     #A9DDF3;
+    --spark:        #FFC220;
+
+    --ink:      #16213a;
+    --ink-soft: #44506b;
+    --muted:    #6b7794;
+    --paper:    #f7f9fc;
+    --card:     #ffffff;
+    --line:     #d7e0ee;
+    --wash:     #eef4fc;
+
+    --done:     #2a8703;
+    --progress: #b8860b;
+    --gap:      #c23b2b;
+
+    --sans: "Everyday Sans", "Everyday Sans UI App", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: "JetBrains Mono", "JetBrainsMono Nerd Font", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+    --radius: 12px;
+    --shadow: 0 1px 2px rgba(0,30,96,.05), 0 6px 18px rgba(0,30,96,.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    padding: 52px 24px 120px;
+  }
+  .page { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 218px minmax(0,1fr) 244px; gap: 44px; }
+  @media (max-width: 1120px) { .page { grid-template-columns: 200px minmax(0,1fr); } aside.gloss { display: none; } }
+  @media (max-width: 900px)  { .page { grid-template-columns: 1fr; } nav.toc { display: none; } }
+
+  /* sticky TOC + files read */
+  nav.toc { position: sticky; top: 28px; align-self: start; font-size: 13px; max-height: calc(100vh - 56px); overflow-y: auto; }
+  .label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+  nav.toc a { display: block; padding: 4px 0 4px 12px; border-left: 2px solid var(--line); color: var(--ink-soft); text-decoration: none; }
+  nav.toc a:hover, nav.toc a.active { color: var(--true-blue); border-color: var(--true-blue); }
+  nav.toc .files { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 14px; }
+  nav.toc .files code { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--muted); padding: 2px 0; word-break: break-all; }
+
+  /* headings, prose */
+  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--true-blue); margin-bottom: 10px; }
+  h1 { font-family: var(--sans); font-weight: 700; font-size: 35px; line-height: 1.1; color: var(--bentonville); letter-spacing: -.02em; margin-bottom: 14px; }
+  h2 { font-family: var(--sans); font-weight: 700; font-size: 24px; color: var(--bentonville); margin: 52px 0 14px; scroll-margin-top: 24px; letter-spacing: -.01em; padding-bottom: 8px; border-bottom: 2px solid var(--wash); }
+  h3 { font-family: var(--sans); font-weight: 600; font-size: 17px; color: var(--bentonville); margin-top: 8px; }
+  p { margin-bottom: 12px; max-width: 740px; }
+  .lead { font-size: 17px; color: var(--ink-soft); max-width: 720px; }
+  a { color: var(--true-blue); }
+  code { font-family: var(--mono); font-size: 12.5px; background: var(--wash); padding: 1px 5px; border-radius: 5px; color: var(--bentonville); }
+  strong { color: var(--bentonville); }
+  ul, ol { margin: 0 0 14px 22px; max-width: 740px; }
+  li { margin-bottom: 6px; }
+
+  /* TL;DR */
+  .tldr { border: 1.5px solid var(--line); border-left: 3px solid var(--spark); border-radius: var(--radius); background: var(--card); padding: 18px 20px; margin: 8px 0 4px; box-shadow: var(--shadow); max-width: 760px; }
+  .tldr b { color: var(--bentonville); }
+  .tldr .thesis { font-family: var(--mono); font-size: 13px; color: var(--true-blue); display: block; margin-top: 8px; }
+
+  /* collapsible steps */
+  details.step { border: 1.5px solid var(--line); border-radius: var(--radius); background: var(--card); margin: 10px 0; overflow: hidden; }
+  details.step > summary { list-style: none; cursor: pointer; padding: 13px 16px; font-weight: 600; color: var(--bentonville); display: flex; align-items: baseline; gap: 10px; }
+  details.step > summary::-webkit-details-marker { display: none; }
+  details.step > summary::before { content: "\25B8"; color: var(--true-blue); font-size: 12px; transition: transform 120ms; }
+  details.step[open] > summary::before { transform: rotate(90deg); }
+  details.step .where { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: auto; text-align: right; }
+  details.step .body { padding: 0 16px 16px; }
+  details.step .body p { font-size: 14px; max-width: none; }
+  details.step .body ul { max-width: none; }
+
+  /* tabbed code */
+  .tabs { border: 1.5px solid var(--line); border-radius: var(--radius); background: var(--card); margin: 16px 0 8px; overflow: hidden; }
+  .tabbar { display: flex; border-bottom: 1px solid var(--line); background: var(--wash); flex-wrap: wrap; }
+  .tabbar button { appearance: none; border: none; background: none; font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 10px 16px; cursor: pointer; border-right: 1px solid var(--line); }
+  .tabbar button.on { background: var(--card); color: var(--bentonville); border-bottom: 2px solid var(--true-blue); margin-bottom: -1px; }
+  .tabs pre { display: none; margin: 0; padding: 16px 18px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--bentonville); overflow-x: auto; }
+  .tabs pre.on { display: block; }
+  .tabs .hl { color: var(--true-blue); } .tabs .cm { color: var(--muted); } .tabs .kw { color: var(--everyday-blue); }
+
+  pre.code { border: 1.5px solid var(--line); border-radius: var(--radius); background: var(--card); margin: 12px 0; padding: 16px 18px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--bentonville); overflow-x: auto; max-width: 760px; }
+  pre.code .cm { color: var(--muted); } pre.code .hl { color: var(--true-blue); } pre.code .kw { color: var(--everyday-blue); }
+
+  /* tables */
+  table.cmp { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 14px 0; }
+  table.cmp th, table.cmp td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.cmp th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 500; }
+  table.cmp td.good { color: var(--done); } table.cmp td.bad { color: var(--gap); }
+  table.cmp tbody tr:hover { background: var(--wash); }
+  table.cmp code { background: none; padding: 0; }
+  .mono-cell { font-family: var(--mono); font-size: 12px; color: var(--everyday-blue); }
+
+  /* status pills */
+  .pill { font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 20px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+  .pill.active { background: rgba(42,135,3,.12); color: var(--done); }
+  .pill.vendored { background: rgba(184,134,11,.14); color: var(--progress); }
+  .pill.blocked { background: rgba(194,59,43,.12); color: var(--gap); }
+  .pill.ignored { background: var(--wash); color: var(--muted); }
+
+  /* callout */
+  .callout { display: flex; gap: 12px; border: 1.5px solid var(--sky-blue); background: rgba(169,221,243,.22); border-radius: var(--radius); padding: 14px 16px; margin: 18px 0; font-size: 14px; max-width: 760px; }
+  .callout .ico { color: var(--true-blue); font-weight: 700; font-size: 16px; }
+  .callout b { color: var(--bentonville); }
+  .callout.warn { border-color: rgba(194,59,43,.4); background: rgba(194,59,43,.06); }
+  .callout.warn .ico { color: var(--gap); }
+
+  /* milestone timeline */
+  .milestones { display: flex; flex-direction: column; margin-top: 8px; }
+  .milestone { display: grid; grid-template-columns: 28px 1fr; gap: 0 16px; }
+  .milestone .dot-col { display: flex; flex-direction: column; align-items: center; }
+  .milestone .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--card); border: 3px solid var(--line); margin-top: 5px; flex-shrink: 0; }
+  .milestone .dot.done { background: var(--done); border-color: var(--done); }
+  .milestone .dot.progress { background: var(--progress); border-color: var(--progress); }
+  .milestone .dot.gap { background: var(--card); border-color: var(--gap); }
+  .milestone .line { width: 2px; flex: 1; background: var(--line); margin: 4px 0; }
+  .milestone:last-child .line { display: none; }
+  .milestone .body { padding-bottom: 24px; }
+  .milestone .body h3 { margin-bottom: 4px; }
+  .milestone .body p { font-size: 14px; color: var(--ink-soft); margin-bottom: 8px; max-width: 720px; }
+  .milestone .tags { display: flex; gap: 7px; flex-wrap: wrap; }
+  .milestone .tag { font-family: var(--mono); font-size: 11px; background: var(--wash); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; color: var(--ink-soft); }
+
+  /* interactive demo panels */
+  .demo { border: 1.5px solid var(--line); border-radius: 14px; background: var(--card); padding: 22px; margin: 16px 0; box-shadow: var(--shadow); }
+  .demo .demo-head { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--true-blue); margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  .demo .demo-head::before { content: "\25B8"; }
+  .demo .row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  .demo label { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 60px; }
+  .demo input[type=range] { accent-color: var(--true-blue); flex: 1; min-width: 140px; }
+  .demo input[type=text] { font-family: var(--mono); font-size: 13px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--bentonville); flex: 1; min-width: 200px; }
+  .demo input[type=text]:focus { outline: none; border-color: var(--true-blue); }
+  .demo select { font-family: var(--mono); font-size: 12px; padding: 7px 10px; border: 1.5px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--bentonville); cursor: pointer; }
+  .demo .val { font-family: var(--mono); font-size: 12px; color: var(--bentonville); min-width: 28px; text-align: right; }
+  .demo .seg { display: inline-flex; border: 1.5px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .demo .seg button { appearance: none; border: none; background: var(--paper); font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 7px 13px; cursor: pointer; border-right: 1px solid var(--line); }
+  .demo .seg button:last-child { border-right: none; }
+  .demo .seg button.on { background: var(--true-blue); color: #fff; }
+  .demo .readout { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 14px; font-size: 13px; }
+  .demo .readout b { color: var(--bentonville); }
+  .demo .verdict { font-family: var(--mono); font-size: 13px; padding: 10px 12px; border-radius: 8px; margin-top: 6px; }
+  .demo .verdict.ok { background: rgba(42,135,3,.1); color: var(--done); border: 1px solid rgba(42,135,3,.3); }
+  .demo .verdict.no { background: rgba(194,59,43,.08); color: var(--gap); border: 1px solid rgba(194,59,43,.3); }
+  .demo pre.out { font-family: var(--mono); font-size: 12px; line-height: 1.55; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-top: 10px; overflow-x: auto; color: var(--bentonville); white-space: pre; }
+  .demo .hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .demo .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .demo .chips button { appearance: none; border: 1px solid var(--line); background: var(--paper); font-family: var(--mono); font-size: 11px; color: var(--ink-soft); padding: 4px 9px; border-radius: 20px; cursor: pointer; }
+  .demo .chips button:hover { border-color: var(--true-blue); color: var(--true-blue); }
+
+  /* patch stepper */
+  .stepper-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .stepper-controls button { appearance: none; border: 1.5px solid var(--true-blue); background: var(--true-blue); color: #fff; font-family: var(--mono); font-size: 12px; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+  .stepper-controls button.ghost { background: var(--paper); color: var(--true-blue); }
+  .stepper-controls button:disabled { opacity: .4; cursor: not-allowed; }
+  .phase-track { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
+  .phase { border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--paper); transition: all 150ms; }
+  .phase.active { border-color: var(--true-blue); background: var(--card); box-shadow: var(--shadow); }
+  .phase.done-phase { border-color: var(--done); }
+  .phase.failed-phase { border-color: var(--gap); background: rgba(194,59,43,.05); }
+  .phase .pn { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .phase .pt { font-weight: 600; font-size: 13px; color: var(--bentonville); }
+  .phase .pd { font-size: 11.5px; color: var(--ink-soft); margin-top: 3px; }
+
+  /* margin glossary */
+  .term { border-bottom: 1.5px dotted var(--true-blue); cursor: help; color: var(--bentonville); }
+  aside.gloss { position: sticky; top: 28px; align-self: start; border: 1.5px solid var(--line); border-radius: var(--radius); background: var(--card); padding: 18px 18px 8px; max-height: calc(100vh - 56px); overflow-y: auto; }
+  aside.gloss dl dt { font-weight: 600; font-size: 13.5px; color: var(--bentonville); margin-top: 0; }
+  aside.gloss dl dd { font-size: 12px; line-height: 1.5; color: var(--ink-soft); margin: 2px 0 13px; }
+  aside.gloss dt.hl, aside.gloss dt.hl + dd { background: rgba(255,194,32,.18); margin-left: -8px; margin-right: -8px; padding-left: 8px; padding-right: 8px; border-radius: 4px; }
+
+  footer { max-width: 760px; margin-top: 52px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ════ TABLE OF CONTENTS ════ -->
+  <nav class="toc">
+    <div class="label">On this page</div>
+    <a href="#hinge">The hinge</a>
+    <a href="#problem">What breaks without it</a>
+    <a href="#lifecycle">The gear train</a>
+    <a href="#surface">Who gets which tools</a>
+    <a href="#tools">What each tool does</a>
+    <a href="#paths">Gear: path policy</a>
+    <a href="#reads">Gear: read offsets</a>
+    <a href="#detect">Gear: profile detection</a>
+    <a href="#patch">Gear: apply_patch</a>
+    <a href="#ci">The two watchdogs</a>
+    <a href="#status">What is built</a>
+    <a href="#next">What is left</a>
+    <div class="files">
+      <div class="label">Files read</div>
+      <code>index.ts</code>
+      <code>provider-detect.ts</code>
+      <code>tool-activation.ts</code>
+      <code>config.ts</code>
+      <code>tools/path.ts</code>
+      <code>tools/policies.ts</code>
+      <code>tools/read-adapter.ts</code>
+      <code>tools/edit-adapter.ts</code>
+      <code>tools/apply-patch.ts</code>
+      <code>tools/read-history.ts</code>
+      <code>tools/shell-adapter.ts</code>
+      <code>tools/pi-compat.ts</code>
+      <code>scripts/check-letta-drift.ts</code>
+      <code>scripts/check-pi-compat.ts</code>
+      <code>vendor/letta/tool-manifest.json</code>
+      <code>.github/workflows/*.yml</code>
+      <code>docs/tool-behavior-matrix.md</code>
+    </div>
+  </nav>
+
+  <!-- ════ MAIN ════ -->
+  <main>
+    <div class="eyebrow">Pi extension · code walk · branch docs/provider-tool-behavior-matrix-9</div>
+    <h1>provider-tool-profiles, gear by gear</h1>
+    <p class="lead">A coding model was trained against one specific tool harness. This extension hands it that harness's exact tools while running every call through Pi's own safety code. Here is how the machine does both at once.</p>
+
+    <div class="tldr">
+      <b>TL;DR</b> &mdash; The model sees the tool <em>names and schemas</em> it was trained on (Claude's <code>Read</code>, Codex's <code>apply_patch</code>, Gemini's <code>read_file</code>). The bytes run through Pi's <em>execution</em> primitives: a file-mutation queue, output truncation, abort checks, path containment. The contract comes vendored from Letta Code; the runtime is Pi. Two CI jobs watch the two halves so neither drifts without someone noticing.
+      <span class="thesis">// one line to remember: provider-native contract, Pi-native runtime.</span>
+    </div>
+
+    <!-- ════ HINGE ════ -->
+    <h2 id="hinge">The one fact the rest follows from</h2>
+    <p>Start here, because everything else is a consequence of it: <strong>vendoring a Letta schema records what a tool looks like to the model. It never runs Letta's code.</strong></p>
+    <p>Under <code>vendor/letta/</code> sit 25 JSON schemas and their descriptions, copied from <code>letta-ai/letta-code</code> at a pinned commit. A schema there is a contract: this tool is named <code>Read</code>, it takes <code>file_path</code> and an optional <code>offset</code>, it returns numbered lines. Letta already did the work of reverse-engineering and normalizing each provider's tool surface, so this extension copies that work instead of re-deriving it. But the copied file is a description of a shape, not an implementation. When the model calls <code>Read</code>, the bytes are read by a local function in <code>tools/read-adapter.ts</code> that uses Pi's file primitives. Letta is the blueprint. Pi is the factory.</p>
+    <p>Hold those two apart and the whole codebase reads cleanly. Let them blur and you will keep asking why a "vendored" tool isn't active, or why an active tool diverges from Letta's wording. The answer is always the same: the schema says what the model expects, the adapter decides what actually happens, and where they disagree the adapter wins and the disagreement is written down.</p>
+
+    <div class="callout"><span class="ico">&#9733;</span><div>The split is enforced by a linter, not a habit. <code>tools/pi-compat.ts:15</code> re-exports every Pi symbol the extension may touch. <code>scripts/check-pi-compat.ts:161</code> fails CI if any other file imports a Pi package directly. <code>:142</code> fails it if anyone reaches into <code>dist/**</code>, <code>core/**</code>, <code>src/**</code>, or <code>modes/**</code>. One file is the door; every other door is nailed shut.</div></div>
+
+    <!-- ════ PROBLEM ════ -->
+    <h2 id="problem">What breaks if you skip it</h2>
+    <p>A frontier model learns its tools the way it learns everything else: from examples during post-training. Claude saw a tool literally named <code>Read</code> that returns <code>cat -n</code> output counting from line 1. Gemini saw <code>read_file</code> counting from line 0 and returning plain text. Codex saw an <code>apply_patch</code> envelope grammar and a separate <code>update_plan</code> tool. The names, the argument shapes, and the output formatting are part of what the weights expect to find.</p>
+    <p>Pi ships its own tools: <code>read</code>, <code>bash</code>, <code>edit</code>, <code>write</code>, <code>grep</code>, <code>find</code>, <code>ls</code>. They work well and they are generic. Point a Claude-tuned model at the generic <code>edit</code> and it loses the sequential <code>MultiEdit</code> it reaches for, where the second edit operates on the text the first one produced. Point Codex at <code>write</code> and it never gets to emit the patch grammar it was trained to write. The model spends turns adapting to a tool it doesn't know instead of doing the work.</p>
+    <p>You could fix this by forking Pi and hand-porting each harness. That is a large maintenance bill and a security question: now you are running a third party's tool code. This extension takes the cheaper trade. It keeps the provider's tool <em>surface</em> and supplies its own tool <em>body</em>, so the model operates in its native dialect and every dangerous operation still goes through code Pi already trusts. The cost of that trade, paid in full later: every place the two harnesses genuinely disagree becomes a policy decision someone has to make and test by hand.</p>
+
+    <!-- ════ LIFECYCLE / GEAR TRAIN ════ -->
+    <h2 id="lifecycle">The gear train: model in, tools out</h2>
+    <p class="lead">Five gears turn between picking a model and the model seeing its tools. Each one causes the next. Expand any gear for the call that drives it.</p>
+
+    <details class="step" open>
+      <summary>1 · Register all 21 tools at construction <span class="where">index.ts:28</span></summary>
+      <div class="body">
+        <p>When the extension loads it calls <code>registerClaudeTools</code>, <code>registerCodexTools</code>, and <code>registerGeminiTools</code> right away. Every tool definition is now known to Pi. Knowing a tool and showing it to the model are different things: registration happens once, here; activation happens later and changes with the model. A shared <code>runtime</code> object carries the session's read-history; a <code>codexPlanState</code> survives reloads.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>2 · Resolve the real model behind the alias <span class="where">index.ts:36</span></summary>
+      <div class="body">
+        <p>On <code>session_start</code> and again on every <code>model_select</code>, <code>syncTools()</code> turns a possibly profile-backed alias into a concrete model with <code>resolveProfileBackedModel()</code>, reading the session branch so a mid-session switch counts. Two cases bail out before anything activates: a subagent child (<code>PI_SUBAGENT_CHILD=1</code>) and a disabled config. A nested agent never inherits a surprise tool swap from its parent.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>3 · Read the model's fields to pick a profile <span class="where">provider-detect.ts:19</span></summary>
+      <div class="body">
+        <p><code>detectProviderToolProfile()</code> checks the model's <code>provider</code>, <code>id</code>, and <code>api</code> strings against substring matchers from config. The env var <code>PI_PROVIDER_TOOL_PROFILE</code> can force a profile or shut detection <code>off</code>. Claude and Gemini are tested first; Codex carries an extra rule for OpenAI models whose id starts with <code>gpt-</code>. The matcher table is small enough to run yourself in <a href="#detect">the detection gear below</a>.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>4 · Swap the active set, remembering what to put back <span class="where">tool-activation.ts:43</span></summary>
+      <div class="body">
+        <p><code>buildProviderToolActivation()</code> is a pure function, which is what makes the swap reversible. The first time a profile activates, it copies the current Pi <span class="term" data-term="core">core tools</span> into <code>previousCoreTools</code>, then returns that profile's list plus any non-managed extension tools worth preserving. When the profile clears, it returns the saved core tools. This is the mechanism behind a property you would otherwise take for granted: switch models back and forth all day and you never get stranded with the wrong toolset.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>5 · Tell the model which dialect is live <span class="where">tool-activation.ts:73</span></summary>
+      <div class="body">
+        <p><code>getProfilePromptAppendix()</code> plus the <code>before_agent_start</code> hook (<code>index.ts:89</code>) add one sentence to the system prompt naming the active tools, for example <em>"Provider tool profile: Codex. Use shell_command for shell work, apply_patch for file changes&hellip;"</em>. The append checks for itself first, so a reload does not stack three copies.</p>
+      </div>
+    </details>
+
+    <div class="tabs" data-tabs>
+      <div class="tabbar">
+        <button class="on" data-t="0">syncTools</button>
+        <button data-t="1">remember + restore</button>
+        <button data-t="2">prompt line</button>
+      </div>
+<pre class="on"><span class="cm">// index.ts:36 — the gear that turns every session_start / model_select</span>
+<span class="kw">async function</span> syncTools(ctx, model = ctx.model) {
+  <span class="kw">const</span> concreteModel = <span class="kw">await</span> resolveProfileBackedModel({
+    cwd: ctx.cwd, model,
+    modelRegistry: ctx.modelRegistry,
+    entries: ctx.sessionManager.getBranch(),
+  });
+  <span class="kw">const</span> profile = detectProviderToolProfile(concreteModel, loadedConfig.mergedConfig);
+  <span class="kw">const</span> result = buildProviderToolActivation(
+    pi.getActiveTools(), profile, loadedConfig.mergedConfig, activationState);
+  activationState = result.state;
+  pi.setActiveTools(result.tools);   <span class="cm">// the swap itself</span>
+}</pre>
+<pre><span class="cm">// tool-activation.ts:52 — copy the core tools once, hand them back later</span>
+<span class="kw">if</span> (profile) {
+  <span class="kw">if</span> (!nextState.previousCoreTools) {
+    <span class="kw">const</span> previousCore = coreToolsFrom(active);   <span class="cm">// read/bash/edit/...</span>
+    nextState.previousCoreTools =
+      previousCore.length &gt; 0 ? previousCore : config.fallbackTools;
+  }
+  <span class="kw">return</span> { tools: unique([...PROFILE_TOOLS[profile], ...preserved]), ... };
+}
+<span class="cm">// no profile -> return the saved core tools</span></pre>
+<pre><span class="cm">// tool-activation.ts:73 — one sentence per dialect, added idempotently</span>
+codex  &rarr; <span class="hl">"Provider tool profile: Codex. Use shell_command for shell work,</span>
+          <span class="hl">apply_patch for file changes, update_plan..., view_image..."</span>
+claude &rarr; <span class="hl">"...Use Bash, Read, Write, Edit, MultiEdit, Glob, Grep, LS..."</span>
+gemini &rarr; <span class="hl">"...Use run_shell_command, read_file/read_many_files..."</span></pre>
+    </div>
+
+    <!-- ════ SURFACE ════ -->
+    <h2 id="surface">Who gets which tools, and who is held back</h2>
+    <p>The manifest tracks far more tools than it turns on. The hinge fact from the top has a direct corollary here: a tool can be vendored and still be dark. Four statuses appear in <code>tool-manifest.json</code>. <span class="pill active">active</span> means wired to a live adapter. <span class="pill vendored">vendored</span> means the schema is tracked but no adapter runs it yet. <span class="pill blocked">blocked</span> means activating it would need a Pi primitive that does not exist. <span class="pill ignored">ignored</span> means out of scope, like Letta's own goal and memory tools.</p>
+
+    <table class="cmp">
+      <thead><tr><th>Profile</th><th>Active tools (count)</th><th>Held back, and why</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>Claude</b></td>
+          <td><span class="mono-cell">Read, Write, Edit, MultiEdit, Bash, Glob, Grep, LS</span> (8)</td>
+          <td><span class="pill ignored">ignored</span> BashOutput, KillBash: both need a background-shell registry Pi has not built.</td>
+        </tr>
+        <tr>
+          <td><b>Codex</b></td>
+          <td><span class="mono-cell">shell_command, apply_patch, update_plan, view_image</span> (4)</td>
+          <td><span class="pill blocked">blocked</span> exec_command, write_stdin · <span class="pill vendored">vendored</span> shell, read_file, list_dir</td>
+        </tr>
+        <tr>
+          <td><b>Gemini</b></td>
+          <td><span class="mono-cell">run_shell_command, read_file, read_many_files, list_directory, glob, grep_search, search_file_content, replace, write_file</span> (9)</td>
+          <td><span class="pill ignored">ignored</span> WriteTodos: Pi already plans with update_plan.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn"><span class="ico">&#9888;</span><div><b>Why <code>exec_command</code> and <code>write_stdin</code> sit blocked.</b> They run a long-lived process you feed input to over time. That needs a session manager, stdin polling, cancellation, cleanup, and a decision about pseudo-terminals, none of which Pi exposes today. The manifest writes the reason into a <code>decision</code> field and leaves the tool dark. A half-built interactive-shell tool that loses your process is worse than a model that has to use <code>shell_command</code> instead.</div></div>
+
+    <!-- ════ PER-TOOL ════ -->
+    <h2 id="tools">What each tool actually does</h2>
+    <p class="lead">Grouped by job. Each card gives three things: the contract the model sees, the Pi machinery underneath, and the one place they were made to disagree on purpose.</p>
+
+    <details class="step" open>
+      <summary>Read — Read · read_file · read_many_files <span class="where">tools/read-adapter.ts</span></summary>
+      <div class="body">
+        <p><strong>Contract.</strong> Claude's <code>Read</code> returns <code>cat -n</code> numbered text counting from a 1-based <span class="term" data-term="offset">offset</span>. Gemini's <code>read_file</code> returns plain text counting from 0. Both stop at 2000 lines or 50 KB (<code>policies.ts:24</code>).</p>
+        <p><strong>Pi underneath.</strong> Head-truncation with a "use offset N to continue" hint, byte-accurate caps, and base64 plus mime detection for png, jpg, gif, and webp.</p>
+        <p><strong>The deliberate disagreement.</strong> Handing the model Pi's raw <code>read</code> output was tried and rejected as too blunt: it drops the line numbers and the offset base the model was trained on. So a thin adapter maps the offset in <code>normalizedOffset</code> (<code>read-adapter.ts:65</code>) and formats per profile. A binary file (it has a NUL byte) and a PDF, audio file, or notebook each return an explicit "unsupported" result instead of a screen of decoded garbage. Every successful text read writes a <span class="term" data-term="readhistory">read-history</span> entry. Run the offset split yourself in <a href="#reads">the read gear</a>.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>Edit — Edit · MultiEdit · replace <span class="where">tools/edit-adapter.ts:25</span></summary>
+      <div class="body">
+        <p><strong>Contract.</strong> Exact literal string replacement. Claude's <code>MultiEdit</code> is sequential: edit 2 runs against the text edit 1 produced, and the batch is atomic. <code>replace_all</code> and <code>expected_replacements</code> are honored, and a count that does not match throws (<code>shared.ts:96</code>).</p>
+        <p><strong>Pi underneath.</strong> The whole read-modify-write runs inside <code>withFileMutationQueue()</code>, keyed by path, so two edits to one file take turns. The abort signal is checked before and after every await.</p>
+        <p><strong>The deliberate disagreement.</strong> Pi's native edit matches all of its edits against the <em>original</em> text. That is the opposite of sequential, so this code does not delegate to it. <code>applyExactEditsToText()</code> folds the edits left to right over the text as it changes, which is the behavior Claude expects.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>Shell — Bash · shell_command · run_shell_command <span class="where">tools/shell-adapter.ts</span></summary>
+      <div class="body">
+        <p><strong>Contract.</strong> A nonzero exit code is a normal result the model reads and reacts to, not a failure. A timeout or an abort is a failure. The invocation matches each harness (<code>shell-adapter.ts:99</code>): Claude runs <code>bash -lc</code>, Gemini runs <code>bash -c</code>, Codex runs <code>bash -lc</code> by default but <code>bash -c</code> when the call sets <code>login: false</code>.</p>
+        <p><strong>Pi underneath.</strong> Execution rides <code>ExtensionAPI.exec</code>. Output is tail-truncated, and an overflow writes the full output to a temp file whose path comes back in the result. Timeouts clamp to a ceiling.</p>
+        <p><strong>The safety line.</strong> A field that changes the security posture is refused, not ignored. Codex <code>sandbox_permissions: "require_escalated"</code> returns an explicit unsupported result before exec (<code>shell-adapter.ts:61</code>). So do <code>justification</code>, a non-empty <code>prefix_rule</code>, and Claude's <code>run_in_background</code> (<code>:133</code>). Quietly accepting an escalation you cannot enforce is the one outcome worse than refusing it.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>Search and list — Glob · Grep · glob · grep_search · LS · list_directory <span class="where">tools/search-adapter.ts, tools/list-adapter.ts</span></summary>
+      <div class="body">
+        <p><strong>Contract.</strong> Glob returns newest file first, capped at Letta's vendored 2000. Grep keeps the provider output modes (<code>content</code>, <code>files_with_matches</code>, <code>count</code>) and the <code>search_file_content</code> alias for <code>grep_search</code>.</p>
+        <p><strong>Pi underneath.</strong> One ripgrep call, stable path sorting, result caps, truncation notices.</p>
+        <p><strong>The deliberate disagreement.</strong> A local ignore engine in <code>tools/ignore-policy.ts</code> reads anchored rules, directory-only rules, escaped <code>#</code> and <code>!</code>, ordered negations, and scoped ignore files. Gemini honors <code>.geminiignore</code> for glob, grep, and list, and <code>.gitignore</code> for list unless told not to; <code>respect_git_ignore: false</code> becomes ripgrep <code>--no-ignore-vcs</code>. It is not a full reimplementation of Git's ignore engine, and the code says so.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>Codex apply_patch — the one bespoke engine <span class="where">tools/apply-patch.ts:313</span></summary>
+      <div class="body">
+        <p><strong>Contract.</strong> Codex's <code>*** Begin Patch</code> &hellip; <code>*** End Patch</code> envelope, with Add, Update, Delete, and Move operations. Paths are relative, never absolute.</p>
+        <p><strong>Pi underneath.</strong> A per-file mutation queue with a stable lock order so a multi-file patch cannot deadlock against itself.</p>
+        <p><strong>The deliberate disagreement.</strong> Pi has no equivalent, so this is custom code, built in three phases: parse, then a read-only preflight that computes every new file in memory, then commit. Disk stays untouched until the entire patch has parsed, passed path policy, and applied cleanly in memory. It keeps in-memory snapshots and rolls back on a failed commit, and it does not claim to be crash-safe. Step the phases in <a href="#patch">the apply_patch gear</a>.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>Codex update_plan and view_image <span class="where">tools/plan-state.ts, tools/read-adapter.ts:155</span></summary>
+      <div class="body">
+        <p><strong>update_plan.</strong> It allows at most one step marked <code>in_progress</code>, writes the latest plan as a <code>provider-tool-profiles.codex.plan.v1</code> session entry through Pi's <code>appendEntry()</code>, and reloads it on <code>session_start</code>. A reload or resume keeps the plan the model was working from.</p>
+        <p><strong>view_image.</strong> It shares the image read path but keeps Codex's own path rule, <code>resolveCodexImagePath</code> (<code>path.ts:198</code>): absolute or relative, read-only, no cwd containment. It is the one file tool with no containment, because it cannot write and screenshots usually live outside the repo.</p>
+      </div>
+    </details>
+
+    <!-- ════ PATH GEAR ════ -->
+    <h2 id="paths">Gear: the path-policy table</h2>
+    <p>The three harnesses disagree about which paths a tool may touch, so <code>tools/path.ts</code> is a table of separate rules, one per tool group, rather than a single resolver pretending the disagreement does not exist. The widget below runs the synchronous half of four of those rules: <code>resolveClaudePath</code> (<code>:123</code>), <code>resolveGeminiPath</code> through <code>resolveUnderCwd</code> (<code>:139</code>), <code>resolveCodexImagePath</code> (<code>:198</code>), and <code>validatePatchPath</code> (<code>:216</code>). Type a path, pick a rule, watch it accept or reject and say why.</p>
+    <div class="callout"><span class="ico">&#9733;</span><div>One check the browser cannot do: the live <code>isWithinCwd()</code> (<code>path.ts:106</code>) resolves symlinks with <code>realpath</code> on disk before deciding containment. This demo simulates containment lexically and flags the spot where the real code would also catch a symlink that points out of the working directory.</div></div>
+
+    <div class="demo">
+      <div class="demo-head">path.ts policy table — live</div>
+      <div class="row">
+        <label>cwd</label>
+        <span class="val" id="ppCwd" style="min-width:auto;color:var(--muted)">/home/user/project</span>
+      </div>
+      <div class="row">
+        <label>policy</label>
+        <select id="ppPolicy">
+          <option value="claude">resolveClaudePath (Claude file tools)</option>
+          <option value="gemini">resolveGeminiPath (Gemini file/search/list)</option>
+          <option value="image">resolveCodexImagePath (Codex view_image)</option>
+          <option value="patch">validatePatchPath (Codex apply_patch)</option>
+        </select>
+      </div>
+      <div class="chips" id="ppChips"></div>
+      <div class="row">
+        <label>path</label>
+        <input type="text" id="ppInput" value="src/index.ts" spellcheck="false">
+      </div>
+      <div class="readout">
+        <div class="verdict" id="ppVerdict">&nbsp;</div>
+        <pre class="out" id="ppOut"></pre>
+        <div class="hint" id="ppHint"></div>
+      </div>
+    </div>
+
+    <!-- ════ READ GEAR ════ -->
+    <h2 id="reads">Gear: read offsets, side by side</h2>
+    <p>This is the cleanest example of the contract diverging by provider. The widget runs <code>normalizedOffset</code> (<code>read-adapter.ts:65</code>), <code>formatCatNumberedLines</code> (<code>:75</code>), and the continuation notice (<code>:87</code>). Same file, same offset value: watch Claude read it 1-based with line numbers and Gemini read it 0-based and plain. The formula at the bottom is the entire reconciliation, <code>max(0, floor(offset) - base)</code>, mapping both bases onto the same array slice.</p>
+
+    <div class="demo">
+      <div class="demo-head">read-adapter.ts — offset mapping &amp; formatting</div>
+      <div class="row">
+        <label>offset</label>
+        <input type="range" id="rdOffset" min="0" max="8" value="2">
+        <span class="val" id="rdOffsetVal">2</span>
+      </div>
+      <div class="row">
+        <label>limit</label>
+        <input type="range" id="rdLimit" min="1" max="8" value="3">
+        <span class="val" id="rdLimitVal">3</span>
+      </div>
+      <div class="readout">
+        <div class="row" style="gap:24px;align-items:flex-start">
+          <div style="flex:1;min-width:240px">
+            <div class="label" style="color:var(--true-blue)">Claude Read — 1-based, cat-n</div>
+            <pre class="out" id="rdClaude"></pre>
+          </div>
+          <div style="flex:1;min-width:240px">
+            <div class="label" style="color:var(--everyday-blue)">Gemini read_file — 0-based, plain</div>
+            <pre class="out" id="rdGemini"></pre>
+          </div>
+        </div>
+        <div class="hint" id="rdHint"></div>
+      </div>
+    </div>
+
+    <!-- ════ DETECT GEAR ════ -->
+    <h2 id="detect">Gear: which profile a model gets</h2>
+    <p>This runs <code>detectProviderToolProfile</code> (<code>provider-detect.ts:19</code>) against the real default matchers from <code>config.ts:21</code>. Set the model's three fields, or force a profile through the env var, and see which dialect activates. The case worth poking at is the last preset: an OpenAI model whose id starts with <code>gpt-</code> falls through the named matchers and gets caught by the Codex heuristic instead.</p>
+
+    <div class="demo">
+      <div class="demo-head">provider-detect.ts — resolver</div>
+      <div class="chips" id="dtChips"></div>
+      <div class="row"><label>provider</label><input type="text" id="dtProvider" value="anthropic" spellcheck="false"></div>
+      <div class="row"><label>id</label><input type="text" id="dtId" value="claude-sonnet-4" spellcheck="false"></div>
+      <div class="row"><label>api</label><input type="text" id="dtApi" value="anthropic" spellcheck="false"></div>
+      <div class="row"><label>env force</label>
+        <select id="dtEnv">
+          <option value="">PI_PROVIDER_TOOL_PROFILE unset</option>
+          <option value="claude">= claude</option>
+          <option value="codex">= codex</option>
+          <option value="gemini">= gemini</option>
+          <option value="off">= off</option>
+        </select>
+      </div>
+      <div class="readout">
+        <div class="verdict" id="dtVerdict">&nbsp;</div>
+        <pre class="out" id="dtOut"></pre>
+      </div>
+    </div>
+
+    <!-- ════ PATCH GEAR ════ -->
+    <h2 id="patch">Gear: the apply_patch lifecycle</h2>
+    <p>What makes <code>apply_patch</code> safe to hand a model is the order of its phases. Step through a two-file patch and watch the dashed line: nothing crosses from memory to disk until commit. The stepper mirrors <code>applyPatch</code> (<code>apply-patch.ts:313</code>): <code>parseApplyPatch</code> (<code>:99</code>), then <code>preflight</code> (<code>:167</code>), then <code>commit</code> (<code>:231</code>), then <code>rollback</code> (<code>:296</code>) if a write fails partway. Tick the failure box to see the rollback run.</p>
+
+    <div class="demo">
+      <div class="demo-head">apply-patch.ts — parse → preflight → commit → rollback</div>
+      <div class="phase-track" id="apTrack"></div>
+      <div class="stepper-controls">
+        <button id="apNext">Step &rarr;</button>
+        <button id="apReset" class="ghost">Reset</button>
+        <label style="margin-left:8px"><input type="checkbox" id="apFail"> inject commit failure on file 2</label>
+      </div>
+      <svg id="apSvg" viewBox="0 0 620 150" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;border:1px solid var(--line);border-radius:8px;background:var(--paper)"></svg>
+      <pre class="out" id="apLog"></pre>
+    </div>
+
+    <!-- ════ CI ════ -->
+    <h2 id="ci">The two watchdogs</h2>
+    <p class="lead">The contract and the runtime drift for different reasons, so each gets its own watchdog. Letta can change a schema upstream. Pi can change a public API upstream. Neither job can see the other's failure, and that is the point.</p>
+
+    <table class="cmp">
+      <thead><tr><th></th><th>Letta drift</th><th>Pi compatibility</th></tr></thead>
+      <tbody>
+        <tr><td>Watches</td><td>The contract: schemas, descriptions, default toolsets</td><td>The runtime: Pi public APIs, native tool factories, result shapes, TUI width</td></tr>
+        <tr><td>File</td><td class="mono-cell">.github/workflows/letta-drift.yml</td><td class="mono-cell">.github/workflows/pi-compat.yml</td></tr>
+        <tr><td>Script</td><td class="mono-cell">scripts/check-letta-drift.ts</td><td class="mono-cell">scripts/check-pi-compat.ts</td></tr>
+        <tr><td>Compares against</td><td>Live <code>letta-ai/letta-code</code> at <code>--ref main</code></td><td>Locked deps, plus a latest-Pi canary in a temp dir</td></tr>
+        <tr><td>Schedule</td><td>Mon 08:17 UTC</td><td>Wed 08:37 UTC</td></tr>
+        <tr><td>On a PR</td><td>Reports drift; fails only if the tooling itself breaks</td><td class="bad">Hard-fails on a test failure, a private Pi import, a boundary violation, or a missing export</td></tr>
+        <tr><td>On a scheduled failure</td><td>Opens or updates issue <code>provider-tool-profiles: Letta drift</code></td><td>Opens or updates issue <code>provider-tool-profiles: Pi compatibility drift</code></td></tr>
+      </tbody>
+    </table>
+
+    <details class="step">
+      <summary>What Letta drift actually compares <span class="where">scripts/check-letta-drift.ts</span></summary>
+      <div class="body">
+        <p>It reads <code>tool-manifest.json</code> at its pinned commit <code>2eca6e1</code>, then for each tracked tool fetches the upstream <code>schemas/*.json</code> and <code>descriptions/*.md</code> from <code>raw.githubusercontent.com</code> and diffs them against the vendored copies. It also walks the upstream git tree to find tools that exist there but not in the manifest, and diffs <code>default-toolsets.json</code>. The report is non-failing on purpose: a contract change becomes a tracked issue a human reads, not a red build that blocks unrelated work. Today it reports <code>changed=0 newSchemas=0 toolsetDiffs=0</code>.</p>
+      </div>
+    </details>
+    <details class="step">
+      <summary>What Pi compatibility actually runs <span class="where">scripts/check-pi-compat.ts</span></summary>
+      <div class="body">
+        <p>Four checks. First, the full provider-tool test suite. Second, a static scan of every <code>.ts</code> file's imports: a Pi package imported outside <code>tools/pi-compat.ts</code> is a boundary violation (<code>:161</code>), and any <code>dist/</code>, <code>core/</code>, <code>src/</code>, or <code>modes/</code> path is a private-import failure (<code>:142</code>). Third, a smoke test that the 16 required exports still exist and behave, down to <code>formatSize(1024) === "1.0KB"</code>. Fourth, the same suite against the latest published Pi in a temp dir, so an upstream break shows up before you upgrade rather than after.</p>
+      </div>
+    </details>
+
+    <div class="callout"><span class="ico">&#9733;</span><div><b>The rule that ties the watchdogs together.</b> A Letta-driven tool change ships only when both jobs are green for that capability. If Letta wants a tool whose behavior needs a Pi primitive that does not exist, you vendor it and mark it <span class="pill blocked">blocked</span> rather than ship behavior Pi cannot back. That rule is the whole reason <code>exec_command</code> and <code>write_stdin</code> are dark right now: the contract is ready, the runtime is not, so the tool waits.</div></div>
+
+    <!-- ════ STATUS ════ -->
+    <h2 id="status">What is built</h2>
+    <div class="milestones">
+      <div class="milestone">
+        <div class="dot-col"><span class="dot done"></span><span class="line"></span></div>
+        <div class="body"><h3>Shipped and verified</h3>
+          <p>All nine foundation slices from the plan are landed: the path-policy table, the Pi-compat boundary and its CI, mutation serialization, the read/write/edit adapters, the read-history audit, shell hardening, the search/list ignore engine, the Codex patch engine, and plan persistence with shared image reads. The suite runs 117 pass, 0 fail across 20 files; both watchdogs are green; Letta drift is clean.</p>
+          <div class="tags"><span class="tag">21 active tools</span><span class="tag">3 profiles</span><span class="tag">117 tests</span><span class="tag">2 workflows</span></div>
+        </div>
+      </div>
+      <div class="milestone">
+        <div class="dot-col"><span class="dot progress"></span><span class="line"></span></div>
+        <div class="body"><h3>Built on purpose to be minimal</h3>
+          <p>Read-history records whether a file is fresh, stale, or never-read and then does nothing with it: the data lands in the result details and never blocks an edit. The patch rollback restores from in-memory snapshots and stops there, with no journaling. Shell still runs on <code>ExtensionAPI.exec</code> rather than <code>createLocalBashOperations()</code>, which keeps the exec hooks and output shape the current integration depends on. Each of these is a smaller surface chosen over a bigger one, not an unfinished edge.</p>
+          <div class="tags"><span class="tag">audit, no block</span><span class="tag">best-effort rollback</span></div>
+        </div>
+      </div>
+      <div class="milestone">
+        <div class="dot-col"><span class="dot gap"></span></div>
+        <div class="body"><h3>Known gaps</h3>
+          <p>Blocked: <code>exec_command</code> and <code>write_stdin</code>, waiting on session and stdin semantics. Deferred: PDF, audio, and notebook reads; crash-safe multi-file atomicity; the Gemini schema move from <code>offset</code>/<code>limit</code> to <code>start_line</code>/<code>end_line</code>; recursive nested <code>.geminiignore</code> discovery for ripgrep search. Codex shell escalation and approval fields are refused rather than implemented.</p>
+          <div class="tags"><span class="tag">2 blocked</span><span class="tag">media deferred</span><span class="tag">approval deferred</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════ NEXT ════ -->
+    <h2 id="next">What is left, and what I would do</h2>
+    <p>The plan calls the next slice polish and risk reduction, not a required migration. Reading the code against the plan, four things stand out as worth doing and clearly scoped:</p>
+    <table class="cmp">
+      <thead><tr><th>Do this</th><th>Because</th><th>Keep it inside</th></tr></thead>
+      <tbody>
+        <tr><td>Recursive nested <code>.geminiignore</code> discovery</td><td>Closes the last gap in Gemini search parity, if real use turns one up</td><td class="mono-cell">ignore-policy.ts, search-adapter.ts</td></tr>
+        <tr><td>Optional strict read-before-edit</td><td>The freshness check already exists; a config flag could turn audit into a block</td><td class="mono-cell">edit-adapter.ts plus a flag</td></tr>
+        <tr><td>Revisit the shell backend</td><td>Only if Pi ships a shape-compatible public approval/exec primitive; do not fake escalation</td><td class="mono-cell">shell-adapter.ts</td></tr>
+        <tr><td>README and smoke-prompt polish</td><td>If users get this extension, document search, list, and plan persistence</td><td class="mono-cell">README.md, docs/smoke-prompts.md</td></tr>
+      </tbody>
+    </table>
+    <p>Two things the read turned up that the plan does not call out. First, read-history is wired but mute: <code>edit-adapter.ts</code> computes freshness and stores it, but nothing tells the user they just edited a file that changed under them. The data is already there; only the renderer line is missing. Second, a blocked tool leaves no breadcrumb. A Codex model that emits <code>exec_command</code> simply does not find it in the active set and burns a turn discovering that. One line in the prompt appendix ("exec_command is unavailable; use shell_command") would buy that turn back. Both are cheap; neither is urgent.</p>
+    <p>Before touching any of it, run the gate. These three commands are the contract for changing this extension:</p>
+    <pre class="code"><span class="cm"># the pre-commit gate (tool-behavior-matrix.md, "Recommended next slice")</span>
+bun test pi/extensions/provider-tool-profiles/*.test.ts pi/extensions/provider-tool-profiles/tools/*.test.ts
+bun pi/extensions/provider-tool-profiles/scripts/check-pi-compat.ts <span class="hl">--mode locked</span>
+bun pi/extensions/provider-tool-profiles/scripts/check-letta-drift.ts <span class="hl">--ref main</span></pre>
+
+    <footer>
+      Self-contained HTML · Walmart brand theme · written from the source on branch <code>docs/provider-tool-behavior-matrix-9</code>.
+      The four demos run real logic ported from <code>path.ts</code>, <code>read-adapter.ts</code>, <code>provider-detect.ts</code>, and <code>apply-patch.ts</code>;
+      they simulate the on-disk filesystem and symlink checks the live code performs. For ground truth, read the cited files.
+    </footer>
+  </main>
+
+  <!-- ════ GLOSSARY ════ -->
+  <aside class="gloss">
+    <div class="label">Glossary</div>
+    <dl>
+      <dt data-g="offset">Offset base</dt>
+      <dd>The line number a read tool treats as the first line. Claude counts from 1, Gemini from 0. The adapter maps both onto the same 0-based array slice.</dd>
+      <dt data-g="core">Core tools</dt>
+      <dd>Pi's own generic tools: read, bash, edit, write, grep, find, ls. Copied before a profile activates so they can be put back.</dd>
+      <dt data-g="readhistory">Read-history</dt>
+      <dd>A per-session map of canonical path to {mtime, size, sha256}. Lets an edit report whether the file is fresh, stale, or never-read. Recorded today, enforced never.</dd>
+      <dt data-g="preflight">Preflight</dt>
+      <dd>apply_patch's read-only phase: parse, resolve paths, and compute every new file in memory. No disk write happens until it finishes clean.</dd>
+      <dt data-g="boundary">Compat boundary</dt>
+      <dd>tools/pi-compat.ts, the only file allowed to import a Pi package. CI fails any other file that imports Pi directly.</dd>
+    </dl>
+  </aside>
+
+</div>
+
+<script>
+"use strict";
+
+/* ===== Tabbed code ===== */
+document.querySelectorAll("[data-tabs]").forEach(function (box) {
+  var btns = box.querySelectorAll("button");
+  var panes = box.querySelectorAll("pre");
+  btns.forEach(function (b) {
+    b.addEventListener("click", function () {
+      btns.forEach(function (x) { x.classList.remove("on"); });
+      panes.forEach(function (x) { x.classList.remove("on"); });
+      b.classList.add("on");
+      panes[+b.dataset.t].classList.add("on");
+    });
+  });
+});
+
+/* ===== Glossary hover ===== */
+document.querySelectorAll(".term").forEach(function (el) {
+  var dt = document.querySelector('dt[data-g="' + el.dataset.term + '"]');
+  if (!dt) return;
+  el.addEventListener("mouseenter", function () { dt.classList.add("hl"); });
+  el.addEventListener("mouseleave", function () { dt.classList.remove("hl"); });
+});
+
+/* ===== §6 Path-policy playground — ports tools/path.ts (sync rules) ===== */
+(function () {
+  var CWD = "/home/user/project";
+  var input = document.getElementById("ppInput");
+  var policy = document.getElementById("ppPolicy");
+  var verdict = document.getElementById("ppVerdict");
+  var out = document.getElementById("ppOut");
+  var hint = document.getElementById("ppHint");
+  var chipsBox = document.getElementById("ppChips");
+  if (!input) return;
+
+  var SAMPLES = {
+    claude:  ["src/index.ts", "/etc/passwd", "~/notes.md", "@README.md", "../outside.txt", "C:\\win\\file"],
+    gemini:  ["src/index.ts", "/home/user/project/a.ts", "/etc/passwd", "../escape.ts", "build/../src/x.ts", "ok/file.ts"],
+    image:   ["shot.png", "/tmp/screenshot.png", "@/abs/pic.jpg", "../pics/a.png"],
+    patch:   ["src/a.ts", "/abs/a.ts", "../a.ts", "a/../../b.ts", "dir/b.ts", "back\\slash.ts", "~/h.ts"]
+  };
+
+  // --- helpers mirrored from path.ts ---
+  function looksAbsolute(p) {
+    if (p.charAt(0) === "/") return true;
+    if (/^[A-Za-z]:[/\\]/.test(p)) return true;
+    if (p.charAt(0) === "\\") return true;
+    return false;
+  }
+  function isWindowsAbsOnPosix(p) { return looksAbsolute(p) && !(p.charAt(0) === "/"); }
+  function hasParentSegment(p) { return p.split(/[\\/]+/).indexOf("..") !== -1; }
+  function stripLeadingAt(p) { return p.trim().replace(/^@/, ""); }
+  // lexical POSIX normalize (enough for the demo's containment + traversal checks)
+  function posixNormalize(p) {
+    var parts = p.split("/"), stack = [];
+    for (var i = 0; i < parts.length; i++) {
+      var seg = parts[i];
+      if (seg === "" || seg === ".") { if (i === 0 && seg === "") stack.push(""); continue; }
+      if (seg === "..") { if (stack.length && stack[stack.length-1] !== "" && stack[stack.length-1] !== "..") stack.pop(); else stack.push(".."); }
+      else stack.push(seg);
+    }
+    var res = stack.join("/");
+    return res === "" ? "." : res;
+  }
+  function joinCwd(rel) { return posixNormalize(CWD + "/" + rel); }
+  function within(abs) { return abs === CWD || abs.indexOf(CWD + "/") === 0; }
+
+  function resolveClaude(raw) {
+    var prepared = stripLeadingAt(raw);
+    if (!prepared) return { ok: false, reason: "empty path" };
+    if (prepared.indexOf("\0") !== -1) return { ok: false, reason: "path contains NUL byte" };
+    if (prepared === "~") prepared = "/home/user";
+    else if (prepared.indexOf("~/") === 0) prepared = "/home/user/" + prepared.slice(2);
+    if (isWindowsAbsOnPosix(prepared)) return { ok: false, reason: "Windows absolute paths are not supported on this platform" };
+    var abs = looksAbsolute(prepared) ? posixNormalize(prepared) : joinCwd(prepared);
+    return { ok: true, abs: abs, note: within(abs) ? "" : "absolute path OUTSIDE cwd — allowed for Claude file tools by design" };
+  }
+  function resolveUnderCwd(raw) {
+    var prepared = raw.trim();
+    if (!prepared) return { ok: false, reason: "empty path" };
+    if (prepared.indexOf("\0") !== -1) return { ok: false, reason: "path contains NUL byte" };
+    if (hasParentSegment(prepared)) return { ok: false, reason: "parent-directory paths are not allowed" };
+    if (isWindowsAbsOnPosix(prepared)) return { ok: false, reason: "Windows absolute paths are not supported on this platform" };
+    var abs = looksAbsolute(prepared) ? posixNormalize(prepared) : joinCwd(prepared);
+    if (!within(abs)) return { ok: false, reason: "path escapes the working directory" };
+    return { ok: true, abs: abs, note: "symlink canonicalization also runs on disk (realpath) in the live code" };
+  }
+  function resolveImage(raw) {
+    var prepared = stripLeadingAt(raw);
+    if (!prepared) return { ok: false, reason: "empty path" };
+    if (isWindowsAbsOnPosix(prepared)) return { ok: false, reason: "Windows absolute paths are not supported on this platform" };
+    var abs = looksAbsolute(prepared) ? posixNormalize(prepared) : joinCwd(prepared);
+    return { ok: true, abs: abs, note: "read-only: no cwd containment by design (images often live outside the repo)" };
+  }
+  function validatePatch(raw) {
+    var t = raw.trim();
+    if (!t) return { ok: false, reason: "empty path" };
+    if (t.indexOf("\0") !== -1) return { ok: false, reason: "path contains NUL byte" };
+    if (t.indexOf("\\") !== -1) return { ok: false, reason: "path must use '/' separators" };
+    if (t === "~" || t.indexOf("~/") === 0) return { ok: false, reason: "home-relative paths are not allowed" };
+    if (looksAbsolute(t)) return { ok: false, reason: "absolute paths are not allowed" };
+    var n = posixNormalize(t);
+    if (n === ".." || n.indexOf("../") === 0 || n.charAt(0) === "/") return { ok: false, reason: "path escapes the working directory" };
+    return { ok: true, abs: joinCwd(n), rel: n, note: "relative-only, POSIX-normalized, cwd-contained" };
+  }
+
+  var RESOLVERS = { claude: resolveClaude, gemini: resolveUnderCwd, image: resolveImage, patch: validatePatch };
+
+  function run() {
+    var fn = RESOLVERS[policy.value];
+    var r = fn(input.value);
+    if (r.ok) {
+      verdict.className = "verdict ok";
+      verdict.textContent = "ACCEPTED";
+      out.textContent = "resolved -> " + r.abs + (r.rel ? "\nrelativePath -> " + r.rel : "");
+      hint.textContent = r.note || "";
+    } else {
+      verdict.className = "verdict no";
+      verdict.textContent = "REJECTED — " + r.reason;
+      out.textContent = "input -> " + JSON.stringify(input.value);
+      hint.textContent = "";
+    }
+  }
+  function rebuildChips() {
+    chipsBox.innerHTML = "";
+    SAMPLES[policy.value].forEach(function (s) {
+      var b = document.createElement("button");
+      b.textContent = s;
+      b.addEventListener("click", function () { input.value = s; run(); });
+      chipsBox.appendChild(b);
+    });
+  }
+  policy.addEventListener("change", function () { rebuildChips(); run(); });
+  input.addEventListener("input", run);
+  rebuildChips(); run();
+})();
+
+/* ===== §7 Read offset/format demo — ports read-adapter.ts ===== */
+(function () {
+  var FILE = ["import fs from 'fs';","","export function load(p) {","  return fs.readFileSync(p);","}","","export const VERSION = '1.0';","","// end of file"];
+  var offEl = document.getElementById("rdOffset"), limEl = document.getElementById("rdLimit");
+  if (!offEl) return;
+  var offVal = document.getElementById("rdOffsetVal"), limVal = document.getElementById("rdLimitVal");
+  var claudeOut = document.getElementById("rdClaude"), geminiOut = document.getElementById("rdGemini"), hint = document.getElementById("rdHint");
+
+  function normalizedOffset(offset, base) { // read-adapter.ts:65
+    if (typeof offset !== "number" || !isFinite(offset)) return 0;
+    return Math.max(0, Math.floor(offset) - base);
+  }
+  function catN(lines, startIndex) { // read-adapter.ts:75
+    return lines.map(function (line, i) {
+      return String(startIndex + i + 1).padStart(6, " ") + "\t" + line;
+    }).join("\n");
+  }
+  function render(base, format) {
+    var off = +offEl.value, lim = +limEl.value;
+    var start = normalizedOffset(off, base);
+    var end = Math.min(FILE.length, start + lim);
+    var selected = FILE.slice(start, end);
+    var nextOffset = end + base;
+    var more = end < FILE.length;
+    var body = format === "cat-n" ? catN(selected, start) : selected.join("\n");
+    if (!body) body = "(no lines: offset past EOF)";
+    if (more) body += "\n\n[Showing lines " + (start + 1) + "-" + end + " of " + FILE.length + ". Use offset " + nextOffset + " to continue.]";
+    return body;
+  }
+  function update() {
+    offVal.textContent = offEl.value; limVal.textContent = limEl.value;
+    claudeOut.textContent = render(1, "cat-n");
+    geminiOut.textContent = render(0, "plain");
+    var cs = normalizedOffset(+offEl.value, 1), gs = normalizedOffset(+offEl.value, 0);
+    hint.textContent = "Same offset=" + offEl.value + " -> Claude starts at array index " + cs + " (1-based), Gemini at index " + gs + " (0-based). normalizedOffset(o,base) = max(0, floor(o) - base).";
+  }
+  offEl.addEventListener("input", update);
+  limEl.addEventListener("input", update);
+  update();
+})();
+
+/* ===== §8 Detection resolver — ports provider-detect.ts + config.ts matchers ===== */
+(function () {
+  var MATCHERS = { // config.ts:21 DEFAULT_CONFIG.matchers
+    claude: { providerIncludes: ["anthropic"], idIncludes: ["claude"], apiIncludes: ["anthropic"] },
+    codex:  { providerIncludes: ["openai-codex"], idIncludes: ["codex"], apiIncludes: ["openai"] },
+    gemini: { providerIncludes: ["google","gemini"], idIncludes: ["gemini"], apiIncludes: ["google","gemini"] }
+  };
+  var prov = document.getElementById("dtProvider"), id = document.getElementById("dtId"), api = document.getElementById("dtApi"), env = document.getElementById("dtEnv");
+  if (!prov) return;
+  var verdict = document.getElementById("dtVerdict"), out = document.getElementById("dtOut"), chipsBox = document.getElementById("dtChips");
+
+  var PRESETS = [
+    ["Claude Sonnet", "anthropic", "claude-sonnet-4", "anthropic"],
+    ["Gemini 2.5 Pro", "google", "gemini-2.5-pro", "google"],
+    ["OpenAI Codex", "openai-codex", "codex-1", "openai"],
+    ["GPT-4o (heuristic)", "openai", "gpt-4o", "openai"],
+    ["Unknown / Llama", "meta", "llama-3", "replicate"]
+  ];
+
+  function includesAny(value, needles) {
+    return needles.some(function (n) { return value.indexOf(n) !== -1; });
+  }
+  function matches(profile) {
+    var m = MATCHERS[profile];
+    return includesAny(prov.value.toLowerCase(), m.providerIncludes)
+        || includesAny(id.value.toLowerCase(), m.idIncludes)
+        || includesAny(api.value.toLowerCase(), m.apiIncludes);
+  }
+  function detect() { // provider-detect.ts:19
+    var forced = env.value;
+    if (forced === "off") return { p: undefined, why: "env PI_PROVIDER_TOOL_PROFILE=off -> extension disabled" };
+    if (forced === "claude" || forced === "codex" || forced === "gemini") return { p: forced, why: "env force -> " + forced };
+    if (matches("claude")) return { p: "claude", why: "matched claude matcher (provider/id/api substring)" };
+    if (matches("gemini")) return { p: "gemini", why: "matched gemini matcher (checked before codex)" };
+    var p = prov.value.toLowerCase(), i = id.value.toLowerCase(), a = api.value.toLowerCase();
+    if (matches("codex")) return { p: "codex", why: "matched codex matcher" };
+    if (p.indexOf("openai") !== -1 && i.indexOf("gpt-") === 0) return { p: "codex", why: "heuristic: provider~openai + id starts with 'gpt-'" };
+    if (a.indexOf("openai") !== -1 && i.indexOf("gpt-") === 0) return { p: "codex", why: "heuristic: api~openai + id starts with 'gpt-'" };
+    return { p: undefined, why: "no matcher hit -> Pi core tools stay active" };
+  }
+  var TOOLS = {
+    claude: "Read, Write, Edit, MultiEdit, Bash, Glob, Grep, LS",
+    codex:  "shell_command, apply_patch, update_plan, view_image",
+    gemini: "run_shell_command, read_file, read_many_files, list_directory, glob, grep_search, search_file_content, replace, write_file"
+  };
+  function run() {
+    var r = detect();
+    if (r.p) {
+      verdict.className = "verdict ok";
+      verdict.textContent = "PROFILE: " + r.p;
+      out.textContent = r.why + "\n\nactivates -> " + TOOLS[r.p];
+    } else {
+      verdict.className = "verdict no";
+      verdict.textContent = "NO PROFILE";
+      out.textContent = r.why;
+    }
+  }
+  PRESETS.forEach(function (preset) {
+    var b = document.createElement("button");
+    b.textContent = preset[0];
+    b.addEventListener("click", function () { prov.value = preset[1]; id.value = preset[2]; api.value = preset[3]; env.value = ""; run(); });
+    chipsBox.appendChild(b);
+  });
+  [prov, id, api, env].forEach(function (el) { el.addEventListener("input", run); el.addEventListener("change", run); });
+  run();
+})();
+
+/* ===== §9 apply_patch lifecycle stepper — ports apply-patch.ts phase ordering ===== */
+(function () {
+  var PHASES = [
+    { n: "phase 1", t: "parse", d: "parseApplyPatch — pure, no disk", fn: "apply-patch.ts:99" },
+    { n: "phase 2", t: "preflight", d: "resolve paths + compute plan in memory", fn: "apply-patch.ts:167" },
+    { n: "phase 3", t: "commit", d: "snapshot + mutate under path queue", fn: "apply-patch.ts:231" },
+    { n: "phase 4", t: "done / rollback", d: "best-effort undo on failure", fn: "apply-patch.ts:296" }
+  ];
+  var FILES = ["src/a.ts (update)", "src/b.ts (add)"];
+  var track = document.getElementById("apTrack");
+  if (!track) return;
+  var svg = document.getElementById("apSvg"), log = document.getElementById("apLog");
+  var nextBtn = document.getElementById("apNext"), resetBtn = document.getElementById("apReset"), failBox = document.getElementById("apFail");
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var state = 0; // 0=idle, 1=parsed, 2=preflighted, 3=committing, 4=committed/failed
+
+  function el(tag, attrs, text) {
+    var e = document.createElementNS(SVGNS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function color(varname) { return getComputedStyle(document.documentElement).getPropertyValue(varname).trim(); }
+
+  function renderTrack() {
+    track.innerHTML = "";
+    PHASES.forEach(function (p, i) {
+      var d = document.createElement("div");
+      d.className = "phase";
+      var active = (state === 1 && i === 0) || (state === 2 && i === 1) || (state === 3 && i === 2) || (state === 4 && i === 3);
+      var done = (i === 0 && state >= 1) || (i === 1 && state >= 2) || (i === 2 && state >= 3);
+      if (active) d.className += " active";
+      else if (done) d.className += " done-phase";
+      if (state === 4 && failBox.checked && i === 3) d.className += " failed-phase";
+      d.innerHTML = '<div class="pn">' + p.n + '</div><div class="pt">' + p.t + '</div><div class="pd">' + p.d + '</div>';
+      track.appendChild(d);
+    });
+  }
+  function renderSvg() {
+    svg.innerHTML = "";
+    var diskTouched = state >= 3;
+    var committed = state === 4 && !failBox.checked;
+    var failed = state === 4 && failBox.checked;
+    // disk boundary
+    svg.appendChild(el("text", { x: 10, y: 18, "font-size": 11, fill: color("--muted"), "font-family": "monospace" }, "in memory"));
+    svg.appendChild(el("line", { x1: 0, y1: 70, x2: 620, y2: 70, stroke: color("--line"), "stroke-dasharray": "4 4" }));
+    svg.appendChild(el("text", { x: 10, y: 88, "font-size": 11, fill: color("--muted"), "font-family": "monospace" }, "on disk"));
+
+    // plan boxes (memory) appear at preflight
+    FILES.forEach(function (f, i) {
+      var x = 30 + i * 200;
+      if (state >= 1) {
+        svg.appendChild(el("rect", { x: x, y: 26, width: 180, height: 30, rx: 6, fill: color("--wash"), stroke: state >= 2 ? color("--true-blue") : color("--line") }));
+        svg.appendChild(el("text", { x: x + 90, y: 45, "text-anchor": "middle", "font-size": 11, fill: color("--bentonville"), "font-family": "monospace" }, (state >= 2 ? "planned: " : "parsed: ") + f));
+      }
+      // disk writes
+      if (diskTouched) {
+        var failThis = failed && i === 1;
+        var fill = failThis ? "rgba(194,59,43,.12)" : (committed || (state === 3 && i === 0) ? "rgba(42,135,3,.12)" : color("--card"));
+        var stroke = failThis ? color("--gap") : (committed || (state >= 3 && i === 0) ? color("--done") : color("--line"));
+        svg.appendChild(el("rect", { x: x, y: 100, width: 180, height: 30, rx: 6, fill: fill, stroke: stroke }));
+        var label = failThis ? "FAILED -> rollback" : ((state === 4 || (state === 3 && i === 0)) ? "written: " + f : "queued: " + f);
+        svg.appendChild(el("text", { x: x + 90, y: 119, "text-anchor": "middle", "font-size": 10.5, fill: failThis ? color("--gap") : color("--bentonville"), "font-family": "monospace" }, label));
+        // arrow memory->disk
+        svg.appendChild(el("line", { x1: x + 90, y1: 56, x2: x + 90, y2: 100, stroke: stroke, "stroke-width": 1.5, "marker-end": "url(#ar)" }));
+      }
+    });
+    var defs = el("defs", {});
+    var m = el("marker", { id: "ar", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" });
+    m.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", fill: color("--muted") }));
+    defs.appendChild(m); svg.appendChild(defs);
+  }
+  function logLine() {
+    var lines = ["$ apply_patch  (2 files)"];
+    if (state >= 1) lines.push("[1] parseApplyPatch: ok, 2 operations, no disk touched");
+    if (state >= 2) lines.push("[2] preflight: paths pass policy, hunks apply in memory, plan ready — STILL no disk mutation");
+    if (state >= 3) lines.push("[3] commit: src/a.ts snapshot+write under withPathQueue...");
+    if (state === 4) {
+      if (failBox.checked) {
+        lines.push("[3] commit: src/b.ts write FAILED");
+        lines.push("[4] rollback: undo in reverse from in-memory snapshots -> src/a.ts restored");
+        lines.push("    throw: apply_patch failed during commit. Rollback succeeded.");
+      } else {
+        lines.push("[3] commit: src/b.ts added under withPathQueue");
+        lines.push("[4] done: updated src/a.ts (1 hunk), added src/b.ts");
+      }
+    }
+    log.textContent = lines.join("\n");
+  }
+  function step() {
+    if (state < 4) state++;
+    if (state >= 4) nextBtn.disabled = true;
+    renderTrack(); renderSvg(); logLine();
+  }
+  function reset() { state = 0; nextBtn.disabled = false; renderTrack(); renderSvg(); logLine(); }
+  nextBtn.addEventListener("click", step);
+  resetBtn.addEventListener("click", reset);
+  failBox.addEventListener("change", function () { renderTrack(); renderSvg(); logLine(); });
+  reset();
+})();
+
+/* ===== Scroll-spy ===== */
+(function () {
+  var links = [].slice.call(document.querySelectorAll("nav.toc a[href^='#']"));
+  var map = {};
+  links.forEach(function (a) { var s = document.getElementById(a.getAttribute("href").slice(1)); if (s) map[s.id] = a; });
+  if (!("IntersectionObserver" in window)) return;
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      links.forEach(function (a) { a.classList.remove("active"); });
+      if (map[e.target.id]) map[e.target.id].classList.add("active");
+    });
+  }, { rootMargin: "-20% 0px -70% 0px" });
+  Object.keys(map).forEach(function (id) { io.observe(document.getElementById(id)); });
+})();
+</script>
+</body>
+</html>

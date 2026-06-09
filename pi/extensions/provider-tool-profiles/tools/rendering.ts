@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "./pi-compat";
 
 type ThemeLike = {
 	fg?: (color: string, text: string) => string;
@@ -229,6 +229,8 @@ function maybeStatusWarning(details: Record<string, unknown> | undefined, theme:
 	if (details?.aborted) notices.push("aborted");
 	if (details?.killed) notices.push("killed");
 	if (details?.truncated) notices.push("truncated");
+	if (details?.capped) notices.push("capped");
+	if (details?.geminiIgnoreDiscoveryTruncated) notices.push("ignore discovery truncated");
 	if (notices.length === 0) return undefined;
 	return warning(theme, `[${notices.join(", ")}]`);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "./pi-compat";
 import { registerClaudeTools } from "./claude";
 import { registerCodexTools } from "./codex";
 import { registerGeminiTools } from "./gemini";
@@ -192,6 +192,17 @@ describe("provider tool rendering", () => {
 				expectTerminalSafe(lines, false);
 			}
 		}
+	});
+
+	it("surfaces capped search/list metadata in preview results", () => {
+		const component = renderPreviewResult(
+			{ content: [{ type: "text", text: "a.ts" }], details: { capped: true, geminiIgnoreDiscoveryTruncated: true } },
+			{ expanded: false },
+			plainTheme,
+			{ showImages: true },
+		);
+
+		expect(component.render(120).join("\n")).toContain("[capped, ignore discovery truncated]");
 	});
 
 	it("does not throw when pi renders partial or missing tool call arguments", () => {
