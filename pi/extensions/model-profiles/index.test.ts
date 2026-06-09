@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent, type Context, type Model } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import modelProfilesExtension from "./index";
-import type { LoadedModelProfilesConfig, ModelProfilesRuntimeState, ModelProfilesState } from "./types";
+import { MODEL_PROFILES_PROVIDER } from "./types";
+import type { ModelProfilesRuntimeState, ModelProfilesState, ModelRegistryLike } from "./types";
 
 const MODEL_PROFILES_STATE_CUSTOM_TYPE = "model-profiles-state";
 const MODEL_PROFILES_RUNTIME_STATE_CUSTOM_TYPE = "model-profiles-runtime-state";
@@ -12,6 +17,7 @@ interface TestHarness {
 	statusCalls: Array<{ key: string; value: string | undefined }>;
 	runtimeAppends: unknown[];
 	eventHandlers: Map<string, Function[]>;
+	registeredProviders: Map<string, any>;
 	modelRegistry: any;
 	pi: any;
 	ctx: any;
@@ -27,6 +33,7 @@ function buildHarness(opts: {
 	const statusCalls: Array<{ key: string; value: string | undefined }> = [];
 	const runtimeAppends: unknown[] = [];
 	const eventHandlers = new Map<string, Function[]>();
+	const registeredProviders = new Map<string, any>();
 
 	const branchEntries: Array<{ type: string; customType: string; data: unknown }> = [];
 	if (opts.persistedProfileState) {
@@ -61,8 +68,12 @@ function buildHarness(opts: {
 		on(event: string, handler: Function) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
-		registerProvider() {},
-		unregisterProvider() {},
+		registerProvider(provider: string, config: any) {
+			registeredProviders.set(provider, config);
+		},
+		unregisterProvider(provider: string) {
+			registeredProviders.delete(provider);
+		},
 		appendEntry(_type: string, data: unknown) {
 			runtimeAppends.push(data);
 		},
@@ -103,7 +114,7 @@ function buildHarness(opts: {
 		},
 	} satisfies Partial<ExtensionContext> as ExtensionContext;
 
-	return { handlers, setModelCalls, statusCalls, runtimeAppends, eventHandlers, modelRegistry, pi, ctx, currentModel };
+	return { handlers, setModelCalls, statusCalls, runtimeAppends, eventHandlers, registeredProviders, modelRegistry, pi, ctx, currentModel };
 }
 
 describe("model-profiles session_start", () => {
@@ -195,5 +206,124 @@ describe("model-profiles model_select", () => {
 
 		expect(harness.statusCalls.length).toBeGreaterThan(0);
 		expect(harness.statusCalls.at(-1)?.value).toBe("personal:workhorse");
+	});
+});
+
+function makeModel(provider: string, id: string): Model<any> {
+	return {
+		provider,
+		id,
+		name: `${provider}/${id}`,
+		api: "openai-responses",
+		baseUrl: "https://example.com",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 16_384,
+	} as Model<any>;
+}
+
+function makeAssistantMessage(model: Model<any>, text = "ok"): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
+function makeRegistry(models: Array<Model<any>>): ModelRegistryLike {
+	const byRef = new Map(models.map((model) => [`${model.provider}/${model.id}`, model]));
+	return {
+		find(provider, modelId) {
+			return byRef.get(`${provider}/${modelId}`);
+		},
+		getAvailable() {
+			return models;
+		},
+		async getApiKeyAndHeaders() {
+			return { ok: true, apiKey: "test-key" } as const;
+		},
+	};
+}
+
+function makeSuccessStream(model: Model<any>, text = "ok") {
+	const stream = createAssistantMessageEventStream();
+	queueMicrotask(() => {
+		const message = makeAssistantMessage(model, text);
+		stream.push({ type: "start", partial: message });
+		stream.push({ type: "text_start", contentIndex: 0, partial: message });
+		stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+		stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+		stream.push({ type: "done", reason: "stop", message });
+		stream.end();
+	});
+	return stream;
+}
+
+async function collectEvents(stream: AsyncIterable<AssistantMessageEvent>): Promise<AssistantMessageEvent[]> {
+	const events: AssistantMessageEvent[] = [];
+	for await (const event of stream) events.push(event);
+	return events;
+}
+
+describe("model-profiles synthetic provider registry fallback", () => {
+	it("uses a lazy file-backed registry fallback before session_start provides ctx.modelRegistry", async () => {
+		const originalCwd = process.cwd();
+		const tmp = mkdtempSync(join(tmpdir(), "model-profiles-registry-"));
+		const target = makeModel("openai-codex", "gpt-5.4");
+		const fallbackRegistry = makeRegistry([target]);
+		const attemptedModels: string[] = [];
+
+		try {
+			mkdirSync(join(tmp, ".pi"), { recursive: true });
+			writeFileSync(join(tmp, ".pi", "model-profiles.json"), JSON.stringify({
+				profiles: {
+					personal: {
+						defaultRole: "workhorse",
+						roles: {
+							workhorse: {
+								targets: [{ provider: target.provider, model: target.id, thinkingLevel: "high" }],
+							},
+						},
+					},
+				},
+			}, null, 2));
+			process.chdir(tmp);
+
+			const harness = buildHarness({ flags: {} });
+			modelProfilesExtension(harness.pi, {
+				createFallbackModelRegistry: () => fallbackRegistry,
+				streamFn: (model) => {
+					attemptedModels.push(`${model.provider}/${model.id}`);
+					return makeSuccessStream(model);
+				},
+			});
+
+			const provider = harness.registeredProviders.get(MODEL_PROFILES_PROVIDER);
+			expect(provider).toBeTruthy();
+			const syntheticModel = provider.models.find((model: Model<any>) => model.id === "personal:workhorse") as Model<any> | undefined;
+			expect(syntheticModel).toBeTruthy();
+			const events = await collectEvents(provider.streamSimple(syntheticModel, { messages: [] } satisfies Context));
+
+			expect(attemptedModels).toEqual(["openai-codex/gpt-5.4"]);
+			expect(events.at(-1)?.type).toBe("done");
+			expect(events.some((event) => event.type === "error" && event.error.errorMessage?.includes("Model registry unavailable for synthetic profiles provider"))).toBeFalse();
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(tmp, { recursive: true, force: true });
+		}
 	});
 });

@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, streamSimple, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
+import { createAssistantMessageEventStream, streamSimple, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 import type { ProviderModelConfig } from "@mariozechner/pi-coding-agent";
 import { expandRoleCandidates, getRoleTargets, resolveModelRole } from "./resolve";
 import { streamWithModelRoleFallback } from "./runtime";
@@ -25,6 +25,12 @@ export interface SyntheticProfileModelSelection {
 	profile: string;
 	role: string;
 }
+
+export type ModelProfilesProviderStreamFn = (
+	model: Model<any>,
+	context: Context,
+	options?: SimpleStreamOptions,
+) => AssistantMessageEventStream;
 
 function createErrorMessage(model: Model<any>, message: string) {
 	return {
@@ -210,6 +216,8 @@ function withReasoningLevelSupport(model: Model<any>, reasoningLevel: ModelProfi
 export function createModelProfilesProviderStream(getState: () => {
 	config: ModelProfilesConfig;
 	modelRegistry?: ModelRegistryLike;
+	modelRegistryUnavailableMessage?: string;
+	streamFn?: ModelProfilesProviderStreamFn;
 	getCursor?: (profile: string, role: string, candidateCount: number) => number;
 	getThinkingOverride?: (profile: string, role: string) => ModelProfilesThinkingLevel | undefined;
 	onAttemptStart?: (profile: string, role: string, candidate: ResolvedRoleCandidate) => void;
@@ -225,7 +233,7 @@ export function createModelProfilesProviderStream(getState: () => {
 				throw new Error(`Invalid synthetic profile model id: ${model.id}`);
 			}
 			if (!state.modelRegistry) {
-				throw new Error("Model registry unavailable for synthetic profiles provider");
+				throw new Error(state.modelRegistryUnavailableMessage ?? "Unable to resolve model profile targets: no model registry is available");
 			}
 
 			const resolved = await resolveModelRole({
@@ -291,7 +299,7 @@ export function createModelProfilesProviderStream(getState: () => {
 						finishedAt: Date.now(),
 					});
 				},
-				streamFn: streamSimple,
+				streamFn: state.streamFn ?? streamSimple,
 			});
 
 			for await (const event of realStream) {
