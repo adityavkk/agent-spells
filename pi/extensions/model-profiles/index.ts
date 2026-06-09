@@ -10,7 +10,14 @@ import {
 	buildSyntheticProfileProviderModels,
 	createModelProfilesProviderStream,
 	parseSyntheticProfileModelId,
+	type ModelProfilesProviderStreamFn,
 } from "./provider";
+import {
+	createFileBackedModelRegistry,
+	createLazyModelRegistryResolver,
+	formatModelRegistryUnavailableMessage,
+	type ModelRegistryFactory,
+} from "./registry";
 import { readModelProfilesState, resolveModelRole } from "./resolve";
 import {
 	formatModelProfilesStateSummary,
@@ -44,6 +51,11 @@ const STATUS_KEY = "model-profiles";
 const GET_EFFECTIVE_THINKING_EVENT = "model-profiles:get-effective-thinking";
 const SET_THINKING_OVERRIDE_EVENT = "model-profiles:set-thinking-override";
 const THINKING_LEVELS = new Set<ModelProfilesThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
+export interface ModelProfilesExtensionDependencies {
+	createFallbackModelRegistry?: ModelRegistryFactory;
+	streamFn?: ModelProfilesProviderStreamFn;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -83,7 +95,7 @@ function uniqueSorted(values: string[]): string[] {
 	return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
 
-export default function modelProfilesExtension(pi: ExtensionAPI) {
+export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: ModelProfilesExtensionDependencies = {}) {
 	let loadedConfig: LoadedModelProfilesConfig = loadModelProfilesConfig(process.cwd());
 	let activeState: ModelProfilesState = {};
 	let runtimeState: ModelProfilesRuntimeState = { selections: {} };
@@ -95,10 +107,21 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 	let displayModel: Model<any> | undefined;
 	let latestCtx: ExtensionContext | undefined;
 	let latestModelRegistry: ModelRegistryLike | undefined;
+	const fallbackModelRegistry = createLazyModelRegistryResolver(
+		dependencies.createFallbackModelRegistry ?? createFileBackedModelRegistry,
+	);
 	let suppressProfileThinkingEventsUntil = 0;
 
 	function refreshConfig(cwd: string): void {
 		loadedConfig = loadModelProfilesConfig(cwd);
+	}
+
+	function getStreamModelRegistry(): ModelRegistryLike | undefined {
+		return latestModelRegistry ?? fallbackModelRegistry.get();
+	}
+
+	function getModelRegistryUnavailableMessage(): string {
+		return formatModelRegistryUnavailableMessage(fallbackModelRegistry.getError());
 	}
 
 	function getRuntimeSelectionState(profile: string | undefined, role: string | undefined): ModelProfilesRuntimeSelectionState | undefined {
@@ -288,7 +311,9 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 			models,
 			streamSimple: createModelProfilesProviderStream(() => ({
 				config: loadedConfig.mergedConfig,
-				modelRegistry: latestModelRegistry,
+				modelRegistry: getStreamModelRegistry(),
+				modelRegistryUnavailableMessage: getModelRegistryUnavailableMessage(),
+				streamFn: dependencies.streamFn,
 				getCursor: (profile, role, candidateCount) => {
 					const cursor = getRuntimeSelectionState(profile, role)?.cursor ?? 0;
 					return candidateCount > 0 ? cursor % candidateCount : 0;
@@ -683,6 +708,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI) {
 				}
 				case "reload": {
 					refreshConfig(ctx.cwd);
+					fallbackModelRegistry.reset();
 					latestModelRegistry = ctx.modelRegistry;
 					refreshSyntheticProvider();
 					lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
