@@ -9,12 +9,19 @@
  * only if a turn would be triggered.
  */
 import { describe, expect, it } from "bun:test";
-import { flushCards } from "./flush";
+import { flushCards, type CardSink } from "./flush";
 import { ToolLensStore } from "./store";
 
 interface SentMessage {
 	triggerTurn: boolean;
 }
+
+/**
+ * tool-lens flushes via `pi.sendMessage(message)` with no options object, so a
+ * turn is never triggered. The CardSink contract has no `triggerTurn` field at
+ * all; we model a turn-aware sink to prove the flush path never sets it.
+ */
+type TurnAwareMessage = Parameters<CardSink["send"]>[0] & { triggerTurn?: boolean };
 
 describe("idle flush adds no LLM turn", () => {
 	function makeStore(): ToolLensStore {
@@ -29,8 +36,8 @@ describe("idle flush adds no LLM turn", () => {
 		const store = makeStore();
 		const sent: SentMessage[] = [];
 		let providerCalls = 0;
-		const send = (message: { triggerTurn?: boolean }): void => {
-			const triggerTurn = message.triggerTurn === true;
+		const send: CardSink["send"] = (message): void => {
+			const triggerTurn = (message as TurnAwareMessage).triggerTurn === true;
 			sent.push({ triggerTurn });
 			if (triggerTurn) providerCalls += 1; // a triggered turn would call the provider
 		};

@@ -145,9 +145,11 @@ export class Analyzer {
 			}
 		}
 		const record = this.store.get(toolCallId)!;
-		// Mark done when outcome exists, or when an intent-only run finished and
-		// the tool has already ended (status was executing).
-		if (record.outcome) advanceStatus(this.store, toolCallId, "done");
+		// Terminal when an outcome exists, or when intent-only mode will never
+		// request an outcome. Otherwise leave it streaming until the outcome runs.
+		if (record.outcome || this.config.mode === "intent-only") {
+			advanceStatus(this.store, toolCallId, "done");
+		}
 		this.emit(toolCallId);
 	}
 

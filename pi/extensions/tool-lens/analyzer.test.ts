@@ -127,6 +127,9 @@ describe("Analyzer", () => {
 		await outcomeOnly.analyzer.idle();
 		expect(outcomeOnly.prompts).toHaveLength(1);
 		expect(outcomeOnly.store.get("a")?.outcome?.result).toBe("passed");
+
+		// intent-only marks the record done (no outcome will ever arrive).
+		expect(intentOnly.store.get("a")?.status).toBe("done");
 	});
 
 	it("marks not_analyzed when over the per-turn budget", async () => {

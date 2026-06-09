@@ -186,7 +186,7 @@ export default function toolLensExtension(pi: ExtensionAPI): void {
 		if (!enabledForSession || !analyzer) return;
 		const { canonicalToolName, observed } = resolveToolObservation(event.toolName, config.tools);
 		if (!observed) return;
-		const record = store.seed({
+		store.seed({
 			toolCallId: event.toolCallId,
 			turnIndex,
 			sourceOrder: sourceCounter++,
@@ -202,7 +202,6 @@ export default function toolLensExtension(pi: ExtensionAPI): void {
 			repaint(ctx);
 			return;
 		}
-		void record;
 		analyzer.queueIntent(event.toolCallId);
 		repaint(ctx);
 	});
