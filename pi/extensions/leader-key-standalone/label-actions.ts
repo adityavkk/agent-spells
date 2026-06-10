@@ -12,6 +12,21 @@ const PRESET_LABELS = [
 	{ key: "p", label: "plan", description: "mark as plan" },
 ];
 
+/**
+ * Entry the user means when they say "label this": the nearest message entry
+ * at or above the leaf. Extensions persist invisible custom entries (recap,
+ * model-profiles state) that advance the leaf; labeling those would attach
+ * the label to an entry the user cannot see.
+ */
+function resolveLabelTargetId(ctx: ExtensionContext): string | null {
+	const branch = ctx.sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry?.type === "message") return entry.id;
+	}
+	return ctx.sessionManager.getLeafId();
+}
+
 export function buildLabelEntries(pi: ExtensionAPI): TopLevelEntry {
 	return {
 		type: "group",
@@ -24,12 +39,12 @@ export function buildLabelEntries(pi: ExtensionAPI): TopLevelEntry {
 					label: preset.label,
 					description: preset.description,
 					action: (ctx: ExtensionContext) => {
-						const leafId = ctx.sessionManager.getLeafId();
-						if (!leafId) {
+						const targetId = resolveLabelTargetId(ctx);
+						if (!targetId) {
 							ctx.ui.notify("No current entry to label", "error");
 							return;
 						}
-						pi.setLabel(leafId, preset.label);
+						pi.setLabel(targetId, preset.label);
 						ctx.ui.notify(`Labeled: ${preset.label}`, "info");
 					},
 				})),
@@ -38,8 +53,8 @@ export function buildLabelEntries(pi: ExtensionAPI): TopLevelEntry {
 					label: "Custom label",
 					description: "pick existing label",
 					action: async (ctx: ExtensionContext) => {
-						const leafId = ctx.sessionManager.getLeafId();
-						if (!leafId) {
+						const targetId = resolveLabelTargetId(ctx);
+						if (!targetId) {
 							ctx.ui.notify("No current entry to label", "error");
 							return;
 						}
@@ -54,7 +69,7 @@ export function buildLabelEntries(pi: ExtensionAPI): TopLevelEntry {
 						const items = allLabels.map((l) => ({ value: l, label: l, description: "label" }));
 						const selected = await searchableSelect<string>(ctx, "Pick or search label", items, "type to filter, enter to select");
 						if (selected) {
-							pi.setLabel(leafId, selected);
+							pi.setLabel(targetId, selected);
 							ctx.ui.notify(`Labeled: ${selected}`, "info");
 						}
 					},
