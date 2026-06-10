@@ -112,6 +112,14 @@ describe("mergeRecapConfig", () => {
 		expect(merged.maxLines).toBe(2); // floored
 		expect(merged.trigger).toBe("focus-idle"); // untouched default
 	});
+
+	it("enforces a floor on generationTimeoutMs so the abort timer can never be disabled", () => {
+		// 0 would mean "no timeout": a hung provider would wedge the in-flight
+		// guard for the rest of the session.
+		expect(mergeRecapConfig(DEFAULT_RECAP_CONFIG, { generationTimeoutMs: 0 }).generationTimeoutMs).toBe(1_000);
+		expect(mergeRecapConfig(DEFAULT_RECAP_CONFIG, { generationTimeoutMs: 200 }).generationTimeoutMs).toBe(1_000);
+		expect(mergeRecapConfig(DEFAULT_RECAP_CONFIG, { generationTimeoutMs: 5_000 }).generationTimeoutMs).toBe(5_000);
+	});
 });
 
 describe("loadRecapConfig", () => {

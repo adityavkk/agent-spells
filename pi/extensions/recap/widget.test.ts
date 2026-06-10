@@ -82,6 +82,15 @@ describe("formatRecapLines (panel style)", () => {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(20);
 		}
 	});
+
+	it("hard-splitting never drops characters", () => {
+		// Regression: deriving slice indices from truncateToWidth output dropped
+		// 4 characters per split line (its appended SGR reset inflated lengths).
+		const word = "abcdefghijklmnopqrstuvwxyz0123456789";
+		const lines = formatRecapLines({ text: word, width: 10, maxLines: 10, style: "panel" });
+		const reassembled = lines.slice(1).join("");
+		expect(reassembled).toBe(word);
+	});
 });
 
 describe("formatGeneratingLines", () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	DISABLE_FOCUS_REPORTING,
 	ENABLE_FOCUS_REPORTING,
+	isBracketedPaste,
 	lastFocusEvent,
 	parseFocusEvents,
 } from "./focus";
@@ -67,6 +68,27 @@ describe("parseFocusEvents", () => {
 		const result = parseFocusEvents(long);
 		expect(result.remaining).toBe(long);
 		expect(result.stripped).toBe(false);
+	});
+});
+
+describe("isBracketedPaste", () => {
+	it("detects paste-wrapped chunks", () => {
+		expect(isBracketedPaste("\x1b[200~hello\x1b[201~")).toBe(true);
+		expect(isBracketedPaste("\x1b[200~partial start only")).toBe(true);
+		expect(isBracketedPaste("trailing end only\x1b[201~")).toBe(true);
+	});
+
+	it("does not flag regular input or focus reports", () => {
+		expect(isBracketedPaste("hello")).toBe(false);
+		expect(isBracketedPaste("\x1b[I")).toBe(false);
+		expect(isBracketedPaste("\x1b[A")).toBe(false);
+	});
+
+	it("guards pasted content that contains literal focus-report bytes", () => {
+		// The handler must skip focus parsing for this chunk entirely;
+		// otherwise the literal \x1b[I inside the paste would be eaten.
+		const paste = "\x1b[200~grep for \x1b[I in logs\x1b[201~";
+		expect(isBracketedPaste(paste)).toBe(true);
 	});
 });
 

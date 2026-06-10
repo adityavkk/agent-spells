@@ -5,10 +5,12 @@ import {
 	effectiveTriggerMode,
 	invalidateCache,
 	msUntilIdleThreshold,
+	onActivity,
 	onFocusChange,
 	onGenerated,
 	onShown,
 	onTurnEnd,
+	reseedTurns,
 	shouldGenerate,
 	shouldShow,
 	type TriggerGateOptions,
@@ -55,6 +57,29 @@ describe("trigger transitions", () => {
 		expect(state.turnCount).toBe(1);
 		expect(state.lastTurnEndAt).toBe(T0);
 		expect(state.shownSinceActivity).toBe(false);
+	});
+
+	it("treats aborted/errored turns as activity without counting them", () => {
+		let state = deferShowToFocusIn(onShown(readyState()));
+		const before = state.turnCount;
+		state = onActivity(state, T0 + 1);
+		expect(state.turnCount).toBe(before); // not a completed turn
+		expect(state.lastTurnEndAt).toBe(T0 + 1); // but the idle clock restarts
+		expect(state.shownSinceActivity).toBe(false);
+		expect(state.pendingShowOnFocusIn).toBe(false);
+	});
+
+	it("drops a stale pending display on turn end", () => {
+		let state = deferShowToFocusIn(readyState());
+		expect(state.pendingShowOnFocusIn).toBe(true);
+		state = onTurnEnd(state, T0 + 1);
+		expect(state.pendingShowOnFocusIn).toBe(false);
+	});
+
+	it("reseeds turn counters from a freshly read branch", () => {
+		const state = reseedTurns(readyState(), 7, T0 + 99);
+		expect(state.turnCount).toBe(7);
+		expect(state.lastTurnEndAt).toBe(T0 + 99);
 	});
 
 	it("records focus and marks focus reporting as seen", () => {
@@ -162,9 +187,17 @@ describe("shouldGenerate", () => {
 		expect(shouldGenerate(state, LATER, OPTIONS, idleEnv({ fingerprint: "fp-2" }))).toBe(true);
 	});
 
-	it("does not apply the composing guard to background generation", () => {
+	it("does not apply the composing guard to background generation in focus-idle mode", () => {
 		// A draft only blocks display; it may be gone by focus-in.
 		expect(shouldGenerate(readyState(), LATER, OPTIONS, idleEnv({ editorEmpty: false }))).toBe(true);
+	});
+
+	it("applies the composing guard to generation in idle-timer mode", () => {
+		// Display follows generation immediately there; a gated display would
+		// waste the model call outright.
+		const options: TriggerGateOptions = { ...OPTIONS, trigger: "idle-timer" };
+		expect(shouldGenerate(readyState(), LATER, options, idleEnv({ editorEmpty: false }))).toBe(false);
+		expect(shouldGenerate(readyState(), LATER, options, idleEnv({ editorEmpty: true }))).toBe(true);
 	});
 });
 

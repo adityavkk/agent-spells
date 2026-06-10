@@ -37,14 +37,36 @@ export function createTriggerState(): TriggerState {
 	};
 }
 
-/** A turn completed: fresh activity. Resets the never-twice latch. */
-export function onTurnEnd(state: TriggerState, now: number): TriggerState {
+/**
+ * Fresh activity (any turn ending, completed or not): restart the idle clock,
+ * reset the never-twice latch, and drop a stale pending display — the
+ * transcript moved on, so the cached recap can no longer match and must
+ * regenerate on the next idle edge.
+ */
+export function onActivity(state: TriggerState, now: number): TriggerState {
 	return {
 		...state,
-		turnCount: state.turnCount + 1,
 		lastTurnEndAt: now,
 		shownSinceActivity: false,
+		pendingShowOnFocusIn: false,
 	};
+}
+
+/**
+ * A turn COMPLETED (assistant stopped normally): activity plus one more turn
+ * toward the minTurns gate. turn_end also fires for aborted/errored turns and
+ * per assistant round — those count as activity only (see index.ts).
+ */
+export function onTurnEnd(state: TriggerState, now: number): TriggerState {
+	return {
+		...onActivity(state, now),
+		turnCount: state.turnCount + 1,
+	};
+}
+
+/** Replace the turn counters from a freshly read branch (session start, tree navigation). */
+export function reseedTurns(state: TriggerState, turnCount: number, now: number): TriggerState {
+	return { ...state, turnCount, lastTurnEndAt: now };
 }
 
 /** A focus event was observed; focus reporting is confirmed working. */
@@ -113,8 +135,12 @@ function passesCommonGates(
  *
  * In focus-idle mode generation requires the terminal to be unfocused — the
  * whole point is to have the summary ready before the user returns. The
- * composing guard is intentionally not applied here: a draft only blocks
+ * composing guard is intentionally not applied there: a draft only blocks
  * display, and it may be gone by focus-in.
+ *
+ * In idle-timer mode display follows generation immediately, so a draft that
+ * would block display also blocks generation — otherwise every mid-compose
+ * pause spends a model call on a recap that can never show.
  */
 export function shouldGenerate(
 	state: TriggerState,
@@ -124,7 +150,11 @@ export function shouldGenerate(
 ): boolean {
 	if (!passesCommonGates(state, now, options, env)) return false;
 	if (state.cache?.fingerprint === env.fingerprint) return false;
-	if (effectiveTriggerMode(state, options) === "focus-idle" && state.focus !== "unfocused") return false;
+	if (effectiveTriggerMode(state, options) === "focus-idle") {
+		if (state.focus !== "unfocused") return false;
+	} else if (!env.editorEmpty) {
+		return false;
+	}
 	return true;
 }
 

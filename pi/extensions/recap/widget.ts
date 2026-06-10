@@ -28,6 +28,26 @@ function paint(theme: RecapThemeLike | undefined, color: "accent" | "dim" | "mut
 	return theme ? theme.fg(color, text) : text;
 }
 
+/**
+ * Split an over-wide word into visible-width-sized chunks without losing
+ * characters. Never derive slice indices from truncateToWidth output — it
+ * appends an SGR reset, so its string length is not a prefix length.
+ */
+function hardSplitByColumns(word: string, width: number): string[] {
+	const chunks: string[] = [];
+	let current = "";
+	for (const char of word) {
+		if (current.length > 0 && visibleWidth(current + char) > width) {
+			chunks.push(current);
+			current = char;
+		} else {
+			current += char;
+		}
+	}
+	if (current.length > 0) chunks.push(current);
+	return chunks;
+}
+
 /** Greedy word wrap on visible width; hard-splits words longer than the width. */
 function wrapToWidth(text: string, width: number): string[] {
 	if (width <= 0) return [text];
@@ -41,12 +61,9 @@ function wrapToWidth(text: string, width: number): string[] {
 		}
 		if (current.length > 0) lines.push(current);
 		if (visibleWidth(word) > width) {
-			let rest = word;
-			while (visibleWidth(rest) > width) {
-				lines.push(truncateToWidth(rest, width, ""));
-				rest = rest.slice(truncateToWidth(rest, width, "").length);
-			}
-			current = rest;
+			const chunks = hardSplitByColumns(word, width);
+			current = chunks.pop() ?? "";
+			lines.push(...chunks);
 		} else {
 			current = word;
 		}

@@ -12,6 +12,10 @@
  * compaction. Persistence goes through pi.appendEntry (not LLM-visible).
  * Generation runs on a cheap model resolved through model-profiles (roles
  * ["recap", "smol", "small"]). Every automatic-path failure is silent.
+ *
+ * Staleness is handled with an epoch counter: compaction and tree navigation
+ * bump it (and abort any in-flight generation), and results from an older
+ * epoch are discarded instead of committed.
  */
 import {
 	buildSessionContext,
@@ -22,13 +26,15 @@ import {
 import type { TUI } from "@mariozechner/pi-tui";
 import { loadModelProfilesConfig } from "../model-profiles/config";
 import { readModelProfilesState } from "../model-profiles/resolve";
+import type { ModelProfilesState } from "../model-profiles/types";
 import { isRecapAutoEnabled, loadRecapConfig } from "./config";
 import {
 	DISABLE_FOCUS_REPORTING,
 	ENABLE_FOCUS_REPORTING,
+	isBracketedPaste,
 	parseFocusEvents,
 } from "./focus";
-import { resolveRecapModel } from "./model-selection";
+import { parseSyntheticProfileSelection, resolveRecapModel } from "./model-selection";
 import {
 	buildRecapContext,
 	describeResolvedModel,
@@ -47,10 +53,12 @@ import {
 	effectiveTriggerMode,
 	invalidateCache,
 	msUntilIdleThreshold,
+	onActivity,
 	onFocusChange,
 	onGenerated,
 	onShown,
 	onTurnEnd,
+	reseedTurns,
 	shouldGenerate,
 	shouldShow,
 	type TriggerGateOptions,
@@ -83,10 +91,13 @@ interface RecapRuntime {
 	autoEnabled: boolean;
 	state: TriggerState;
 	deltaBase: DeltaBase | null;
-	idleTimer: ReturnType<typeof setTimeout> | null;
+	timer: ReturnType<typeof setTimeout> | null;
 	unsubscribeInput: (() => void) | null;
 	focusReportingEnabled: boolean;
 	generationInFlight: boolean;
+	generationAbort: AbortController | null;
+	/** Bumped by compaction/tree navigation; in-flight results from an older epoch are discarded. */
+	epoch: number;
 	widgetView: RecapWidgetView | null;
 	widgetMounted: boolean;
 	tui: TUI | null;
@@ -101,18 +112,49 @@ function gateOptions(config: RecapConfig): TriggerGateOptions {
 	};
 }
 
+/** turn_end fires per assistant round and for aborted turns; only normal stops count. */
+function isCompletedAssistantTurn(message: unknown): boolean {
+	if (!message || typeof message !== "object") return false;
+	const m = message as { role?: unknown; stopReason?: unknown };
+	return m.role === "assistant" && m.stopReason === "stop";
+}
+
+function writeToTerminal(sequence: string): boolean {
+	try {
+		process.stdout.write(sequence);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export default function recapExtension(pi: ExtensionAPI) {
 	// The command name must be known at registration time; everything else is
 	// (re)loaded with the session cwd on session_start.
 	const startupConfig = loadRecapConfig(process.cwd()).mergedConfig;
+	const registeredCommandName = startupConfig.commandName;
 
 	let runtime: RecapRuntime | null = null;
 	let lastCtx: ExtensionContext | null = null;
+	let exitRestoreInstalled = false;
 
 	pi.registerFlag(RECAP_DISABLE_FLAG, {
 		description: "Disable the automatic session recap for this run",
 		type: "boolean",
 	});
+
+	/**
+	 * Last-resort terminal restore: covers uncaught exceptions and
+	 * process.exit paths where session_shutdown never fires. Synchronous
+	 * stdout writes are safe in exit handlers for TTYs.
+	 */
+	function installExitRestore(): void {
+		if (exitRestoreInstalled) return;
+		exitRestoreInstalled = true;
+		process.on("exit", () => {
+			if (runtime?.focusReportingEnabled) writeToTerminal(DISABLE_FOCUS_REPORTING);
+		});
+	}
 
 	// ---- environment snapshots -------------------------------------------
 
@@ -132,14 +174,19 @@ export default function recapExtension(pi: ExtensionAPI) {
 		rt.widgetView = view;
 		if (!rt.widgetMounted) {
 			rt.widgetMounted = true;
-			ctx.ui.setWidget(
-				RECAP_WIDGET_KEY,
-				(tui, theme) => {
-					rt.tui = tui;
-					return createRecapWidgetComponent(() => rt.widgetView ?? view, theme);
-				},
-				{ placement: "aboveEditor" },
-			);
+			try {
+				ctx.ui.setWidget(
+					RECAP_WIDGET_KEY,
+					(tui, theme) => {
+						rt.tui = tui;
+						return createRecapWidgetComponent(() => rt.widgetView ?? view, theme);
+					},
+					{ placement: "aboveEditor" },
+				);
+			} catch {
+				rt.widgetMounted = false;
+				rt.widgetView = null;
+			}
 		} else {
 			rt.tui?.requestRender();
 		}
@@ -169,10 +216,19 @@ export default function recapExtension(pi: ExtensionAPI) {
 
 	// ---- generation --------------------------------------------------------
 
+	/** Live model-profiles selection: a synthetic profiles/<p:r> model wins over persisted state. */
+	function effectiveProfilesState(ctx: ExtensionContext): ModelProfilesState {
+		const persisted = readModelProfilesState(ctx.sessionManager.getBranch());
+		const selection = parseSyntheticProfileSelection(ctx.model);
+		if (selection) return { ...persisted, activeProfile: selection.profile, activeRole: selection.role };
+		return persisted;
+	}
+
 	async function generateRecap(
 		ctx: ExtensionContext,
 		rt: RecapRuntime,
 		source: RecapEntryData["source"],
+		epochAtStart: number,
 	): Promise<{ status: "success"; text: string; fingerprint: string } | { status: "failed"; message: string }> {
 		const branch = ctx.sessionManager.getBranch();
 		const fingerprint = computeTranscriptFingerprint(branch);
@@ -194,16 +250,21 @@ export default function recapExtension(pi: ExtensionAPI) {
 		if (!digest.text.trim()) return { status: "failed", message: "nothing to recap yet" };
 
 		const profilesConfig = loadModelProfilesConfig(ctx.cwd);
-		const profilesState = readModelProfilesState(branch);
+		// Never feed the synthetic profiles/* model back in as a fallback: it
+		// would route the recap through model-profiles' provider stream and
+		// mutate its persisted fallback state.
+		const currentModel = ctx.model && !parseSyntheticProfileSelection(ctx.model) ? ctx.model : undefined;
 		const resolved = await resolveRecapModel({
 			modelRegistry: ctx.modelRegistry,
 			config: profilesConfig.mergedConfig,
 			recapConfig: rt.config,
-			state: profilesState,
-			currentModel: ctx.model,
+			state: effectiveProfilesState(ctx),
+			currentModel,
 		});
 		if (!resolved) return { status: "failed", message: "no recap model available" };
 
+		const abort = new AbortController();
+		rt.generationAbort = abort;
 		const result = await runRecapCompletion({
 			resolved,
 			modelRegistry: ctx.modelRegistry,
@@ -213,24 +274,31 @@ export default function recapExtension(pi: ExtensionAPI) {
 				systemPrompt: rt.config.prompt,
 			}),
 			timeoutMs: rt.config.generationTimeoutMs,
+			signal: abort.signal,
 		});
+		rt.generationAbort = null;
+
+		if (rt.epoch !== epochAtStart) return { status: "failed", message: "session changed during generation" };
 		if (result.status === "aborted") return { status: "failed", message: "recap generation timed out" };
 		if (result.status === "error") {
 			return { status: "failed", message: `${result.message} (${describeResolvedModel(resolved)})` };
 		}
 
 		rt.deltaBase = { text: result.text, messageCount: digest.messageCount, compactionCount };
-		try {
-			pi.appendEntry<RecapEntryData>(RECAP_ENTRY_CUSTOM_TYPE, {
-				text: result.text,
-				fingerprint,
-				messageCount: digest.messageCount,
-				compactionCount,
-				generatedAt: Date.now(),
-				source,
-			});
-		} catch {
-			// Persistence is best-effort; the recap still displays.
+		const lastPersisted = readLastRecapEntry(ctx.sessionManager.getBranch());
+		if (!lastPersisted || lastPersisted.fingerprint !== fingerprint || lastPersisted.text !== result.text) {
+			try {
+				pi.appendEntry<RecapEntryData>(RECAP_ENTRY_CUSTOM_TYPE, {
+					text: result.text,
+					fingerprint,
+					messageCount: digest.messageCount,
+					compactionCount,
+					generatedAt: Date.now(),
+					source,
+				});
+			} catch {
+				// Persistence is best-effort; the recap still displays.
+			}
 		}
 		return { status: "success", text: result.text, fingerprint };
 	}
@@ -242,18 +310,27 @@ export default function recapExtension(pi: ExtensionAPI) {
 		const env = triggerEnvironment(ctx, rt);
 		const now = Date.now();
 
-		// A matching recap may already be cached (e.g. focus flapping).
+		// A matching recap may already be cached (focus flapping, resume, or a
+		// previous display attempt that was gated). Idle-timer mode shows it
+		// here; focus-idle mode shows it on focus-in.
 		if (!shouldGenerate(rt.state, now, options, env)) {
-			if (effectiveTriggerMode(rt.state, options) === "idle-timer" && shouldShow(rt.state, now, options, env)) {
-				showCachedRecap(ctx, rt);
+			if (effectiveTriggerMode(rt.state, options) === "idle-timer" && rt.state.cache?.fingerprint === env.fingerprint) {
+				if (shouldShow(rt.state, now, options, env)) showCachedRecap(ctx, rt);
+				else if (!rt.state.shownSinceActivity) armRetryTimer(ctx, rt);
 			}
 			return;
 		}
 
+		const epochAtStart = rt.epoch;
 		rt.generationInFlight = true;
 		try {
-			const generated = await generateRecap(ctx, rt, "auto");
-			if (generated.status !== "success") return; // fail silent
+			const generated = await generateRecap(ctx, rt, "auto", epochAtStart);
+			if (rt.epoch !== epochAtStart) return; // stale: discard silently
+			if (generated.status !== "success") {
+				// Fail silent, but stay alive: one retry per idle period.
+				armTimer(ctx, rt, rt.config.idleThresholdMs);
+				return;
+			}
 			rt.state = onGenerated(rt.state, { text: generated.text, fingerprint: generated.fingerprint });
 
 			const postEnv = triggerEnvironment(ctx, rt);
@@ -262,6 +339,7 @@ export default function recapExtension(pi: ExtensionAPI) {
 			if (mode === "idle-timer" || rt.state.focus === "focused") {
 				if (shouldShow(rt.state, postNow, options, postEnv)) showCachedRecap(ctx, rt);
 				else if (mode === "focus-idle") rt.state = deferShowToFocusIn(rt.state);
+				else armRetryTimer(ctx, rt); // display gated (e.g. composing); retry cheaply
 			} else {
 				rt.state = deferShowToFocusIn(rt.state);
 			}
@@ -269,6 +347,7 @@ export default function recapExtension(pi: ExtensionAPI) {
 			// Automatic recap must never surface errors or block the prompt.
 		} finally {
 			rt.generationInFlight = false;
+			rt.generationAbort = null;
 		}
 	}
 
@@ -279,31 +358,45 @@ export default function recapExtension(pi: ExtensionAPI) {
 		rt.state = onShown(rt.state);
 	}
 
-	// ---- idle timer ---------------------------------------------------------
+	// ---- timers ---------------------------------------------------------------
 
-	function clearIdleTimer(rt: RecapRuntime): void {
-		if (rt.idleTimer !== null) {
-			clearTimeout(rt.idleTimer);
-			rt.idleTimer = null;
+	function clearTimer(rt: RecapRuntime): void {
+		if (rt.timer !== null) {
+			clearTimeout(rt.timer);
+			rt.timer = null;
 		}
 	}
 
-	function armIdleTimer(ctx: ExtensionContext, rt: RecapRuntime): void {
-		clearIdleTimer(rt);
+	function armTimer(ctx: ExtensionContext, rt: RecapRuntime, delayMs: number): void {
+		clearTimer(rt);
 		if (!rt.autoEnabled) return;
+		// Re-assert focus reporting on every arm: a Ctrl+Z suspend or external
+		// editor handoff resets terminal modes behind our back, and re-enabling
+		// is an idempotent no-op when the mode is already set.
+		if (rt.focusReportingEnabled) writeToTerminal(ENABLE_FOCUS_REPORTING);
+		rt.timer = setTimeout(() => {
+			rt.timer = null;
+			void maybeGenerateAndShow(ctx, rt);
+		}, delayMs);
+	}
+
+	/** Arm for the idle edge, measured from the last turn end. */
+	function armIdleTimer(ctx: ExtensionContext, rt: RecapRuntime): void {
 		const delay = msUntilIdleThreshold(rt.state, Date.now(), gateOptions(rt.config));
 		if (delay === null) return;
-		rt.idleTimer = setTimeout(() => {
-			rt.idleTimer = null;
-			void maybeGenerateAndShow(ctx, rt);
-		}, delay + Math.max(25, rt.config.focusDebounceMs));
+		armTimer(ctx, rt, delay + Math.max(25, rt.config.focusDebounceMs));
+	}
+
+	/** Cheap re-check while a valid recap waits for display (no token spend). */
+	function armRetryTimer(ctx: ExtensionContext, rt: RecapRuntime): void {
+		armTimer(ctx, rt, Math.max(rt.config.focusDebounceMs, 5_000));
 	}
 
 	// ---- focus handling -------------------------------------------------------
 
-	function handleFocusIn(ctx: ExtensionContext, rt: RecapRuntime): void {
+	function handleFocusIn(ctx: ExtensionContext, rt: RecapRuntime, allowShow: boolean): void {
 		rt.state = onFocusChange(rt.state, "focused");
-		if (!rt.state.pendingShowOnFocusIn) return;
+		if (!allowShow || !rt.state.pendingShowOnFocusIn) return;
 		const env = triggerEnvironment(ctx, rt);
 		if (shouldShow(rt.state, Date.now(), gateOptions(rt.config), env)) {
 			showCachedRecap(ctx, rt);
@@ -320,16 +413,14 @@ export default function recapExtension(pi: ExtensionAPI) {
 
 	function teardown(ctx: ExtensionContext | null): void {
 		if (!runtime) return;
-		clearIdleTimer(runtime);
+		clearTimer(runtime);
+		runtime.generationAbort?.abort();
+		runtime.generationAbort = null;
 		runtime.unsubscribeInput?.();
 		runtime.unsubscribeInput = null;
 		if (runtime.focusReportingEnabled) {
 			runtime.focusReportingEnabled = false;
-			try {
-				process.stdout.write(DISABLE_FOCUS_REPORTING);
-			} catch {
-				// stdout may already be closed during shutdown.
-			}
+			writeToTerminal(DISABLE_FOCUS_REPORTING);
 		}
 		if (ctx) clearWidget(ctx, runtime);
 		runtime = null;
@@ -341,35 +432,43 @@ export default function recapExtension(pi: ExtensionAPI) {
 
 		const loaded = loadRecapConfig(ctx.cwd);
 		const config = loaded.mergedConfig;
+		if (ctx.hasUI) {
+			for (const error of loaded.errors) {
+				ctx.ui.notify(`recap config error: ${error.path}: ${error.message}`, "warning");
+			}
+			if (config.commandName !== registeredCommandName) {
+				ctx.ui.notify(
+					`recap: commandName "${config.commandName}" takes effect after restarting pi (currently /${registeredCommandName})`,
+					"warning",
+				);
+			}
+		}
 		const autoEnabled =
 			ctx.hasUI && isRecapAutoEnabled({ config, disableFlag: pi.getFlag(RECAP_DISABLE_FLAG) });
 
 		const branch = ctx.sessionManager.getBranch();
-		const state: TriggerState = {
-			...createTriggerState(),
-			// Resumed sessions already have history; seed the turn gate from the
-			// transcript and start the idle clock now.
-			turnCount: countCompletedTurns(branch),
-			lastTurnEndAt: Date.now(),
-		};
+		const state: TriggerState = reseedTurns(createTriggerState(), countCompletedTurns(branch), Date.now());
 
 		const rt: RecapRuntime = {
 			config,
 			autoEnabled,
 			state,
 			deltaBase: null,
-			idleTimer: null,
+			timer: null,
 			unsubscribeInput: null,
 			focusReportingEnabled: false,
 			generationInFlight: false,
+			generationAbort: null,
+			epoch: 0,
 			widgetView: null,
 			widgetMounted: false,
 			tui: null,
 		};
 		runtime = rt;
 
-		// Seed delta summarization from the last persisted recap when the
-		// transcript has not been rewritten since.
+		// Seed from the last persisted recap: the delta base for incremental
+		// summarization, and — when the transcript has not changed at all — the
+		// display cache, so a resume + idle never regenerates an identical recap.
 		const lastRecap = readLastRecapEntry(branch);
 		if (lastRecap && lastRecap.compactionCount === countCompactions(branch)) {
 			rt.deltaBase = {
@@ -377,27 +476,31 @@ export default function recapExtension(pi: ExtensionAPI) {
 				messageCount: lastRecap.messageCount,
 				compactionCount: lastRecap.compactionCount,
 			};
-		}
-
-		if (!autoEnabled) return;
-
-		if (config.useFocusReporting && config.trigger === "focus-idle") {
-			try {
-				process.stdout.write(ENABLE_FOCUS_REPORTING);
-				rt.focusReportingEnabled = true;
-			} catch {
-				// No focus reporting: trigger falls back to idle-timer semantics.
+			if (lastRecap.fingerprint === computeTranscriptFingerprint(branch)) {
+				rt.state = onGenerated(rt.state, { text: lastRecap.text, fingerprint: lastRecap.fingerprint });
 			}
 		}
 
+		if (!ctx.hasUI) return;
+
+		// The input subscription runs whenever a UI exists — keystroke dismissal
+		// of a /recap widget must work even with the automatic recap disabled.
 		rt.unsubscribeInput = ctx.ui.onTerminalInput((data) => {
 			const current = runtime;
 			const currentCtx = lastCtx;
 			if (!current || !currentCtx) return undefined;
+			// Pasted content may contain literal focus-report bytes; never parse it.
+			if (isBracketedPaste(data)) {
+				if (current.widgetMounted) clearWidget(currentCtx, current);
+				return undefined;
+			}
 			const parsed = parseFocusEvents(data);
 			if (parsed.stripped) {
+				// Focus-in followed by keystrokes in the same chunk must not show
+				// (and instantly burn) the recap: display only on a pure focus chunk.
+				const allowShow = parsed.remaining.length === 0;
 				for (const event of parsed.events) {
-					if (event === "focus-in") handleFocusIn(currentCtx, current);
+					if (event === "focus-in") handleFocusIn(currentCtx, current, allowShow);
 					else handleFocusOut(currentCtx, current);
 				}
 				if (parsed.remaining.length === 0) return { consume: true };
@@ -409,14 +512,25 @@ export default function recapExtension(pi: ExtensionAPI) {
 			return undefined;
 		});
 
+		if (!autoEnabled) return;
+
+		if (config.useFocusReporting && config.trigger === "focus-idle") {
+			if (writeToTerminal(ENABLE_FOCUS_REPORTING)) {
+				rt.focusReportingEnabled = true;
+				installExitRestore();
+			}
+		}
+
 		armIdleTimer(ctx, rt);
 	});
 
-	pi.on("turn_end", (_event, ctx) => {
+	pi.on("turn_end", (event, ctx) => {
 		lastCtx = ctx;
 		const rt = runtime;
 		if (!rt) return;
-		rt.state = onTurnEnd(rt.state, Date.now());
+		rt.state = isCompletedAssistantTurn(event.message)
+			? onTurnEnd(rt.state, Date.now())
+			: onActivity(rt.state, Date.now());
 		clearWidget(ctx, rt);
 		armIdleTimer(ctx, rt);
 	});
@@ -425,7 +539,7 @@ export default function recapExtension(pi: ExtensionAPI) {
 		lastCtx = ctx;
 		const rt = runtime;
 		if (!rt) return;
-		clearIdleTimer(rt);
+		clearTimer(rt);
 		clearWidget(ctx, rt);
 	});
 
@@ -440,6 +554,8 @@ export default function recapExtension(pi: ExtensionAPI) {
 		lastCtx = ctx;
 		const rt = runtime;
 		if (!rt) return;
+		rt.epoch += 1;
+		rt.generationAbort?.abort();
 		rt.state = invalidateCache(rt.state);
 		rt.deltaBase = null;
 		clearWidget(ctx, rt);
@@ -449,47 +565,47 @@ export default function recapExtension(pi: ExtensionAPI) {
 		lastCtx = ctx;
 		const rt = runtime;
 		if (!rt) return;
+		rt.epoch += 1;
+		rt.generationAbort?.abort();
 		rt.state = invalidateCache(rt.state);
+		// The gates must evaluate the branch we navigated TO, not the one we left.
+		rt.state = reseedTurns(rt.state, countCompletedTurns(ctx.sessionManager.getBranch()), Date.now());
 		rt.deltaBase = null;
 		clearWidget(ctx, rt);
+		armIdleTimer(ctx, rt);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		teardown(ctx);
 	});
 
-	pi.registerCommand(startupConfig.commandName, {
+	pi.registerCommand(registeredCommandName, {
 		description: "Show a one-line recap of the session so far",
 		handler: async (_args, ctx: ExtensionCommandContext) => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("recap requires interactive mode", "error");
 				return;
 			}
-			// /recap works even when the automatic recap is disabled.
-			const rt: RecapRuntime =
-				runtime ??
-				{
-					config: loadRecapConfig(ctx.cwd).mergedConfig,
-					autoEnabled: false,
-					state: createTriggerState(),
-					deltaBase: null,
-					idleTimer: null,
-					unsubscribeInput: null,
-					focusReportingEnabled: false,
-					generationInFlight: false,
-					widgetView: null,
-					widgetMounted: false,
-					tui: null,
-				};
+			// session_start always builds the runtime before commands can run.
+			const rt = runtime;
+			if (!rt) {
+				ctx.ui.notify("recap is not initialized yet", "error");
+				return;
+			}
 			if (rt.generationInFlight) {
 				ctx.ui.notify("recap already generating", "info");
 				return;
 			}
 
 			showWidget(ctx, rt, { ...recapView(ctx, rt, ""), generating: true });
+			const epochAtStart = rt.epoch;
 			rt.generationInFlight = true;
 			try {
-				const generated = await generateRecap(ctx, rt, "command");
+				const generated = await generateRecap(ctx, rt, "command", epochAtStart);
+				if (rt.epoch !== epochAtStart) {
+					clearWidget(ctx, rt);
+					return;
+				}
 				if (generated.status === "failed") {
 					clearWidget(ctx, rt);
 					ctx.ui.notify(`recap failed: ${generated.message}`, "error");
@@ -498,8 +614,12 @@ export default function recapExtension(pi: ExtensionAPI) {
 				rt.state = onGenerated(rt.state, { text: generated.text, fingerprint: generated.fingerprint });
 				showWidget(ctx, rt, recapView(ctx, rt, generated.text));
 				rt.state = onShown(rt.state);
+			} catch (error) {
+				clearWidget(ctx, rt);
+				ctx.ui.notify(`recap failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 			} finally {
 				rt.generationInFlight = false;
+				rt.generationAbort = null;
 			}
 		},
 	});

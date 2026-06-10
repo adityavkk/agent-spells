@@ -113,7 +113,7 @@ export interface TriggerEnvironment {
 	editorEmpty: boolean;
 	/** Agent is idle (not streaming). */
 	agentIdle: boolean;
-	/** No queued messages waiting. */
+	/** Queued messages are waiting (blocks the recap). */
 	hasPendingMessages: boolean;
 	/** Fingerprint of the current transcript. */
 	fingerprint: string;

@@ -3,12 +3,20 @@
  *
  * Pi does not enable focus reporting itself (verified against pi-tui and
  * pi-coding-agent), so this extension turns it on at session start and watches
- * raw terminal input for CSI I (focus-in) / CSI O (focus-out). The sequences
- * are stripped before the rest of the input continues to the editor.
+ * terminal input for CSI I (focus-in) / CSI O (focus-out). The sequences are
+ * stripped before the rest of the input continues to the editor.
  *
- * Terminals without 1004 support simply never emit these sequences; the
- * trigger state machine falls back to idle-timer semantics until the first
- * focus event is observed.
+ * Input chunks arrive from pi-tui's StdinBuffer, which reassembles escape
+ * sequences split across stdin reads before delivering them — a handler sees
+ * complete sequences, and bracketed paste arrives as one wrapped chunk.
+ * (Residual known edge: StdinBuffer flushes a partial sequence after 10ms of
+ * silence; that affects all escape parsing in pi equally and is accepted.)
+ * Paste chunks must be excluded from focus parsing — see isBracketedPaste —
+ * so literal CSI I/O bytes inside pasted content are never eaten.
+ *
+ * Terminals without 1004 support never emit these sequences; the trigger
+ * state machine falls back to idle-timer semantics until the first focus
+ * event is observed.
  */
 
 export const ENABLE_FOCUS_REPORTING = "\x1b[?1004h";
@@ -16,6 +24,18 @@ export const DISABLE_FOCUS_REPORTING = "\x1b[?1004l";
 
 const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
+
+const BRACKETED_PASTE_START = "\x1b[200~";
+const BRACKETED_PASTE_END = "\x1b[201~";
+
+/**
+ * True when the chunk is (or contains) bracketed-paste content. Such chunks
+ * must bypass focus parsing entirely: pasted text may legitimately contain
+ * literal focus-report bytes.
+ */
+export function isBracketedPaste(data: string): boolean {
+	return data.includes(BRACKETED_PASTE_START) || data.includes(BRACKETED_PASTE_END);
+}
 
 export type FocusEvent = "focus-in" | "focus-out";
 

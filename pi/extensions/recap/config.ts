@@ -183,6 +183,9 @@ export function mergeRecapConfig(base: RecapConfig, override: RecapConfigInput):
 	}
 	merged.minTurns = Math.max(1, Math.floor(merged.minTurns));
 	merged.maxLines = Math.max(1, Math.floor(merged.maxLines));
+	// A zero/near-zero timeout would disable the abort timer and wedge the
+	// in-flight guard forever on a hung provider; enforce a sane floor.
+	merged.generationTimeoutMs = Math.max(1_000, merged.generationTimeoutMs);
 	return merged;
 }
 

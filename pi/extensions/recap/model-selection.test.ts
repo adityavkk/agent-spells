@@ -5,6 +5,7 @@ import { DEFAULT_RECAP_CONFIG } from "./config";
 import {
 	DEFAULT_RECAP_ROLE_CANDIDATES,
 	getRecapRoleCandidates,
+	parseSyntheticProfileSelection,
 	resolveRecapModel,
 } from "./model-selection";
 
@@ -85,6 +86,21 @@ describe("recap role candidates", () => {
 			modelSelection: { role: "writer" },
 		});
 		expect(candidates[0]).toBe("writer");
+	});
+});
+
+describe("parseSyntheticProfileSelection", () => {
+	it("parses the live selection from a synthetic profiles model", () => {
+		const synthetic = { provider: "profiles", id: "work:smol" };
+		expect(parseSyntheticProfileSelection(synthetic)).toEqual({ profile: "work", role: "smol" });
+	});
+
+	it("returns null for concrete models and malformed ids", () => {
+		expect(parseSyntheticProfileSelection(WIBEY_HAIKU)).toBeNull();
+		expect(parseSyntheticProfileSelection(undefined)).toBeNull();
+		expect(parseSyntheticProfileSelection({ provider: "profiles", id: "no-separator" })).toBeNull();
+		expect(parseSyntheticProfileSelection({ provider: "profiles", id: ":role-only" })).toBeNull();
+		expect(parseSyntheticProfileSelection({ provider: "profiles", id: "profile-only:" })).toBeNull();
 	});
 });
 
