@@ -67,7 +67,10 @@ function buildEntries(pi: ExtensionAPI): TopLevelEntry[] {
 				}));
 				const { searchableSelect } = await import("./model-switcher.js");
 				const selected = await searchableSelect<string>(ctx, "Select Extension Command", items);
-				if (selected) pi.sendUserMessage(`/${selected}`);
+				// Submit through the editor so the slash command actually executes:
+				// pi.sendUserMessage skips command handling (expandPromptTemplates:
+				// false) and would send the literal "/<name>" to the LLM as a prompt.
+				if (selected) submitSlashCommand(ctx, `/${selected}`);
 			},
 		});
 	}
