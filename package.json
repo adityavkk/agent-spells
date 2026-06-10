@@ -11,7 +11,9 @@
     "test:integration": "bun run baml-generate && bun test pi/extensions/answer/integration.test.ts pi/extensions/render/integration.test.ts",
     "test:integration:answer": "bun run baml-generate && bun test pi/extensions/answer/integration.test.ts",
     "test:integration:render": "bun run baml-generate && bun test pi/extensions/render/integration.test.ts",
-    "test:integration:skip": "PI_ANSWER_E2E=0 PI_RENDER_E2E=0 bun test pi/extensions/answer/integration.test.ts pi/extensions/render/integration.test.ts"
+    "test:integration:skip": "PI_ANSWER_E2E=0 PI_RENDER_E2E=0 bun test pi/extensions/answer/integration.test.ts pi/extensions/render/integration.test.ts",
+    "test:recap": "bun test pi/extensions/recap",
+    "typecheck:recap": "tsc -p pi/extensions/recap/tsconfig.json"
   },
   "devDependencies": {
     "@types/bun": "latest"
