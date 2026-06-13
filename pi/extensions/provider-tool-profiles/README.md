@@ -1,6 +1,6 @@
 # provider-tool-profiles
 
-Pi extension that swaps Pi's core tool surface to provider-native tool profiles:
+Pi extension that maps Pi's active core tool capabilities to provider-native tool names:
 
 - Claude/Anthropic: `Bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `LS`
 - OpenAI/Codex/GPT: `shell_command`, `apply_patch`, `update_plan`, `view_image`
@@ -8,17 +8,43 @@ Pi extension that swaps Pi's core tool surface to provider-native tool profiles:
 
 Intent: no new broad capabilities. Same local file/shell operations, model-native schema names.
 
+The extension is capability-aware. It does not activate an entire provider
+profile just because a model family matches. It first captures the active Pi
+core tools, treats them as the canonical capability set, and activates only the
+provider-native tools needed for those capabilities.
+
 ## How it works
 
 On `session_start` and `model_select`:
 
 1. Detect model family from provider/id/api.
 2. Register all managed tools once.
-3. Activate only matching profile tools.
-4. Preserve unrelated extension tools already active.
-5. Restore prior Pi core tools when no profile applies.
+3. Capture active Pi core tools as the canonical capability source.
+4. Activate only provider tools mapped from those canonical capabilities.
+5. Preserve unrelated extension tools already active.
+6. Restore prior Pi core tools when no profile applies.
 
-A concise profile note is appended in `before_agent_start`.
+A concise profile note is appended in `before_agent_start`, but it names only
+the provider tools that are actually active.
+
+## Capability mapping
+
+| Pi capability | Claude tools | Codex/GPT tools | Gemini tools |
+| --- | --- | --- | --- |
+| `read` | `Read` | `read` | `read_file`, `read_many_files` |
+| `bash` | `Bash` | `shell_command` | `run_shell_command` |
+| `edit` | `Edit`, `MultiEdit` | `apply_patch` | `replace` |
+| `write` | `Write` | `apply_patch` | `write_file` |
+| `grep` | `Grep` | `shell_command` | `grep_search`, `search_file_content` |
+| `find` | `Glob` | `shell_command` | `glob` |
+| `ls` | `LS` | `shell_command` | `list_directory` |
+
+Codex currently has no activated safe read-only wrapper. For `read`, the mapper
+therefore preserves Pi's canonical `read` tool instead of granting
+`shell_command` to read-only roles. Codex `shell_command` is activated only when
+the canonical surface already included shell/search/find/list capability.
+Codex `apply_patch` is activated only when the canonical surface included
+`edit` or `write`.
 
 ## Config
 
