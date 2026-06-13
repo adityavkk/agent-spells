@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "./tools/pi-compat";
 import { loadProviderToolProfilesConfig } from "./config";
 import { detectProviderToolProfile } from "./provider-detect";
 import { resolveProfileBackedModel } from "./profile-model-resolver";
-import { buildProviderToolActivation, getProfilePromptAppendix, type ToolActivationState } from "./tool-activation";
+import { applyProfilePromptAppendix, buildProviderToolActivation, type ToolActivationState } from "./tool-activation";
 import { PROVIDER_TOOL_PROFILES_STATUS_KEY, type LoadedProviderToolProfilesConfig, type ProviderToolProfile } from "./types";
 import { registerClaudeTools } from "./tools/claude";
 import { registerCodexTools } from "./tools/codex";
@@ -22,6 +22,7 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 	let loadedConfig: LoadedProviderToolProfilesConfig = loadProviderToolProfilesConfig(process.cwd());
 	let activationState: ToolActivationState = {};
 	let activeProfile: ProviderToolProfile | undefined;
+	let activeProfileTools: string[] = [];
 	const runtime = createProviderToolRuntime();
 	const codexPlanState = createCodexPlanState(pi);
 
@@ -44,6 +45,7 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 		const result = buildProviderToolActivation(pi.getActiveTools(), profile, loadedConfig.mergedConfig, activationState);
 		activationState = result.state;
 		activeProfile = result.profile;
+		activeProfileTools = result.profileTools;
 		pi.setActiveTools(result.tools);
 		ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, status(activeProfile));
 	}
@@ -58,6 +60,7 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 			const result = buildProviderToolActivation(pi.getActiveTools(), undefined, loadedConfig.mergedConfig, activationState);
 			activationState = result.state;
 			activeProfile = result.profile;
+			activeProfileTools = result.profileTools;
 			pi.setActiveTools(result.tools);
 		}
 		ctx.ui.setStatus(PROVIDER_TOOL_PROFILES_STATUS_KEY, undefined);
@@ -92,8 +95,8 @@ export default function providerToolProfilesExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		const appendix = getProfilePromptAppendix(activeProfile);
-		if (!appendix || event.systemPrompt.includes(appendix)) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${appendix}` };
+		const systemPrompt = applyProfilePromptAppendix(event.systemPrompt, activeProfile, activeProfileTools);
+		if (systemPrompt === undefined) return;
+		return { systemPrompt };
 	});
 }

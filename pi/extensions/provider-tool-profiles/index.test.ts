@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import providerToolProfilesExtension from "./index";
-import { CLAUDE_TOOLS } from "./types";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -55,7 +54,7 @@ describe("providerToolProfilesExtension", () => {
 		expect(h.registered).toContain("shell_command");
 		expect(h.registered).toContain("run_shell_command");
 		for (const handler of h.handlers.get("session_start") ?? []) await handler({}, h.ctx);
-		expect(h.activeTools).toEqual([...CLAUDE_TOOLS, "answer"]);
+		expect(h.activeTools).toEqual(["Read", "Bash", "Edit", "MultiEdit", "Write", "answer"]);
 		expect(h.statusCalls.at(-1)).toEqual({ key: "provider-tools", value: "tools:claude" });
 	});
 
@@ -89,7 +88,7 @@ describe("providerToolProfilesExtension", () => {
 	it("restores the pre-profile tool set when the profile is later disabled", async () => {
 		const h = harness({ provider: "anthropic", id: "claude-sonnet-4" });
 		for (const handler of h.handlers.get("session_start") ?? []) await handler({}, h.ctx);
-		expect(h.activeTools).toEqual([...CLAUDE_TOOLS, "answer"]);
+		expect(h.activeTools).toEqual(["Read", "Bash", "Edit", "MultiEdit", "Write", "answer"]);
 
 		const previous = process.env.PI_PROVIDER_TOOL_PROFILES;
 		process.env.PI_PROVIDER_TOOL_PROFILES = "0";
