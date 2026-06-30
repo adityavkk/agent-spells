@@ -1,12 +1,12 @@
 {
   "upstream": "https://github.com/letta-ai/letta-code",
-  "ref": "2eca6e1354e37413e5b0840243ac208b8add7bd5",
+  "ref": "cefab97384a5ad24cfd6c973c364d4194d39e800",
   "toolsets": {
     "ANTHROPIC_DEFAULT_TOOLS": [
       "AskUserQuestion",
       "Bash",
       "TaskOutput",
-      "CreateWorktree",
+      "EnterWorktree",
       "Edit",
       "TaskStop",
       "memory",
@@ -34,7 +34,7 @@
       "glob_gemini",
       "search_file_content",
       "memory",
-      "CreateWorktree",
+      "EnterWorktree",
       "replace",
       "write_file_gemini",
       "write_todos",
@@ -44,7 +44,7 @@
     ],
     "OPENAI_PASCAL_TOOLS": [
       "AskUserQuestion",
-      "CreateWorktree",
+      "EnterWorktree",
       "memory_apply_patch",
       "Task",
       "TaskOutput",
@@ -58,7 +58,7 @@
     ],
     "GEMINI_PASCAL_TOOLS": [
       "AskUserQuestion",
-      "CreateWorktree",
+      "EnterWorktree",
       "memory",
       "Skill",
       "Task",

@@ -1,6 +1,6 @@
 {
   "upstream": "https://github.com/letta-ai/letta-code",
-  "ref": "2eca6e1354e37413e5b0840243ac208b8add7bd5",
+  "ref": "cefab97384a5ad24cfd6c973c364d4194d39e800",
   "tools": [
     {
       "upstreamName": "Bash",
@@ -322,6 +322,14 @@
       "status": "ignored",
       "capabilities": [],
       "decision": "Letta worktree lifecycle is out of scope"
+    },
+    {
+      "upstreamName": "EnterWorktree",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta worktree lifecycle and conversation cwd switching are out of scope"
     },
     {
       "upstreamName": "GetGoal",
