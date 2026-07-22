@@ -278,6 +278,8 @@ class LeaderKeyOverlay {
 	invalidate(): void {}
 }
 
+const LEADER_KEY_SHORTCUT = Key.ctrl(Key.comma);
+
 export default function leaderKeyStandaloneExtension(pi: ExtensionAPI) {
 	registerBridgeCommands(pi);
 
@@ -319,7 +321,7 @@ export default function leaderKeyStandaloneExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerShortcut(Key.ctrl("x"), {
+	pi.registerShortcut(LEADER_KEY_SHORTCUT, {
 		description: "Open Leader Key",
 		handler: async (ctx) => {
 			await openLeaderKey(ctx);
