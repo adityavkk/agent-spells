@@ -3,6 +3,7 @@
 Status: Proposed
 Target: Pi extension package under `pi/extensions/pi-rlm/`
 Audience: implementers and reviewers
+Explainer: [interactive architecture walkthrough](pi-rlm-explainer.html)
 
 ## Decision
 
