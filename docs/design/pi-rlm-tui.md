@@ -12,7 +12,7 @@ rlm  rlm_01J9  running  phase: independent verification
      frames 3  calls 18/64  active 6/8  failed 1  184k reported tokens  06:42
 ```
 
-A completed row shows the final output preview and one usage line. Intermediate call output does not enter the parent transcript or parent model context.
+A completed row shows the typed output preview, completion mode (`answer` or `fallback_extract`), final reasoning preview, and one usage line. Intermediate call output does not enter the parent transcript or parent model context.
 
 ## Background widget
 
@@ -40,28 +40,29 @@ At 80 columns, fields disappear in this order: cost, tokens, elapsed time, activ
 
 ```text
 RLM rlm_01J9  running  research profile                 184k / 500k reported tokens
-[Summary] [Tree] [Calls] [Code] [Context] [Events] [Budget]
+[Summary] [Tree] [Calls] [Trajectory] [Variables] [Events] [Budget]
 
 Frames and calls                         Selected call
 > root                                  call verify:auth-routes
-  + map chunk 01  completed             kind       agent
-  + map chunk 02  completed             agent      reviewer
-  + map chunk 03  failed                state      running
+  + batch classify-all  14/16            kind       llm.batch
+    + chunk 01  completed               model      gpt-5.6-luna:minimal
+    + chunk 02  completed               state      running
+    + chunk 03  failed                  attempt    1
   + recurse policies                    model      gpt-5.6-sol:xhigh
     + classify  completed               elapsed    00:41
     + verify    running                 attempts   1
   + synthesize  queued                  output     calls/.../result.json
 
-j/k move  enter expand  tab view  p pause  P pause-now  u resume  r retry  c cancel  o open  esc close
+j/k move  enter expand  tab view  p pause  P pause-now  u resume  r retry  f fork-retry  c cancel  o open  esc close
 ```
 
 ### Views
 
-- **Summary:** objective, profile, phase, state, final preview, warnings, source snapshot count, and artifact paths.
+- **Summary:** program instructions, input and output fields, profile, phase, state, completion mode, final reasoning, typed output preview, warnings, and artifact paths.
 - **Tree:** recursive frames and parent-child call relationships. Left and right collapse or expand a frame.
-- **Calls:** sortable table of state, kind, key, agent or model, duration, reported tokens, attempts, and cache status.
-- **Code:** accepted cells with syntax highlighting, transform status, stdout, return value, source hash, and replay status.
-- **Context:** handles, provenance, hashes, sizes, derivation parents, and redaction status. Enter opens a bounded source preview after any required approval.
+- **Calls:** sortable batches and calls with state, kind, key, agent or model, duration, tokens, attempts, order, and cache status.
+- **Trajectory:** iteration, controller reasoning, accepted code, head-tail output preview, true output size, full output ref, error class, replay status, and final reasoning.
+- **Variables:** named input descriptors, adapters, types, descriptions, constraints, head-tail previews, handles, provenance, hashes, sizes, workspace values, and redaction status. Enter opens a bounded source preview after any required approval.
 - **Events:** filterable tail of typed lifecycle events. Raw payload opens only after confirmation when it contains source text.
 - **Budget:** hard limits, reported limits, reservations, refunds, usage, stored bytes, and remaining capacity.
 
@@ -70,7 +71,8 @@ j/k move  enter expand  tab view  p pause  P pause-now  u resume  r retry  c can
 - `p` requests normal pause. The header changes to `draining` until active calls finish.
 - `P` requests pause-now and confirms that active agents will be cancelled rather than suspended.
 - `u` resumes a paused run or reverses `pausing` before drain completes. It is disabled in every other state.
-- `r` retries only a selected terminal call marked retryable. It creates a new call revision, invalidates the owning and later cells, then replays them. Mutating or unknown-effect calls require confirmation.
+- `r` retries a selected retryable call only while its run is paused. It creates a new call revision, invalidates the owning and later cells, then replays them after resume. Mutating or unknown-effect calls require confirmation.
+- `f` on a failed run creates a new run with `priorRunId`, copies the immutable program and source snapshots, and reuses only eligible committed read-only call records. The failed run remains unchanged.
 - `c` cancels the selected call when a call row has focus, or the run when the root has focus. Run cancellation always confirms.
 - `o` opens an artifact or context preview. Missing, evicted, or denied content produces an inline error and leaves the inspector open.
 - `a` focuses the oldest approval request in the selected run.
@@ -107,10 +109,11 @@ The command handlers, TUI actions, and `rlm_control` tool call one typed coordin
 ```ts
 interface RlmControlRequest {
   version: 1;
-  action: "list" | "status" | "pause" | "pause_now" | "resume" | "cancel" | "retry";
+  action: "list" | "status" | "inspect" | "pause" | "pause_now" | "resume" | "cancel" | "retry" | "fork_retry";
   runId?: string;
   callId?: string;
   expectedRevision?: number;
+  inspect?: Omit<RlmInspectRequest, "version" | "runId">;
 }
 
 interface RlmControlResult {
@@ -119,23 +122,33 @@ interface RlmControlResult {
   status?: RlmRunStatus;
   runs?: RlmRunStatus[];
   confirmationId?: string;
+  newRunId?: string;
+  inspection?: RlmInspectResult;
   error?: { code: string; message: string };
 }
 
 interface RlmRunStatus {
   runId: string;
+  priorRunId?: string;
   state: string;
   sequence: number;
+  program: { name?: string; instructionsPreview: string; inputCount: number; outputNames: string[] };
+  profile: string;
   phase?: string;
+  iteration?: number;
+  maxIterations: number;
+  elapsedMs: number;
+  completionMode?: "answer" | "fallback_extract";
+  finalRef?: string;
   originSessionId: string;
-  calls: { total: number; active: number; failed: number };
-  frames: { total: number; active: number };
-  usage: { reportedTokens?: number; reservedTokens?: number; costUsd?: number };
+  calls: { total: number; active: number; failed: number; limit: number };
+  frames: { total: number; active: number; limit: number };
+  usage: { reportedTokens?: number; reservedTokens?: number; tokenLimit?: number; costUsd?: number };
   warnings: string[];
 }
 ```
 
-`list` needs no run ID. `status`, pause, resume, and cancel require a run ID. `retry` requires run ID, call ID, and the revision currently shown by the caller. A revision mismatch returns `STALE_REVISION`. Destructive actions may return `confirmationId`; TUI and RPC resolve it through the approval broker. JSON and print fail with `APPROVAL_REQUIRED` instead of prompting.
+`list` needs no run ID. `status`, `inspect`, pause, resume, cancel, and `fork_retry` require a run ID. `inspect` also requires the matching inspect payload. `retry` requires a paused run ID, call ID, and the revision currently shown by the caller. A revision mismatch returns `STALE_REVISION`. Destructive actions may return `confirmationId`; TUI and RPC resolve it through the approval broker. JSON and print fail with `APPROVAL_REQUIRED` instead of prompting.
 
 Action eligibility is fixed:
 
@@ -145,8 +158,46 @@ Action eligibility is fixed:
 | `pausing` | resume, pause-now, cancel |
 | `paused` | resume, cancel |
 | `awaiting_approval` | cancel or resolve approval |
-| retryable terminal call in paused or failed run | retry |
-| terminal run | status; delete through `/rlm runs` only |
+| retryable terminal call in paused run | retry |
+| failed run | fork-retry, status, delete through `/rlm runs` |
+| completed or cancelled run | status; delete through `/rlm runs` only |
+
+## Inspector query contract
+
+The inspector does not rely on aggregate status. It requests committed, paginated projections:
+
+```ts
+interface RlmInspectRequest {
+  version: 1;
+  runId: string;
+  view: "summary" | "tree" | "calls" | "trajectory" | "variables" | "events" | "budget";
+  frameId?: string;
+  cursor?: string;
+  pageSize?: number;
+}
+
+interface RlmInspectResult {
+  version: 1;
+  runId: string;
+  sequence: number;
+  view: RlmInspectRequest["view"];
+  items: JsonValue[];
+  nextCursor?: string;
+  final?: {
+    outputs: Record<string, JsonValue>;
+    completionMode: "answer" | "fallback_extract";
+    finalReasoning: string;
+    trajectoryRef: string;
+  };
+  error?: { code: string; message: string };
+}
+```
+
+The first page captures the current committed event `sequence`. Its opaque cursor encodes run ID, view, captured sequence, filter hash, and last stable sort key. Later pages fold only events through that captured sequence, so active-run updates cannot duplicate or skip items. A cursor used with another run, view, filter, or compacted snapshot returns `INVALID_CURSOR`. Page size defaults to 50 and is limited to 1 through 200.
+
+Ordering is fixed: tree uses frame creation plus depth-first child order; calls use creation sequence then revision; trajectory uses iteration; variables use input declaration order then workspace commit sequence; events use event sequence; budget uses ledger sequence.
+
+Each view folds only journal-committed payloads. Summary reads the persisted program and final record. Tree combines frame, batch, and call events. Trajectory reads committed trajectory entries. Variables reads adapter descriptors, snapshots, workspace commits, and provenance. Events pages the event journal. Budget folds reservations, refunds, and usage. The same query works through TUI, RPC, and `rlm_control` inspector actions.
 
 ## Completion and attention
 
@@ -169,4 +220,4 @@ The extension does not write terminal codes or ad hoc status text in RPC, JSON, 
 
 ## TUI tests
 
-Snapshot renderers at widths 50, 60, 80, 100, 120, and 180. Test zero, one, three, and more than three active runs. Test long objectives, long paths, missing usage, nested depth greater than the visible tree, unknown events, theme invalidation, shortcut conflict, selection, action eligibility, each confirmation path, and artifact-open failure.
+Snapshot renderers at widths 50, 60, 80, 100, 120, and 180. Test zero, one, three, and more than three active runs. Test long instructions, many named variables, long paths, head-tail previews, ordered batch children, fallback completion, missing usage, nested depth greater than the visible tree, unknown events, theme invalidation, shortcut conflict, selection, action eligibility, each confirmation path, and artifact-open failure.

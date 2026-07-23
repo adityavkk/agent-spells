@@ -6,7 +6,7 @@ Audience: implementers and reviewers
 
 ## Decision
 
-Build `pi-rlm` as a Pi extension that runs model-written JavaScript in a constrained QuickJS interpreter. The interpreter will expose explicit bridges for plain model calls, Pi subagents, recursive RLM frames, selected Pi tools, artifacts, approvals, and final output. Large inputs will stay in a host-backed context store. The controller model will receive metadata and selected slices rather than the complete input.
+Build `pi-rlm` as a Pi extension that runs a typed `RlmProgram`. The program names and describes its inputs, declares JSON Schema outputs, and selects a runtime profile. A controller model writes JavaScript in a constrained interpreter backend. The guest receives explicit bridges for plain model calls, Pi subagents, recursive RLM frames, selected Pi tools, artifacts, approvals, and typed final output. Large inputs stay in a host-backed variable space. The controller receives variable metadata, bounded previews, and selected slices rather than complete inputs.
 
 The extension will use two execution forms in one runtime:
 
@@ -24,16 +24,19 @@ Claude Code dynamic workflows and LangChain Deep Agents apply the same code orch
 
 LangChain calls its implementation closer to recursive agents than the paper's RLM because `task()` launches tool-using agents instead of plain model calls over a prompt variable.[^langchain-rlm] `pi-rlm` will support both forms and keep their names distinct.
 
+DSPy's first-party RLM module adds a stronger program abstraction: typed input and output signatures, variable metadata, input serialization adapters, a small interpreter protocol, ordered batched submodel calls, immutable trajectories, and fallback extraction.[^dspy-rlm] DSPy is led by RLM paper coauthor Omar Khattab, so this design treats it as primary prior art while retaining stricter tree-wide budgets, deep recursion, and crash recovery.
+
 ## Goals
 
 1. Keep large source material and intermediate results out of the controller model context unless the controller selects them.
-2. Let a controller write ordinary JavaScript loops, branches, reductions, and concurrent batches.
-3. Support plain model calls, full Pi agents, and recursive RLM frames from the same interpreter.
-4. Enforce tree-wide depth, call, concurrency, time, output, token, and cost policies.
-5. Resume interrupted runs without repeating completed model or agent calls.
-6. Show code, recursion, agent activity, approvals, failures, elapsed time, and usage in Pi's TUI.
-7. Work in TUI, RPC, JSON, and print modes without parsing terminal output.
-8. Reuse `pi-subagents` execution and lifecycle contracts instead of adding another child-agent launcher.
+2. Make each run a reusable typed program with named inputs, output schemas, variable descriptors, and versioned prompts.
+3. Let a controller write ordinary JavaScript loops, branches, reductions, and concurrent batches.
+4. Support plain model calls, full Pi agents, and recursive RLM frames from the same interpreter.
+5. Enforce tree-wide depth, call, concurrency, time, output, token, and cost policies.
+6. Resume interrupted runs without repeating completed model or agent calls.
+7. Show code, recursion, agent activity, approvals, failures, elapsed time, and usage in Pi's TUI.
+8. Work in TUI, RPC, JSON, and print modes without parsing terminal output.
+9. Reuse `pi-subagents` execution and lifecycle contracts instead of adding another child-agent launcher.
 
 ## Non-goals
 
@@ -51,9 +54,12 @@ LangChain calls its implementation closer to recursive agents than the paper's R
 | Original RLM | Host-backed input, selective inspection, plain `llm()` calls, recursive frames, machine-readable final output, trajectory logs | Host Python `exec`, free-text final markers, per-frame budgets that can multiply across the tree |
 | Claude Code workflows | Ordinary JavaScript control flow, isolated worker contexts, phases, background progress, code review, explicit capability approval, bounded recursion | Positional call identity and implicit trust in a generated script |
 | LangChain Deep Agents | QuickJS, `task()` style capability bridge, bounded output, structured results, explicit tool allowlist, nested event handles | Per-bridge approval bypass and the assumption that all recursion should use full agents |
+| DSPy RLM | Typed signatures, variable catalog, input adapters, interpreter lifecycle, ordered batch calls, immutable trajectory, typed submit, fallback extraction | Python-only default, shallow submodel recursion, full history in each turn, error strings, and call/character limits without tree-wide spend policy |
 | `pi-subagents` | Public delegation protocol, child status taxonomy, turn and tool budgets, artifacts, cancellation, nested events, fleet inspection | Importing private package internals or exposing the full subagent management surface inside QuickJS |
 | `pi-dynamic-workflows` | Small imperative API, phases, progress panel, checkpoints, journal replay, model tiers | Node `vm` as a security boundary, unlimited budgets when omitted, positional replay keys |
 | `pi-taskflow` | Preflight validation, stable IDs, content hashes, immutable run records, fail-closed policy enforcement | Requiring a static graph before data-dependent control flow is known |
+
+The [DSPy RLM prior-art review](pi-rlm-dspy-prior-art.md) maps its source abstractions to concrete pi-rlm changes and records what remains intentionally different.
 
 ## User entry points
 
@@ -77,28 +83,45 @@ The first release will not use a trigger keyword. Starting an RLM must be explic
 
 ```ts
 rlm_run({
-  objective: "Review every route for missing authorization checks.",
-  sources: [{ kind: "glob", pattern: "src/routes/**/*.ts" }],
-  profile: "code-review",
+  program: {
+    version: 1,
+    instructions: "Review every route for missing authorization checks.",
+    inputs: {
+      routes: {
+        description: "TypeScript route handlers",
+        source: { kind: "glob", pattern: "src/routes/**/*.ts" },
+      },
+    },
+    outputs: {
+      findings: {
+        description: "Verified authorization findings",
+        schema: { type: "array", items: findingSchema },
+      },
+    },
+    profile: "code-review",
+  },
   background: true,
 });
 
 rlm_control({ action: "status", runId: "rlm_01J..." });
 ```
 
-A normal Pi agent may use `rlm_run` when the input is already represented by file, artifact, or session references. The tool returns a run ID immediately for background runs. Completion injects only the final result, usage summary, and artifact path into the parent conversation.
+A normal Pi agent may use `rlm_run` with a complete program or the objective-and-sources shorthand. The shorthand compiles to one `context` input and one string `answer` output. The tool returns a run ID immediately for background runs. Completion injects only the final result, usage summary, and artifact path into the parent conversation.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
     U[User or parent Pi agent] --> E[Pi extension facade]
-    E --> C[RLM coordinator]
-    C --> S[Context and artifact store]
+    E --> G[RlmProgram compiler]
+    G --> A[Input adapter registry]
+    G --> C[RLM coordinator]
+    A --> S[Variable, context, and artifact store]
+    C --> S
     C --> J[Run journal and budget ledger]
     C --> P[Controller Pi AgentSession]
     P --> T[rlm_eval tool]
-    T --> Q[QuickJS worker]
+    T --> Q[Owned interpreter backend]
     Q -->|llm| L[Plain Pi model call]
     Q -->|agent| D[pi-subagents delegation v1]
     Q -->|recurse| R[Child RLM frame]
@@ -111,14 +134,16 @@ flowchart TD
 ### Components
 
 1. **Extension facade.** Registers `rlm_run`, `rlm_control`, slash commands, renderers, a status widget, and the run inspector.
-2. **Coordinator.** Owns run state, frames, scheduling, cancellation, policy, usage accounting, and completion delivery.
-3. **Controller session.** A Pi SDK `AgentSession` with a small system prompt and one private tool named `rlm_eval`. It sees the objective, source metadata, budget state, and DSL reference. It does not receive complete source text.
-4. **QuickJS worker.** Runs one QuickJS runtime per live frame and one fresh context per cell. It has no host filesystem, network, shell, package loader, process object, environment, or wall clock.
-5. **Context store.** Holds immutable source blobs and derived slices behind opaque handles. It enforces path containment, size limits, hashes, and redaction policy.
-6. **Bridge broker.** Validates every guest-to-host call, reserves budget, applies capability policy, records events, and returns bounded structured data.
-7. **Delegation adapter.** Uses `pi-subagents/delegation` protocol version 1 through Pi's shared event bus. It does not import `pi-subagents/src/**` files.
-8. **Journal.** Persists scripts, events, call records, status, usage, approvals, and final output outside the project worktree.
-9. **TUI projection.** Builds views from typed events and status records. It never scrapes child transcript text to determine state.[^pi-extensions]
+2. **Program compiler.** Validates input, output, tool, and reserved namespaces; resolves profiles; and generates the controller and extractor contracts.
+3. **Input adapter registry.** Snapshots typed inputs, creates variable descriptors and head-tail previews, and mounts host-backed guest bindings.
+4. **Coordinator.** Owns run state, frames, scheduling, cancellation, policy, usage accounting, and completion delivery.
+5. **Controller session.** A Pi SDK `AgentSession` with one private `rlm_eval` tool accepting reasoning and code. It sees program instructions, variable metadata, bounded trajectory, budgets, and DSL reference.
+6. **Interpreter backend.** Implements an owned start, execute, and shutdown protocol. Version 1 uses one QuickJS worker per frame and a fresh context per cell.
+7. **Variable and context store.** Holds immutable input snapshots, durable workspace values, derived slices, and artifacts with provenance and size limits.
+8. **Bridge broker.** Validates every guest-to-host call, reserves budget, applies capability policy, records events, and returns bounded structured data.
+9. **Delegation adapter.** Uses `pi-subagents/delegation` version 1 through Pi's shared event bus. It does not import private package files.
+10. **Journal and trajectory store.** Persists reasoning, code, output previews and refs, events, call records, usage, approvals, and typed final output.
+11. **TUI projection.** Builds views from typed events and status records. It never scrapes child transcript text to determine state.[^pi-extensions]
 
 ## Controller loop
 
@@ -126,7 +151,7 @@ flowchart TD
 sequenceDiagram
     participant M as Controller model
     participant E as rlm_eval
-    participant Q as QuickJS frame
+    participant Q as Interpreter backend
     participant B as Bridge broker
     participant C as Model, agent, or child RLM
 
@@ -147,35 +172,38 @@ A controller turn ends when `answer()` commits a final value, a policy limit sto
 
 ## DSL
 
-The guest language is ES2023 JavaScript with top-level `await`. Each frame exposes host-backed `input`, replayed JSON `state`, and a tree-wide `budget` view. Lexical declarations are cell-local; cross-cell values live under `state`. Effects cross typed bridges: `llm()`, `agent()`, `recurse()`, `checkpoint()`, `artifacts`, and allowlisted `tools`. `answer()` is the only completion protocol.
+The guest language is ES2023 JavaScript with top-level `await`. `inputs` exposes the program's named, read-only bindings. `variables` exposes descriptions, constraints, sizes, previews, adapters, and hashes. Cross-cell values live in a typed `workspace`. The single-input shorthand also provides `input`.
 
-Every model, agent, recursive, tool, artifact, context-derivation, or checkpoint call requires a stable `key`. `phase()`, `emit()`, and logs use a journaled cell ordinal. JSON Schema validates structured results. Native `Promise.all` and `Promise.allSettled` express joins while the host scheduler enforces concurrency.
+`llm()`, ordered `llm.batch()`, `agent()`, `recurse()`, `checkpoint()`, artifacts, and allowlisted tools use stable keys and structured results. `answer({...})` must provide every named output and pass its JSON Schema. Reasoning, code, head-tail output preview, and full output reference form an immutable trajectory entry.
 
 ```js
-const chunks = await input.chunks({ targetTokens: 6000, maxChunks: 24 });
-const results = await Promise.all(chunks.map(chunk => llm({
-  key: `classify:${chunk.sha256}`,
-  model: { tier: "small" },
-  prompt: "Return counts by category.",
-  context: chunk,
-  schema: countSchema,
-})));
-answer(reduceCounts(results));
+const chunks = await inputs.context.chunks({ targetTokens: 6000, maxChunks: 24 });
+const results = await llm.batch({
+  key: "classify-all",
+  items: chunks.map(chunk => ({
+    key: `classify:${chunk.sha256}`,
+    model: { tier: "small" },
+    prompt: "Return counts by category.",
+    context: chunk,
+    schema: countSchema,
+  })),
+});
+answer({ counts: reduceCounts(results) });
 ```
 
-The complete interfaces, error semantics, and recursive-agent examples are in the [DSL specification](pi-rlm-dsl.md).
+The complete interfaces and examples are in the [DSL specification](pi-rlm-dsl.md). Typed program, adapter, trajectory, and extractor abstractions are specified in the [DSPy prior-art review](pi-rlm-dspy-prior-art.md#what-pi-rlm-will-adopt).
 
 ## Execution runtime
 
-Each frame owns a controller `AgentSession` and a QuickJS worker. All frames share one coordinator, context store, scheduler, cancellation tree, event journal, and budget ledger. Cells run as strict async functions in a pinned QuickJS Asyncify worker. Cross-process resume starts from empty state, replays completed cells, suppresses duplicate journaled effects, and returns content-addressed results for committed bridge calls.
+Each frame owns a controller `AgentSession` and interpreter backend. All frames share one coordinator, variable store, scheduler, cancellation tree, event journal, trajectory store, and budget ledger. Version 1 runs strict async cells in a pinned QuickJS Asyncify worker. Cross-process resume starts from an empty workspace, replays completed cells, suppresses duplicate journaled effects, and returns content-addressed results for committed bridge calls.
 
 The runtime has separate frame and leaf-work limits so recursive calls cannot deadlock the work semaphore. It enforces depth, logical calls, attempts, concurrency, wall time, heap, stored bytes, output, and context-read limits. Token and cost gates use provider-reported usage and are labeled as reported rather than hard. The default profile allows depth 3, 64 logical calls, 96 attempts, concurrency 8, 20 controller turns per frame, a 64 MiB guest heap, and 30 minutes wall time.
 
-The full scheduler, replay, persistence, event, failure, security, and default-limit contracts are in the [execution runtime specification](pi-rlm-runtime.md).
+The full interpreter, trajectory, fallback extraction, scheduler, replay, persistence, event, failure, security, and default-limit contracts are in the [execution runtime specification](pi-rlm-runtime.md).
 
 ## TUI specification
 
-The parent transcript shows one compact run row. Active background runs also appear in a three-row widget. `/rlm inspect <id>` opens a responsive inspector with Summary, Tree, Calls, Code, Context, Events, and Budget views. Users can pause, resume, retry, cancel, inspect source handles, and resolve capability requests without adding intermediate results to model context.
+The parent transcript shows one compact run row. Active background runs also appear in a three-row widget. `/rlm inspect <id>` opens a responsive inspector with Summary, Tree, Calls, Trajectory, Variables, Events, and Budget views. Users can pause, resume, retry, cancel, inspect source handles, and resolve capability requests without adding intermediate results to model context.
 
 ```text
 rlm  rlm_01J9  running  phase: independent verification
@@ -193,6 +221,9 @@ Global config lives at `~/.pi/agent/rlm/config.json`. Project config may narrow 
   "profiles": {
     "research": {
       "controller": "openai-codex/gpt-5.6-sol:xhigh",
+      "extractor": "openai-codex/gpt-5.6-terra:medium",
+      "onIterationLimit": "extract",
+      "maxControllerHistoryBytes": 131072,
       "tiers": {
         "small": "openai-codex/gpt-5.6-luna:minimal",
         "medium": "openai-codex/gpt-5.6-terra:medium",
@@ -233,11 +264,14 @@ The package is optional. Runtime code uses erased type-only imports and a guarde
 pi/extensions/pi-rlm/
   index.ts                 extension registration
   config.ts                profiles and policy merge
+  program/                 signatures, compiler, prompt generation
   coordinator.ts           run and frame lifecycle
-  controller.ts            Pi AgentSession creation
-  interpreter/             QuickJS worker and RPC
+  controller.ts            Pi AgentSession and trajectory window
+  extractor.ts             typed fallback extraction
+  interpreter/             backend protocol, QuickJS worker, RPC
+  adapters/                input snapshots, descriptors, guest mounts
   dsl/                     schemas, declarations, broker
-  context/                 handles, chunking, storage
+  context/                 variables, handles, chunking, storage
   scheduler/               ledger, queue, retry, cancellation
   delegation/              pi-subagents protocol adapter
   persistence/             events, status, replay, retention
@@ -252,7 +286,10 @@ Files should stay below 500 lines. Runtime logic must not depend on TUI componen
 
 ### Unit tests
 
+- Program signatures, required outputs, reserved namespaces, variable previews, and input adapter identities.
 - Context slicing, chunk overlap, hashes, derivation, byte caps, and path containment.
+- Ordered batch reservation, per-item errors, and thread-safe shared counters.
+- Trajectory immutability, head-tail previews, bounded controller windows, and fallback completion labels.
 - DSL schema validation, stable call identity, duplicate call coalescing, and final output protocol.
 - Tree-wide ledger reservation under concurrent and recursive calls.
 - Event ordering, atomic status writes, truncated JSONL recovery, replay, and retention.
@@ -261,12 +298,13 @@ Files should stay below 500 lines. Runtime logic must not depend on TUI componen
 
 ### Integration tests
 
-- A fake controller emits multiple async cells, stores cross-cell values under `state`, and completes through `answer()`.
-- Restart replays `state.n = (state.n ?? 0) + 1` once, suppresses duplicate events and artifacts, and reuses committed calls.
+- A fake controller emits multiple async cells, stores cross-cell values under `workspace`, and completes through `answer()`.
+- Restart replays `workspace.n = (workspace.n ?? 0) + 1` once, suppresses duplicate events and artifacts, and reuses committed calls.
 - Recursion completes at `maxConcurrency: 1`; saturating `maxFrames` returns `BUDGET_FRAMES` instead of waiting.
 - Controller provider requests and bridge calls share attempt, leaf-concurrency, token-reservation, stored-byte, and refund accounting.
 - Crash injection around every payload write, `fsync`, rename, and journal append produces one authoritative event fold.
-- Pause races, approval cancel/timeout, and wall timeout from every nonterminal state follow the reducer table.
+- Pause races, approval cancel/timeout, wall timeout, paused call retry, and failed-run fork retry follow the reducer table without mutating terminal runs.
+- Batch workers inherit run, frame, cell, policy, ledger, deadline, cancellation, tracing, and origin-session context.
 - Delegation maps every terminal `pi-subagents` status, rejects a missing listener after two seconds, and validates strict JSON output.
 - Normal pause drains active calls. Pause-now cancels delegated calls and records them as non-resumable attempts.
 - TUI updates do not add intermediate results to parent controller or parent Pi model messages.
@@ -293,16 +331,16 @@ Record answer quality, coverage, wall time, total tokens, cost, controller-conte
 ### Phase 0: compatibility and interpreter spike
 
 - Migrate the repository package baseline from `@mariozechner/*` 0.73.1 to supported `@earendil-works/*` 0.80.10 or newer.
-- Prove one async host bridge through `quickjs-emscripten` 0.32.0 in a worker, including job pumping, heap limit, CPU interrupt, cancellation, and disposal.
+- Define the owned interpreter backend protocol and prove one async host bridge through `quickjs-emscripten` 0.32.0, including job pumping, heap limit, CPU interrupt, cancellation, and disposal.
 - Prove optional `pi-subagents` discovery, start timeout, status mapping, and strict JSON adapter with fixtures.
 
 Exit condition: pinned compatibility tests pass without a live provider.
 
 ### Phase 1: safe recursive core
 
-- Context store and `/rlm` interception.
-- Controller session and QuickJS worker.
-- `llm()`, `recurse()`, `phase()`, `emit()`, and `answer()`.
+- `RlmProgram` compiler, namespace validation, `/rlm` shorthand, variable catalog, and built-in input adapters.
+- Context store, workspace, `/rlm` interception, controller program, QuickJS backend, and immutable trajectory.
+- `llm()`, ordered `llm.batch()`, `recurse()`, `phase()`, `emit()`, typed `answer()`, and fallback extractor.
 - Hard depth, call, concurrency, time, heap, and output limits.
 - Event journal, content snapshots, artifacts, strict final references, resume by cell replay, inline renderer, and text status.
 
@@ -311,7 +349,7 @@ Exit condition: a synthetic long-context map and reduce survives process restart
 ### Phase 2: Pi agents and TUI
 
 - `pi-subagents` delegation adapter and structured schemas.
-- Background runs, widget, inspector, code view, approvals, pause, cancel, and retry.
+- Background runs, widget, inspector, trajectory and variable views, approvals, pause, cancel, and retry.
 - Usage accounting and model tier routing.
 
 Exit condition: every child state and nested frame is visible and controllable from the TUI and JSON event stream.
@@ -326,6 +364,7 @@ Exit condition: security tests pass and unattended mutation remains disabled by 
 ### Phase 4: evaluation and package release
 
 - Long-context and repository benchmarks.
+- Independent controller and extractor prompt evaluation records with benchmark-gated promotion.
 - Versioned DSL declarations, migration policy, package docs, and examples.
 - Compatibility matrix for Pi and `pi-subagents`.
 
@@ -357,6 +396,7 @@ LangChain has the closest interpreter semantics, but its middleware is coupled t
 2. Can a future `pi-subagents` protocol expose trusted effective capability metadata and pre-launch token reservations?
 3. Which providers offer usable external idempotency keys for mutating calls and delegated agents?
 4. Should later DSL versions add a deterministic standard library for table and corpus operations?
+5. Should a Deno and Pyodide Python backend ship after QuickJS for DataFrame-heavy programs?
 
 ## Acceptance criteria
 
@@ -365,20 +405,25 @@ The release test writes one conformance report with the metric, observed value, 
 | Property | Observable acceptance test |
 |---|---|
 | Context externalization | Seed source-only canaries across an input larger than the controller window. Inspect serialized provider requests. No canary or raw source range may appear except an explicitly selected slice, and selected slice bytes must stay under the configured aggregate context-return limit. Hashes and handles are allowed metadata. |
+| Program contract | Missing inputs, output-name collisions, invalid aliases, missing answer fields, and schema-invalid fallback output fail with typed codes before an invalid final commit. |
+| Variable space | Controller requests contain each descriptor and bounded head-tail preview, while full values remain in snapshots. Adapter ID, version, and snapshot hash participate in replay identity. |
+| Batch | `llm.batch()` reserves all items before launch, counts each item, preserves order, and isolates ordinary item failures. |
+| Trajectory and fallback | Every turn records reasoning, code, true output length, preview, and full ref. Controller history stays below 128 KiB. Fallback outputs are schema-valid and labeled `fallback_extract`. |
 | Depth | Root is depth 0. A depth 4 request under default policy fails with `BUDGET_DEPTH` before frame creation. |
 | Calls and attempts | A 64-call run plus controller turns, retries, and repairs never commits logical call 65 or attempt 97. Controller provider requests reserve a leaf slot and tokens. Cache hits consume neither count. |
 | Concurrency and frames | Event projection shows peak active leaf calls at or below 8. Recursion completes with concurrency 1. Saturating all eight frame slots returns `BUDGET_FRAMES` without a queued descendant or hang. |
 | Time | A stalled run reaches `timed_out` within one second of its 30 minute deadline in fake-clock tests. |
 | Bytes | Per-read, per-cell, bridge, inline-final, stored-data, and journal limits each fail with their named budget code. |
-| Replay and commits | Restart after a completed increment cell leaves `state.n` unchanged, emits no duplicate progress, and repeats no committed model call. Crash injection at every payload and journal boundary reconstructs the same event fold or emits `JOURNAL_CORRUPT`. |
+| Replay and commits | Restart after a completed increment cell leaves `workspace.n` unchanged, emits no duplicate progress, and repeats no committed model call. Crash injection at every payload and journal boundary reconstructs the same event fold or emits `JOURNAL_CORRUPT`. |
 | Unknown effects | Crash after a mutating provider response but before journal commit produces `unknown_effect` and no automatic retry. |
-| State reducer | Pause versus launch, resume during drain, cancel or timeout during approval, and wall timeout from every nonterminal state produce one legal transition and terminal roll-up. |
+| State reducer | Pause versus launch, resume during drain, cancel or timeout during approval, and wall timeout from every nonterminal state produce one legal transition. Call retry works only while paused; failed-run retry creates a new run and leaves the original terminal. |
 | Source stability | Change and delete source files after ingestion. Resume reads the original snapshotted hashes and provenance. |
 | Delegation | A protocol fixture covers every v1 terminal status, missing package, missing listener, strict JSON failure, repair exhaustion, and cancellation. |
 | Parent isolation | Hash and byte-count assertions show only bounded cell results and the final result enter controller messages; no intermediate child transcript enters parent Pi context. |
 | Modes and opaque agents | TUI and RPC approval paths resolve by correlation ID. Every opaque agent requires per-run interactive approval before background execution. JSON and print deny `agent()`, reject background work, and write no ad hoc stdout. |
 | Delivery | A completed background run injects only on the origin session's descendant branch; session switches create an undelivered notification instead. |
 | TUI | Snapshot and action tests pass at 50, 60, 80, 100, 120, and 180 columns. |
+| Backend admission | A backend missing any V1 capability is rejected before controller spend. Python and persistent-heap backends cannot claim V1 compatibility. |
 | Guest isolation | For the pinned QuickJS build, named probes for host globals, imports, I/O, timers, CPU, heap, and output all fail with expected codes. This does not prove OS sandboxing. |
 
 Quality evaluation also records coverage, answer score, wall time, reported tokens, cost, controller-context growth, and p95 failure rate against direct Pi, compaction, and ordinary subagent baselines. Release notes report regressions as well as wins.
@@ -389,6 +434,7 @@ Quality evaluation also records coverage, answer score, wall time, reported toke
 [^claude-workflows]: Anthropic, ["Orchestrate subagents at scale with dynamic workflows"](https://code.claude.com/docs/en/workflows) and ["A harness for every task"](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code), 2026.
 [^deepagents-dynamic]: LangChain, ["Dynamic subagents"](https://docs.langchain.com/oss/python/deepagents/dynamic-subagents) and ["Interpreters"](https://docs.langchain.com/oss/python/deepagents/interpreters), 2026.
 [^langchain-rlm]: LangChain, ["How to use RLMs in Deep Agents"](https://www.langchain.com/blog/how-to-use-rlms-in-deep-agents), 2026.
+[^dspy-rlm]: DSPy, [`dspy.RLM` API](https://dspy.ai/api/modules/RLM/), [design guide](https://dspy.ai/diving-deeper/rlm/), [source](https://github.com/stanfordnlp/dspy/blob/96bae53d458d300b2cab49a5ddf30087498df952/dspy/predict/rlm.py), and [merged introduction PR 9193](https://github.com/stanfordnlp/dspy/pull/9193).
 [^pi-dynamic]: Quintin Shaw, [`pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows), README and runtime contract.
 [^taskflow]: heggria, [`pi-taskflow`](https://github.com/heggria/pi-taskflow), README and FlowIR design.
 [^pi-subagents]: Nico Bailon, [`pi-subagents`](https://github.com/nicobailon/pi-subagents), README and [`delegation` protocol](https://github.com/nicobailon/pi-subagents/blob/main/src/api/delegation.ts).

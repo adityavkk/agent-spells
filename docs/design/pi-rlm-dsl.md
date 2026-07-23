@@ -5,11 +5,13 @@ Parent design: [pi-rlm design](pi-rlm.md)
 
 ## Cell model
 
+The typed run and variable contract is defined in the [DSPy prior-art adoption](pi-rlm-dspy-prior-art.md#what-pi-rlm-will-adopt).
+
 The guest language is ES2023 JavaScript. Each `rlm_eval` call submits one cell. The runtime parses the cell, rewrites its last expression as the return value, and executes it as a strict async function. This provides top-level `await` without using QuickJS modules.
 
-Lexical declarations are cell-local. A `const` or `let` from cell 1 is not visible in cell 2. Cross-cell values must be written under `state`, which is a JSON object. Every cell receives a fresh QuickJS context. The runtime disposes the context afterward, so `globalThis` assignments and intrinsic or prototype changes cannot reach another cell. This rule avoids hidden realm state during restart replay.
+Lexical declarations are cell-local. A `const` or `let` from cell 1 is not visible in cell 2. Cross-cell values must be written under `workspace`, which is a typed serializable map. Every cell receives a fresh QuickJS context. The runtime disposes the context afterward, so `globalThis` assignments and intrinsic or prototype changes cannot reach another cell. This rule avoids hidden realm state during restart replay.
 
-At cell completion, the runtime validates that `state` contains only `JsonValue`. Functions, promises, handles, cycles, `undefined`, non-finite numbers, `bigint`, symbols, and class instances are rejected. Context and artifact IDs may be stored as strings and reopened through their APIs.
+At cell completion, the runtime validates that `workspace` contains only `WorkspaceValue`. Functions, promises, live host handles, cycles, `undefined`, non-finite numbers, `bigint`, symbols, and class instances are rejected. Tagged context and artifact IDs are valid `WorkspaceValue` entries and can be reopened through their APIs.
 
 The parser rejects imports, exports, dynamic import, top-level return, and direct eval. The guest has no `Date`, timers, or `Math.random`. The host may expose an explicitly seeded `random()` function in a later DSL version.
 
@@ -97,12 +99,14 @@ CPU, heap, worker termination, journal corruption, or a closed cell epoch fails 
 ```ts
 interface RlmGlobals {
   readonly objective: string;
-  readonly input: ContextRef;
+  readonly input?: ContextRef;
+  readonly inputs: Readonly<Record<string, GuestInputValue>>;
+  readonly variables: Readonly<Record<string, VariableDescriptor>>;
   readonly budget: BudgetView;
-  readonly state: Record<string, JsonValue>;
+  readonly workspace: Record<string, WorkspaceValue>;
   readonly console: Pick<Console, "log" | "warn" | "error">;
 
-  llm<T = string>(spec: LlmSpec<T>): Promise<CallResult<T>>;
+  readonly llm: LlmApi;
   agent<T = string>(spec: AgentSpec<T>): Promise<CallResult<T>>;
   recurse<T = JsonValue>(spec: RecurseSpec<T>): Promise<CallResult<T>>;
   phase(name: string): void;
@@ -110,8 +114,36 @@ interface RlmGlobals {
   emit(event: ProgressEvent): void;
   answer(value: JsonValue): void;
 
+  readonly contexts: ContextStoreApi;
   readonly artifacts: ArtifactApi;
   readonly tools: ToolApi;
+}
+
+type WorkspaceValue = JsonValue | { contextId: string } | { artifactId: string };
+
+interface VariableDescriptor {
+  name: string;
+  adapter: string;
+  typeName: string;
+  description: string;
+  constraints?: string;
+  bytes: number;
+  estimatedTokens: number;
+  preview: string;
+  previewTruncated: boolean;
+  sha256: string;
+}
+
+interface LlmApi {
+  <T = string>(spec: LlmSpec<T>): Promise<CallResult<T>>;
+  batch<T = string>(spec: LlmBatchSpec<T>): Promise<CallResult<T>[]>;
+}
+
+interface LlmBatchSpec<T> {
+  key: string;
+  items: LlmSpec<T>[];
+  concurrency?: number;
+  metadata?: Record<string, JsonValue>;
 }
 
 interface BudgetView {
@@ -147,6 +179,8 @@ interface CheckpointSpec {
 ```
 
 `phase()` and `emit()` are journaled by cell ID and within-cell ordinal. Replay suppresses duplicate UI events. `checkpoint()` requires a stable key and reuses only the same prompt, details, policy, and input identity.
+
+`inputs` contains one binding per `RlmProgram` input. `input` is present only for the one-input shorthand. The controller prompt receives `variables`, not source bodies. Safe input identifiers also become read-only top-level aliases after reserved-name validation. `workspace` persists JSON plus tagged context and artifact handles across cells and restart replay.
 
 ## Context API
 
@@ -285,7 +319,11 @@ A stable key is unique within one run and one call kind. Reusing a key with a di
 
 A logical call consumes call budget only when no committed matching result exists. Concurrent duplicates share one promise and one reservation. A cache hit consumes neither logical-call nor attempt budget. Each provider, agent, retry, or schema-repair invocation consumes attempt and token reservations.
 
-A logical key owns revisions numbered from zero. Automatic retries add attempts to the active revision. A manual TUI retry creates revision N+1 with `priorRevisionId`, invalidates the owning cell and every later cell, clears any final answer, and replays from cell 1. Calls in the replay select the highest committed revision for that key and identity. This is how the controller observes the new result. A mutating or unknown-effect revision requires approval. A diagnostic retry that does not invalidate cells is not supported.
+`llm.batch()` uses the global `llm` item-key namespace. It validates the group and items, classifies committed, coalesced, and uncached items, then atomically reserves logical calls and maximum first-attempt, token, and output resources only for uncached items. Failed preflight rolls back every reservation, launches nothing, consumes zero calls and attempts, and returns one typed failure per item. An attempt is charged only when an invocation starts. Invalid syntax or duplicate keys throw `RlmDslError` before reservation.
+
+Results preserve input order. Effective concurrency is `min(spec.concurrency ?? profile.maxConcurrency, profile.maxConcurrency)`. Every item runs under the captured `RlmCallContext` defined by the scheduler.
+
+A logical key owns revisions numbered from zero. Automatic retries add attempts to the active revision. A manual TUI retry is allowed only while the run is paused. It creates revision N+1 with `priorRevisionId`, invalidates the owning cell and every later cell, clears any final answer, and replays from cell 1 after resume. Calls in the replay select the highest committed revision for that key and identity. This is how the controller observes the new result. A mutating or unknown-effect revision requires approval. A diagnostic retry that does not invalidate cells is not supported. Retrying work from a failed terminal run forks a new run and never mutates the original.
 
 When `schema` is present, the runtime accepts only a JSON value that validates against it. A plain model call uses provider structured output when available. Otherwise the prompt requires one raw JSON value. The parser accepts no Markdown fences or surrounding prose. One separately budgeted repair attempt is allowed by default.
 
@@ -346,32 +384,37 @@ Native `Promise.all` and `Promise.allSettled` provide fan-out and join behavior.
 
 Every bridge call and guest job belongs to its creating cell epoch. Returning from the async cell closes that epoch. Any unsettled bridge work is cancelled and fails the cell with `UNAWAITED_WORK`; late callbacks fail with `LATE_CALLBACK`. State and answer commit only after the epoch is quiescent.
 
-`answer(value)` records one final candidate and returns `void`. The broker rejects later bridge calls from that cell. At cell completion, the runtime commits the answer only if no calls from the frame remain unsettled and the value is valid JSON. A second `answer()` call fails the cell. Free-text model output never completes a frame.
+`answer(value)` records one final candidate and returns `void`. The candidate must be an object containing every named `RlmProgram` output and each value must validate against its output schema. A missing or invalid field becomes a recoverable trajectory error so the controller can correct it on the next iteration.
+
+The broker rejects later bridge calls from an answering cell. The runtime commits the answer only if no calls from the frame remain unsettled. A second `answer()` call fails the cell. Free-text model output never completes a frame.
 
 ## Example: semantic map and reduce
 
 ```js
 phase("classify every chunk");
-const chunks = await input.chunks({
+const chunks = await inputs.context.chunks({
   targetTokens: 6000,
   overlapTokens: 200,
   maxChunks: 24,
 });
 
-const mapped = await Promise.all(chunks.map(chunk => llm({
-  key: `classify:${chunk.sha256}`,
-  model: { tier: "small" },
-  maxOutputTokens: 2000,
-  prompt: "Return JSON counts by category.",
-  context: chunk,
-  schema: {
-    type: "object",
-    required: ["counts"],
-    properties: {
-      counts: { type: "object", additionalProperties: { type: "integer" } },
+const mapped = await llm.batch({
+  key: "classify-all-chunks",
+  items: chunks.map(chunk => ({
+    key: `classify:${chunk.sha256}`,
+    model: { tier: "small" },
+    maxOutputTokens: 2000,
+    prompt: "Return JSON counts by category.",
+    context: chunk,
+    schema: {
+      type: "object",
+      required: ["counts"],
+      properties: {
+        counts: { type: "object", additionalProperties: { type: "integer" } },
+      },
     },
-  },
-})));
+  })),
+});
 
 const counts = {};
 for (const result of mapped) {
@@ -387,7 +430,7 @@ answer({ counts, failedChunks: mapped.filter(x => !x.ok).length });
 
 ```js
 phase("recursive analysis");
-const sections = await input.chunks({ targetTokens: 24000, maxChunks: 16 });
+const sections = await inputs.context.chunks({ targetTokens: 24000, maxChunks: 16 });
 const analyses = await Promise.all(sections.map(section => recurse({
   key: `analyze:${section.sha256}`,
   objective: "Find inconsistent claims and preserve source provenance.",

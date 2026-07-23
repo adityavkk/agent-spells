@@ -5,9 +5,39 @@ Parent design: [pi-rlm design](pi-rlm.md)
 
 ## Frame isolation
 
-Each RLM frame receives its own controller `AgentSession`, QuickJS worker, committed JSON `state`, stdout buffer, and objective. Each cell gets a fresh QuickJS context inside that worker. Child frames receive immutable context handles and the shared run ledger. They do not inherit the parent's model messages or guest state.
+Each RLM frame receives its own controller `AgentSession`, QuickJS worker, committed typed `workspace`, stdout buffer, and objective. Each cell gets a fresh QuickJS context inside that worker. Child frames receive immutable context handles and the shared run ledger. They do not inherit the parent's model messages or guest workspace.
 
-Version 1 pins `quickjs-emscripten` 0.32.0 with `RELEASE_ASYNC`. Each frame runs in a Node worker thread. The worker creates a fresh hardened QuickJS context for every cell, injects a serialized copy of committed `state`, and disposes the context after commit or failure. The worker uses `evalCodeAsync()`, a memory limit, and an interrupt handler. After any host bridge promise settles, the broker schedules `runtime.executePendingJobs()` until the guest job queue is empty. The worker RPC serializes one guest-resume operation at a time to avoid host-await and guest-job deadlocks.[^quickjs]
+### Interpreter backend protocol
+
+The coordinator depends on a small owned backend contract:
+
+```ts
+interface RlmInterpreterBackendV1 {
+  readonly protocolVersion: 1;
+  readonly capabilities: {
+    language: "javascript";
+    contextMode: "fresh-per-cell";
+    asyncHostCalls: true;
+    deterministicGlobals: true;
+    hardMemoryLimit: true;
+    hardCpuInterrupt: true;
+  };
+  start(frame: InterpreterFrameConfigV1): Promise<void>;
+  execute(cell: InterpreterCellRequestV1): Promise<InterpreterCellResultV1>;
+  shutdown(reason: string): Promise<void>;
+}
+
+type RlmInterpreterFactoryV1 =
+  (frame: InterpreterFrameConfigV1) => Promise<RlmInterpreterBackendV1>;
+```
+
+The factory creates one backend per frame. The coordinator always shuts it down. `InterpreterFrameConfigV1` contains run, frame, program, resolved policy, backend identity, bridge transport, limits, and abort/deadline context. `InterpreterCellRequestV1` contains cell identity, source, immutable variable bindings, committed workspace, DSL version, and epoch token. `InterpreterCellResultV1` contains bounded output, workspace candidate, answer candidate, code errors, usage, and epoch closure state.
+
+The coordinator rejects any backend whose exact V1 capabilities do not match before controller spend. A process or micro-VM may enforce CPU and memory outside the guest, but it must report that enforcement in its pinned backend identity. Python or persistent-heap semantics require a later protocol version with a separate replay contract. Version 1 does not expose caller-owned backend reuse because overlapping runs and durable replay require one owner and one policy identity.
+
+### QuickJS backend
+
+Version 1 pins `quickjs-emscripten` 0.32.0 with `RELEASE_ASYNC`. Each frame runs in a Node worker thread. The worker creates a fresh hardened QuickJS context for every cell, injects the program inputs, variable catalog, and a serialized copy of committed `workspace`, and disposes the context after commit or failure. The worker uses `evalCodeAsync()`, a memory limit, and an interrupt handler. After any host bridge promise settles, the broker schedules `runtime.executePendingJobs()` until the guest job queue is empty. The worker RPC serializes one guest-resume operation at a time to avoid host-await and guest-job deadlocks.[^quickjs]
 
 A worker separates QuickJS CPU and crashes from Pi's main thread. It is not an operating system sandbox. A QuickJS, WASM, worker, or Node vulnerability could expose host authority. Privileged workflows require a later process, container, or micro-VM executor using the same broker protocol.
 
@@ -23,10 +53,18 @@ A cell moves through `received`, `validated`, `running`, and one terminal state:
 6. When the async function returns, close the epoch to new bridge calls. Drain guest jobs again.
 7. If any cell-owned bridge promise remains unsettled, cancel it and fail the cell with `UNAWAITED_WORK`.
 8. Reject unhandled rejections and any late callback into the closed epoch.
-9. Validate the cell result and JSON `state`.
-10. Write the state payload, then append the terminal cell commit event.
+9. Validate the cell result and typed `workspace`.
+10. Write the workspace payload, then append the terminal cell commit event.
 
-The runtime saves cell source before evaluation. State, cell return value, and an answer candidate commit only after quiescence. A failed cell leaves the prior committed state unchanged. The runtime never treats an accepted cell as completed without a terminal commit event.
+The runtime saves cell source before evaluation. Workspace, cell return value, and an answer candidate commit only after quiescence. A failed cell leaves the prior committed workspace unchanged. The runtime never treats an accepted cell as completed without a terminal commit event.
+
+## Controller program and trajectory
+
+The controller `rlm_eval` tool accepts `{ reasoning, code }`. `reasoning` is a concise action rationale written for the trajectory, not hidden provider thinking. Each turn records an immutable trajectory entry with iteration, reasoning, code reference, output preview, original output length, full output reference, and typed error class. Cell output previews keep the head and tail and state the omitted character count.
+
+The controller prompt is generated from the versioned `RlmProgram`, executable DSL schema, variable descriptors, profile limits, model routes, and available capability classes. The default rules tell the model to inspect first, iterate in small steps, verify empty or surprising results, use code for structural work, use models for semantics, and answer only after observing outputs. Ambient declarations and prompt tool docs come from the same schemas to prevent drift.
+
+The complete trajectory remains external. Each controller request gets a bounded recent window plus older entry metadata and artifact handles. The default controller-history ceiling is 128 KiB per provider request. Truncation reports original lengths. The workspace, not copied trajectory prose, carries exact intermediate values between cells.
 
 ## Determinism and replay
 
@@ -34,16 +72,24 @@ The guest has no wall clock, timers, random source, package loader, filesystem, 
 
 Cross-process resume follows one algorithm:
 
-1. Create a fresh worker with empty initial `state`.
+1. Create a fresh worker with an empty initial `workspace`.
 2. Replay completed cells from cell 1 in order.
 3. Return committed bridge results when call identity matches.
 4. Suppress already committed `phase`, `emit`, console, checkpoint, artifact, and final-output events by cell ID and within-cell ordinal.
 5. Replay the last interrupted cell. Calls with committed results replay. Calls without a terminal result follow unknown-effect policy.
 6. Continue with new controller turns.
 
-The runtime does not restore a final `state` snapshot before replay. This prevents a cell such as `state.n = (state.n ?? 0) + 1` from applying twice. A state snapshot may later accelerate replay, but it must identify cell N and replay only cells after N.
+The runtime does not restore a final `workspace` snapshot before replay. This prevents a cell such as `workspace.n = (workspace.n ?? 0) + 1` from applying twice. A workspace snapshot may later accelerate replay, but it must identify cell N and replay only cells after N.
 
 A committed read-only call may replay or retry. A mutating call that was running when the process stopped becomes `unknown_effect`, not `failed`. It requires user resolution unless the external system recognizes the recorded idempotency key. Exactly-once remote effects are not promised.
+
+## Iteration exhaustion and fallback extraction
+
+`maxControllerIterations` counts controller provider responses that may produce a cell. The default is exactly 20 with no extra wrap-up turn. When iteration 20 ends without a valid answer, `onIterationLimit: "fail"` terminates the run as `failed` with reason `ITERATION_BUDGET_EXHAUSTED`.
+
+With `onIterationLimit: "extract"`, the run enters `extracting`. The extractor has stable identity from program hash, extractor program version, resolved model, output schemas, and latest committed trajectory sequence. It runs over the variable catalog, workspace metadata, and bounded trajectory view. The scheduler atomically reserves one leaf slot, attempt, tokens, deadline, and output bytes. Reservation failure ends as `budget_exhausted` with the concrete `BUDGET_*` reason. A crash replays a committed extractor result or follows the read-only retry rule.
+
+Extractor output passes the same named output schemas as `answer()`. The final record includes `completionMode: "answer" | "fallback_extract"`. `finalReasoning` is the answering cell's reasoning for normal completion and extractor reasoning for fallback. Evaluations score fallback completion separately because it can conceal controller failure.
 
 ## Scheduler
 
@@ -57,6 +103,8 @@ The coordinator has two independent bounds:
 Controller provider requests count as leaf work even though they are not DSL logical calls. A budgeted model wrapper reserves a leaf slot, one attempt, output tokens, input estimate, timeout, and cost estimate before every controller provider request, then accounts from the assistant message usage. The slot covers only the provider request. It is released before the resulting `rlm_eval` tool executes, so a parent controller does not block child work.
 
 The leaf scheduler is fair FIFO across frames. One frame may reserve at most half of available leaf slots when another frame is waiting. Cancellation propagates from run to frame to cell to bridge call to Pi model session, Pi tool, or delegation cancellation event.
+
+Before asynchronous fan-out, the scheduler captures an immutable `RlmCallContext` in Node `AsyncLocalStorage`. It contains run, frame, cell, optional batch and item IDs, policy hash, resolved model route, ledger reference, deadline, abort signal, trace parent, and origin session. Every provider, delegated agent, recursive frame, retry, repair, and batch item must inherit it. Missing or mismatched context fails preflight. Context propagation is tested across concurrent and nested calls.
 
 ### Logical calls, attempts, and cache hits
 
@@ -96,11 +144,12 @@ Delegation v1 reports tokens but not cost. A profile requiring enforceable cost 
 | Provider and agent attempts, including controller turns | 96 | Hard tree-wide |
 | Active leaf calls | 8 | Hard semaphore |
 | Calls created by one cell | 32 | Hard |
-| Controller turns per frame | 20 plus one wrap-up | Hard |
+| Controller iterations per frame | 20 | Hard, then fail or enter extracting |
 | QuickJS heap per frame | 64 MiB | Hard worker limit |
 | CPU per guest resume | 5 seconds | Hard interrupt handler |
 | Run wall time | 30 minutes | Hard deadline with 1 second tolerance |
-| Cell stdout plus return value | 16 KiB | Hard truncation with artifact pointer |
+| Cell stdout plus return value | 16 KiB | Head-tail preview plus full artifact pointer |
+| Controller trajectory view per request | 128 KiB | Hard, older entries become metadata and handles |
 | One context read | 256 KiB | Hard |
 | One bridge output | 2 MiB | Hard, then artifact pointer |
 | Final inline output | 200 KiB | Hard, then artifact pointer |
@@ -127,13 +176,17 @@ The run reducer accepts only these transitions:
 | `pausing` | active calls drained | `paused` |
 | `pausing` | resume before drained | `running` |
 | `paused` | resume | `running` |
-| `running`, `pausing`, or `paused` | cancel | `cancelled` |
+| `running`, `pausing`, `paused`, or `extracting` | cancel | `cancelled` |
 | Any nonterminal state | wall timeout | `timed_out` |
 | `running` or `pausing` | final answer committed | `completed` |
-| `running` or `pausing` | fatal error | `failed` |
-| `running` or `pausing` | hard budget exhausted | `budget_exhausted` |
+| `running` | iteration limit with fail policy | `failed` with `ITERATION_BUDGET_EXHAUSTED` |
+| `running` | iteration limit with extract policy | `extracting` |
+| `extracting` | schema-valid extractor output | `completed` |
+| `extracting` | extractor error or invalid output | `failed` |
+| `running`, `pausing`, or `extracting` | fatal error | `failed` |
+| `running`, `pausing`, or `extracting` | hard budget exhausted | `budget_exhausted` |
 
-Terminal states never transition. A pause action atomically flips the run to `pausing` before the scheduler checks its next launch. This orders pause before any later launch request.
+Terminal states never transition. A pause action atomically flips the run to `pausing` before the scheduler checks its next launch. This orders pause before any later launch request. In-place call revision retry is legal only while a run is paused. Retrying a failed run creates a new run with `priorRunId`, the same committed program and snapshots, and explicitly reusable read-only call records; the original terminal run remains immutable.
 
 Frames use `queued`, `running`, `completed`, `failed`, `cancelled`, `timed_out`, or `budget_exhausted`. Parent completion waits for every owned child frame to become terminal. A failed child is a `CallResult` and does not fail the parent unless guest code or policy makes it fatal.
 
@@ -154,7 +207,9 @@ Run data lives under:
   manifest.json
   status.json
   events.jsonl
-  cells/0001.js
+  frames/<frame-id>/cells/<cell-id>.js
+  frames/<frame-id>/workspaces/<cell-id>.json
+  trajectory/<entry-sha256>.json
   calls/<call-id>/request.json
   calls/<call-id>/result.json
   contexts/<sha256>/meta.json
@@ -163,15 +218,19 @@ Run data lives under:
   final.json
 ```
 
-`events.jsonl` commit events are the durable source of truth. `status.json` is a rebuildable cache. Payload commit order is:
+`events.jsonl` commit events are the durable source of truth. `status.json` is a rebuildable cache. Before any run event, the coordinator writes immutable `manifest.json` through temporary file, `fsync`, and atomic rename. It then appends and syncs `rlm.run.started` with the manifest SHA-256. A started event with a missing or mismatched manifest is journal corruption; a manifest without a started event is an orphaned run and may be deleted.
 
-1. Write a request or state/result payload to a temporary file, `fsync`, then rename it atomically.
-2. Append a commit event containing the payload path and SHA-256 to `events.jsonl`, then `fsync` the journal.
+Payload commit order is:
+
+1. Write a request, workspace, trajectory, result, or final payload to a temporary file, `fsync`, then rename it atomically.
+2. Append its typed commit event with frame, iteration, cell, payload path, and SHA-256 to `events.jsonl`, then `fsync` the journal.
 3. Rewrite `status.json` from the event fold.
+
+`manifest.json` persists the normalized `RlmProgram`, resolved profile and policy hash, DSL version, controller and extractor program hashes, backend protocol and implementation identity, and every adapter ID, version, descriptor, and snapshot hash. Resume requires exact identities or an explicit migration that forks a new run.
 
 A payload without a matching commit event is an orphan. Recovery verifies its hash. It may promote a complete read-only result with a `recovered` event. A mutating orphan becomes `unknown_effect`. A commit event with a missing or invalid payload fails the run as journal corruption. Crash-injection tests cover every write, `fsync`, rename, and append boundary.
 
-Cell source files are append-only. Request, result, state, final, and status records use atomic replacement. The run directory and text-bearing files use modes `0700` and `0600`.
+Cell source files are append-only. Manifest, request, result, workspace, trajectory, final, and status records use atomic replacement. The run directory and text-bearing files use modes `0700` and `0600`.
 
 Project files, globs, text, session messages, and upstream artifacts are snapshotted by content at ingestion. A glob records its sorted path list and every file hash. This makes restart deterministic. Session and out-of-project sources require approval because snapshots may contain secrets.
 
@@ -186,10 +245,13 @@ Every event contains `version`, `eventId`, `runId`, `timestamp`, and a monotonic
 Initial event families are:
 
 ```text
-rlm.run.started | awaiting_approval | running | pausing | paused | resumed
+rlm.run.started | forked | awaiting_approval | running | pausing | paused | resumed | extracting
 rlm.run.completed | failed | cancelled | timed_out | budget_exhausted
 rlm.frame.queued | started | completed | failed | cancelled | timed_out | budget_exhausted
 rlm.cell.accepted | started | completed | failed | interrupted | cancelled
+rlm.workspace.committed | rlm.trajectory.committed
+rlm.batch.queued | started | completed | failed
+rlm.extractor.started | completed | failed
 rlm.call.queued | started | updated | retry_scheduled | completed | failed
 rlm.call.denied | cancelled | interrupted | unknown_effect | timed_out
 rlm.call.turn_budget_exhausted | tool_budget_exhausted | acceptance_failed
