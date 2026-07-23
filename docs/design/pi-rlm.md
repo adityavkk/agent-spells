@@ -5,6 +5,7 @@ Target: Pi extension package under `pi/extensions/pi-rlm/`
 Audience: implementers and reviewers
 Explainer: [interactive architecture walkthrough](pi-rlm-explainer.html)
 Prompt specification: [launcher, controller, child, and extractor prompts](pi-rlm-prompts.md)
+Implementation: [adityavkk/pi-rlm](https://github.com/adityavkk/pi-rlm) (Phase 0/1 core: tested functional core, QuickJS backend, coordinator, one-response controller, and the extension surface)
 
 ## Decision
 
