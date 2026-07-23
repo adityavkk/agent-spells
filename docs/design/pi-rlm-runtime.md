@@ -2,10 +2,11 @@
 
 Status: Proposed
 Parent design: [pi-rlm design](pi-rlm.md)
+Prompt contract: [pi-rlm prompt architecture](pi-rlm-prompts.md)
 
 ## Frame isolation
 
-Each RLM frame receives its own controller `AgentSession`, QuickJS worker, committed typed `workspace`, stdout buffer, and objective. Each cell gets a fresh QuickJS context inside that worker. Child frames receive immutable context handles and the shared run ledger. They do not inherit the parent's model messages or guest workspace.
+Each RLM frame receives its own one-response controller driver, QuickJS worker, committed typed `workspace`, stdout buffer, and objective. Each cell gets a fresh QuickJS context inside that worker. Child frames receive immutable context handles and the shared run ledger. They do not inherit the parent's model messages or guest workspace.
 
 ### Interpreter backend protocol
 
@@ -62,7 +63,11 @@ The runtime saves cell source before evaluation. Workspace, cell return value, a
 
 The controller `rlm_eval` tool accepts `{ reasoning, code }`. `reasoning` is a concise action rationale written for the trajectory, not hidden provider thinking. Each turn records an immutable trajectory entry with iteration, reasoning, code reference, output preview, original output length, full output reference, and typed error class. Cell output previews keep the head and tail and state the omitted character count.
 
-The controller prompt is generated from the versioned `RlmProgram`, executable DSL schema, variable descriptors, profile limits, model routes, and available capability classes. The default rules tell the model to inspect first, iterate in small steps, verify empty or surprising results, use code for structural work, use models for semantics, and answer only after observing outputs. Ambient declarations and prompt tool docs come from the same schemas to prevent drift.
+The controller prompt uses three cache-aware layers. A versioned base defines the controller role, executable DSL, fresh-cell semantics, error taxonomy, and completion rules. A stable per-run prefix adds the normalized `RlmProgram`, variable descriptors, profile limits, model routes, and capability classes. A dynamic turn message adds the budget, workspace catalog, last observation, pending approvals or failures, and bounded trajectory window. Ambient declarations and readable tool docs come from the same schemas to prevent drift.
+
+The normal Pi agent receives only explicit-launch guidance and the public `rlm_run` schema. A host-owned single-use launch grant, bound to the current host turn and session, is required before snapshots or spend. Unsolicited calls fail with `RLM_OPT_IN_REQUIRED`. It never receives the internal controller prompt. An optional skill may add program-design examples, not controller runtime instructions. Child frames reuse the base with a child objective and supplied handles but no parent messages or workspace. The extractor has a separate prompt and no guest DSL. The [prompt architecture](pi-rlm-prompts.md) is normative.
+
+The controller driver accepts exactly one provider response and one `rlm_eval` tool call per iteration. It reconstructs the bounded message list from committed state instead of allowing `AgentSession.prompt()` to continue autonomously after a tool result. Phase 0 may use `AgentSession` only if a conformance spike proves a race-free stop after the first `turn_end`; otherwise the driver uses Pi's lower-level model interface. Free text, zero calls, or multiple calls spend the provider attempt but execute no cell.
 
 The complete trajectory remains external. Each controller request gets a bounded recent window plus older entry metadata and artifact handles. The default controller-history ceiling is 128 KiB per provider request. Truncation reports original lengths. The workspace, not copied trajectory prose, carries exact intermediate values between cells.
 
@@ -87,9 +92,9 @@ A committed read-only call may replay or retry. A mutating call that was running
 
 `maxControllerIterations` counts controller provider responses that may produce a cell. The default is exactly 20 with no extra wrap-up turn. When iteration 20 ends without a valid answer, `onIterationLimit: "fail"` terminates the run as `failed` with reason `ITERATION_BUDGET_EXHAUSTED`.
 
-With `onIterationLimit: "extract"`, the run enters `extracting`. The extractor has stable identity from program hash, extractor program version, resolved model, output schemas, and latest committed trajectory sequence. It runs over the variable catalog, workspace metadata, and bounded trajectory view. The scheduler atomically reserves one leaf slot, attempt, tokens, deadline, and output bytes. Reservation failure ends as `budget_exhausted` with the concrete `BUDGET_*` reason. A crash replays a committed extractor result or follows the read-only retry rule.
+With `onIterationLimit: "extract"`, the run enters `extracting`. The extractor has stable identity from program hash, extractor program version, resolved model, output schemas, and latest committed trajectory sequence. It runs over a deterministic bounded evidence projection containing the output contract, variable catalog, exact small workspace JSON, answer candidates, prior invalid submissions, and head-tail projections of referenced contexts or artifacts. Every projection reports true and omitted bytes. The scheduler atomically reserves one leaf slot, attempt, tokens, deadline, and output bytes. Reservation failure ends as `budget_exhausted` with the concrete `BUDGET_*` reason. A crash replays a committed extractor result or follows the read-only retry rule.
 
-Extractor output passes the same named output schemas as `answer()`. The final record includes `completionMode: "answer" | "fallback_extract"`. `finalReasoning` is the answering cell's reasoning for normal completion and extractor reasoning for fallback. Evaluations score fallback completion separately because it can conceal controller failure.
+If required evidence was omitted, the extractor returns `FALLBACK_EVIDENCE_TRUNCATED` rather than guessing. Extractor output passes the same named output schemas as `answer()`. The final record includes `completionMode: "answer" | "fallback_extract"`. `finalReasoning` is the answering cell's reasoning for normal completion and extractor reasoning for fallback. Evaluations score fallback completion separately because it can conceal controller failure.
 
 ## Scheduler
 
@@ -226,7 +231,7 @@ Payload commit order is:
 2. Append its typed commit event with frame, iteration, cell, payload path, and SHA-256 to `events.jsonl`, then `fsync` the journal.
 3. Rewrite `status.json` from the event fold.
 
-`manifest.json` persists the normalized `RlmProgram`, resolved profile and policy hash, DSL version, controller and extractor program hashes, backend protocol and implementation identity, and every adapter ID, version, descriptor, and snapshot hash. Resume requires exact identities or an explicit migration that forks a new run.
+`manifest.json` persists the normalized `RlmProgram`, resolved profile and policy hash, DSL version, launcher-guideline, controller, extractor, and prompt-rendering hashes, backend protocol and implementation identity, and every adapter ID, version, descriptor, and snapshot hash. Resume requires exact identities or an explicit migration that forks a new run.
 
 A payload without a matching commit event is an orphan. Recovery verifies its hash. It may promote a complete read-only result with a `recovered` event. A mutating orphan becomes `unknown_effect`. A commit event with a missing or invalid payload fails the run as journal corruption. Crash-injection tests cover every write, `fsync`, rename, and append boundary.
 
@@ -265,7 +270,7 @@ Consumers ignore unknown fields and event names. The TUI rebuilds current state 
 
 ## Security and capabilities
 
-QuickJS guest code has no ambient capability. Every host effect crosses a typed broker. The broker checks project trust, source policy, path containment, exact Pi tool allowlist, budget, and approval.
+QuickJS guest code has no ambient capability. The controller prompt tells the model to treat selected source text as data rather than instructions, but this is guidance rather than enforcement. Every host effect crosses a typed broker. The broker checks project trust, source policy, path containment, exact Pi tool allowlist, budget, and approval.
 
 A `pi-subagents` agent name is an opaque capability. Delegation v1 does not expose its effective tools, extension tools, network access, or mutation behavior. Version 1 always requires interactive per-run approval before the first call to each named opaque agent with a given source set. A global or project profile cannot bypass this approval. JSON and print modes deny `agent()`. A TUI or RPC user may approve the manifest, then let the approved run continue in the background.
 

@@ -4,6 +4,7 @@ Status: Proposed
 Target: Pi extension package under `pi/extensions/pi-rlm/`
 Audience: implementers and reviewers
 Explainer: [interactive architecture walkthrough](pi-rlm-explainer.html)
+Prompt specification: [launcher, controller, child, and extractor prompts](pi-rlm-prompts.md)
 
 ## Decision
 
@@ -14,6 +15,8 @@ The extension will use two execution forms in one runtime:
 - `llm()` makes a plain model call over a selected context slice. This follows the original Recursive Language Model design.
 - `agent()` delegates a full Pi agent through the public `pi-subagents` delegation protocol. This follows Claude Code workflows and LangChain Deep Agents.
 - `recurse()` starts another isolated RLM frame with a smaller context and a decremented shared budget.
+
+The normal Pi agent only launches a typed program after explicit opt-in recorded by a host-owned, single-use launch grant. A dedicated controller receives the full generated RLM prompt and authors the adaptive JavaScript one cell at a time. The normal Pi prompt receives only concise `rlm_run` launch guidance and the public tool schema. The full DSL is not injected into unrelated turns.
 
 The model-authored JavaScript is the adaptive control layer. An append-only event log and content-addressed call records are the durable execution format. A static DAG is not the runtime contract because an RLM must be able to branch after inspecting results.
 
@@ -64,7 +67,7 @@ The [DSPy RLM prior-art review](pi-rlm-dspy-prior-art.md) maps its source abstra
 
 ## User entry points
 
-The first release will not use a trigger keyword. Starting an RLM must be explicit.
+The first release will not use a trigger keyword. Starting an RLM must be explicit. `rlm_run` registers a concise `promptSnippet` and named `promptGuidelines` so the normal Pi agent knows when to construct a program. The full controller DSL remains internal to the dedicated controller session. A global `before_agent_start` hook must not append it to ordinary turns.
 
 ### Slash commands
 
@@ -120,7 +123,7 @@ flowchart TD
     A --> S[Variable, context, and artifact store]
     C --> S
     C --> J[Run journal and budget ledger]
-    C --> P[Controller Pi AgentSession]
+    C --> P[One-turn controller model driver]
     P --> T[rlm_eval tool]
     T --> Q[Owned interpreter backend]
     Q -->|llm| L[Plain Pi model call]
@@ -138,13 +141,14 @@ flowchart TD
 2. **Program compiler.** Validates input, output, tool, and reserved namespaces; resolves profiles; and generates the controller and extractor contracts.
 3. **Input adapter registry.** Snapshots typed inputs, creates variable descriptors and head-tail previews, and mounts host-backed guest bindings.
 4. **Coordinator.** Owns run state, frames, scheduling, cancellation, policy, usage accounting, and completion delivery.
-5. **Controller session.** A Pi SDK `AgentSession` with one private `rlm_eval` tool accepting reasoning and code. It sees program instructions, variable metadata, bounded trajectory, budgets, and DSL reference.
-6. **Interpreter backend.** Implements an owned start, execute, and shutdown protocol. Version 1 uses one QuickJS worker per frame and a fresh context per cell.
-7. **Variable and context store.** Holds immutable input snapshots, durable workspace values, derived slices, and artifacts with provenance and size limits.
-8. **Bridge broker.** Validates every guest-to-host call, reserves budget, applies capability policy, records events, and returns bounded structured data.
-9. **Delegation adapter.** Uses `pi-subagents/delegation` version 1 through Pi's shared event bus. It does not import private package files.
-10. **Journal and trajectory store.** Persists reasoning, code, output previews and refs, events, call records, usage, approvals, and typed final output.
-11. **TUI projection.** Builds views from typed events and status records. It never scrapes child transcript text to determine state.[^pi-extensions]
+5. **Prompt compiler.** Generates launcher guidance, stable controller instructions, per-run contracts, dynamic turn state, child-frame contracts, and extractor requests from versioned schemas.
+6. **Controller driver.** A one-response Pi model driver with one private `rlm_eval` tool accepting reasoning and code. It sees program instructions, variable metadata, bounded trajectory, budgets, and DSL reference.
+7. **Interpreter backend.** Implements an owned start, execute, and shutdown protocol. Version 1 uses one QuickJS worker per frame and a fresh context per cell.
+8. **Variable and context store.** Holds immutable input snapshots, durable workspace values, derived slices, and artifacts with provenance and size limits.
+9. **Bridge broker.** Validates every guest-to-host call, reserves budget, applies capability policy, records events, and returns bounded structured data.
+10. **Delegation adapter.** Uses `pi-subagents/delegation` version 1 through Pi's shared event bus. It does not import private package files.
+11. **Journal and trajectory store.** Persists reasoning, code, output previews and refs, events, call records, usage, approvals, and typed final output.
+12. **TUI projection.** Builds views from typed events and status records. It never scrapes child transcript text to determine state.[^pi-extensions]
 
 ## Controller loop
 
@@ -167,6 +171,8 @@ sequenceDiagram
     E-->>M: Cell result and remaining budget
     M->>E: More code or answer(...)
 ```
+
+The controller system prompt is a stable, versioned artifact generated from the DSL schema. Program and variable contracts form a stable per-run prefix. Budget, workspace, last observation, and the bounded trajectory window arrive as dynamic turn state so normal iterations do not rebuild the system prompt. Child frames reuse the same base prompt with isolated objectives and handles. The [prompt specification](pi-rlm-prompts.md) defines every layer.
 
 A controller turn ends when `answer()` commits a final value, a policy limit stops the run, the user cancels it, or the controller reaches its turn limit. Free-text controller output cannot complete a run.
 
@@ -196,7 +202,7 @@ The complete interfaces and examples are in the [DSL specification](pi-rlm-dsl.m
 
 ## Execution runtime
 
-Each frame owns a controller `AgentSession` and interpreter backend. All frames share one coordinator, variable store, scheduler, cancellation tree, event journal, trajectory store, and budget ledger. Version 1 runs strict async cells in a pinned QuickJS Asyncify worker. Cross-process resume starts from an empty workspace, replays completed cells, suppresses duplicate journaled effects, and returns content-addressed results for committed bridge calls.
+Each frame owns a one-response controller driver and interpreter backend. All frames share one coordinator, variable store, scheduler, cancellation tree, event journal, trajectory store, and budget ledger. Version 1 runs strict async cells in a pinned QuickJS Asyncify worker. Cross-process resume starts from an empty workspace, replays completed cells, suppresses duplicate journaled effects, and returns content-addressed results for committed bridge calls.
 
 The runtime has separate frame and leaf-work limits so recursive calls cannot deadlock the work semaphore. It enforces depth, logical calls, attempts, concurrency, wall time, heap, stored bytes, output, and context-read limits. Token and cost gates use provider-reported usage and are labeled as reported rather than hard. The default profile allows depth 3, 64 logical calls, 96 attempts, concurrency 8, 20 controller turns per frame, a 64 MiB guest heap, and 30 minutes wall time.
 
@@ -265,9 +271,10 @@ The package is optional. Runtime code uses erased type-only imports and a guarde
 pi/extensions/pi-rlm/
   index.ts                 extension registration
   config.ts                profiles and policy merge
-  program/                 signatures, compiler, prompt generation
+  program/                 signatures and compiler
+  prompts/                 launcher, controller, child, extractor, rendering
   coordinator.ts           run and frame lifecycle
-  controller.ts            Pi AgentSession and trajectory window
+  controller.ts            one-response model driver and trajectory window
   extractor.ts             typed fallback extraction
   interpreter/             backend protocol, QuickJS worker, RPC
   adapters/                input snapshots, descriptors, guest mounts
@@ -288,6 +295,7 @@ Files should stay below 500 lines. Runtime logic must not depend on TUI componen
 ### Unit tests
 
 - Program signatures, required outputs, reserved namespaces, variable previews, and input adapter identities.
+- Prompt generation snapshots, launcher opt-in, DSL/schema parity, bounded dynamic state, prompt identity, and child isolation.
 - Context slicing, chunk overlap, hashes, derivation, byte caps, and path containment.
 - Ordered batch reservation, per-item errors, and thread-safe shared counters.
 - Trajectory immutability, head-tail previews, bounded controller windows, and fallback completion labels.
@@ -308,6 +316,7 @@ Files should stay below 500 lines. Runtime logic must not depend on TUI componen
 - Batch workers inherit run, frame, cell, policy, ledger, deadline, cancellation, tracing, and origin-session context.
 - Delegation maps every terminal `pi-subagents` status, rejects a missing listener after two seconds, and validates strict JSON output.
 - Normal pause drains active calls. Pause-now cancels delegated calls and records them as non-resumable attempts.
+- Normal Pi requests contain launch guidance but not the controller DSL; controller requests contain no unselected source canaries.
 - TUI updates do not add intermediate results to parent controller or parent Pi model messages.
 - Background completion delivers only to its recorded session and descendant branch.
 
@@ -340,6 +349,8 @@ Exit condition: pinned compatibility tests pass without a live provider.
 ### Phase 1: safe recursive core
 
 - `RlmProgram` compiler, namespace validation, `/rlm` shorthand, variable catalog, and built-in input adapters.
+- Versioned launcher, controller, child-frame, and extractor prompts generated from executable schemas.
+- Host-owned launch grants and a one-response controller driver that proves one cell per provider response.
 - Context store, workspace, `/rlm` interception, controller program, QuickJS backend, and immutable trajectory.
 - `llm()`, ordered `llm.batch()`, `recurse()`, `phase()`, `emit()`, typed `answer()`, and fallback extractor.
 - Hard depth, call, concurrency, time, heap, and output limits.
@@ -407,6 +418,10 @@ The release test writes one conformance report with the metric, observed value, 
 |---|---|
 | Context externalization | Seed source-only canaries across an input larger than the controller window. Inspect serialized provider requests. No canary or raw source range may appear except an explicitly selected slice, and selected slice bytes must stay under the configured aggregate context-return limit. Hashes and handles are allowed metadata. |
 | Program contract | Missing inputs, output-name collisions, invalid aliases, missing answer fields, and schema-invalid fallback output fail with typed codes before an invalid final commit. |
+| Prompt separation | Normal Pi requests contain only explicit-launch guidance and the `rlm_run` schema. Dedicated controller requests contain the generated DSL and bounded state but no unselected source canaries. Child requests contain no parent messages or workspace. |
+| Launch grant | `/rlm`, explicit human requests, and confirmations mint one single-use host grant. An unsolicited model tool call fails before snapshots, approval requests, or model spend. |
+| Controller boundary | One controller provider response accepts exactly one `rlm_eval` call and commits at most one cell. The driver rejects free text, zero or multiple calls, and any second provider request race. |
+| Extractor evidence | Fallback receives exact bounded workspace values plus deterministic context and artifact projections. It reports omitted bytes and returns `FALLBACK_EVIDENCE_TRUNCATED` rather than inventing missing data. |
 | Variable space | Controller requests contain each descriptor and bounded head-tail preview, while full values remain in snapshots. Adapter ID, version, and snapshot hash participate in replay identity. |
 | Batch | `llm.batch()` reserves all items before launch, counts each item, preserves order, and isolates ordinary item failures. |
 | Trajectory and fallback | Every turn records reasoning, code, true output length, preview, and full ref. Controller history stays below 128 KiB. Fallback outputs are schema-valid and labeled `fallback_extract`. |

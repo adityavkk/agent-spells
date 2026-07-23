@@ -249,7 +249,7 @@ Controller instructions become a versioned source artifact generated from:
 - profile limits and models;
 - available tools and capability classes.
 
-This avoids stale hand-written docs. DSPy's current source still contains older `FINAL` wording in comments while the public runtime uses `SUBMIT`; pi-rlm will generate its prompt reference and ambient declarations from one schema.
+This avoids stale hand-written docs. DSPy's current source still contains older `FINAL` wording in comments while the public runtime uses `SUBMIT`; pi-rlm will generate its prompt reference and ambient declarations from one schema. The [prompt architecture](pi-rlm-prompts.md) separates minimal normal-agent launch guidance, stable controller instructions, dynamic turn state, isolated child prompts, and fallback extraction.
 
 The default prompt adopts DSPy's explore, iterate, verify, use-code-for-structure, use-models-for-semantics, and submit-after-observation rules. Prompt variants remain separately testable.
 
