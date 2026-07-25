@@ -241,6 +241,7 @@ export function renderShellCall(args: any, theme: ThemeLike, context: RenderCont
 	let text = title(theme, `${label} `) + (command === null ? error(theme, "[invalid command]") : accent(theme, command || "..."));
 	if (args?.workdir || args?.dir_path) text += muted(theme, ` in ${displayPath(context.cwd, str(args.workdir ?? args.dir_path), ".")}`);
 	if (timeout !== undefined) text += muted(theme, ` (timeout ${inline(timeout)}${typeof timeout === "number" && timeout < 1000 ? "s" : "ms"})`);
+	if (typeof args?.description === "string" && args.description.trim()) text += muted(theme, ` (${short(args.description)})`);
 	return textBlock(text, context.lastComponent);
 }
 

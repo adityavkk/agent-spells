@@ -63,7 +63,7 @@ function argsForTool(name: string): Record<string, unknown> {
 		case "MultiEdit":
 			return { file_path: path, edits: [{ old_string: HOSTILE, new_string: `${HOSTILE} one` }, { old_string: "two", new_string: HOSTILE }] };
 		case "Bash":
-			return { command: `printf ${HOSTILE}`, timeout: HOSTILE, workdir: path };
+			return { command: `printf ${HOSTILE}`, timeout: HOSTILE, workdir: path, description: HOSTILE };
 		case "Glob":
 			return { pattern: `**/${HOSTILE}/*.ts`, path };
 		case "Grep":
@@ -71,7 +71,7 @@ function argsForTool(name: string): Record<string, unknown> {
 		case "LS":
 			return { path, ignore: [HOSTILE] };
 		case "shell_command":
-			return { command: `printf ${HOSTILE}`, timeout_ms: HOSTILE, workdir: path };
+			return { command: `printf ${HOSTILE}`, timeout_ms: HOSTILE, workdir: path, description: HOSTILE };
 		case "apply_patch":
 			return { input: `*** Begin Patch\n*** Update File: ${path}\n@@\n-${HOSTILE}\n+new\n*** End Patch` };
 		case "update_plan":
@@ -79,7 +79,7 @@ function argsForTool(name: string): Record<string, unknown> {
 		case "view_image":
 			return { path: `./${HOSTILE}.png` };
 		case "run_shell_command":
-			return { command: `printf ${HOSTILE}`, dir_path: path };
+			return { command: `printf ${HOSTILE}`, dir_path: path, description: HOSTILE };
 		case "read_file":
 			return { file_path: path, offset: HOSTILE, limit: HOSTILE };
 		case "read_many_files":
@@ -128,6 +128,19 @@ describe("provider tool rendering", () => {
 		const lines = expectRenderedLinesFit(component, 10);
 
 		expect(lines[0]).toContain("…");
+	});
+
+	it("appends the shell description as a status label", () => {
+		const component = renderShellCall({ command: "git status", description: "Show working tree status" }, plainTheme, {});
+		const lines = component.render(95);
+
+		expect(lines[0]).toBe("$ git status (Show working tree status)");
+	});
+
+	it("omits blank shell descriptions", () => {
+		const component = renderShellCall({ command: "git status", description: "   " }, plainTheme, {});
+
+		expect(component.render(95)[0]).toBe("$ git status");
 	});
 
 	it("truncates ANSI-styled result lines using terminal visible width", () => {
