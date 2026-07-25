@@ -1,6 +1,6 @@
 {
   "upstream": "https://github.com/letta-ai/letta-code",
-  "ref": "cefab97384a5ad24cfd6c973c364d4194d39e800",
+  "ref": "8534a0ec41f094064f70ce65ac1d5d232103307a",
   "tools": [
     {
       "upstreamName": "Bash",
@@ -380,6 +380,14 @@
       "decision": "Letta channel runtime is out of scope"
     },
     {
+      "upstreamName": "ReadArtifactFile",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta Desktop artifacts directory is out of scope"
+    },
+    {
       "upstreamName": "ReadLSP",
       "provider": "runtime",
       "modelNames": [],
@@ -466,6 +474,14 @@
       "status": "ignored",
       "capabilities": [],
       "decision": "Letta goal system is out of scope"
+    },
+    {
+      "upstreamName": "WriteArtifactFile",
+      "provider": "runtime",
+      "modelNames": [],
+      "status": "ignored",
+      "capabilities": [],
+      "decision": "Letta Desktop artifacts directory is out of scope"
     },
     {
       "upstreamName": "WriteTodosGemini",

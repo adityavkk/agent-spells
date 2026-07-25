@@ -23,13 +23,14 @@ function schema(name: string): any {
 describe("vendored Letta schema snapshot", () => {
 	it("contains expected Claude core schemas", () => {
 		expect(schema("Read").required).toEqual(["file_path"]);
+		expect(schema("Bash").required).toEqual(["command", "description"]);
 		expect(schema("Edit").properties.old_string.type).toBe("string");
 		expect(schema("MultiEdit").properties.edits.items.required).toEqual(["old_string", "new_string"]);
 	});
 
 	it("contains expected Codex schemas", () => {
-		expect(schema("ShellCommand").required).toEqual(["command"]);
-		expect(schema("ExecCommand").required).toEqual(["cmd"]);
+		expect(schema("ShellCommand").required).toEqual(["command", "description"]);
+		expect(schema("ExecCommand").required).toEqual(["cmd", "description"]);
 		expect(schema("WriteStdin").required).toEqual(["session_id"]);
 		expect(schema("Shell").required).toEqual(["command"]);
 		expect(schema("ReadFileCodex").required).toEqual(["file_path"]);
@@ -39,7 +40,7 @@ describe("vendored Letta schema snapshot", () => {
 	});
 
 	it("contains expected Gemini schemas", () => {
-		expect(schema("RunShellCommandGemini").required).toEqual(["command"]);
+		expect(schema("RunShellCommandGemini").required).toEqual(["command", "description"]);
 		expect(schema("ReadManyFilesGemini").required).toEqual(["include"]);
 		expect(schema("ReplaceGemini").properties.expected_replacements.minimum).toBe(1);
 	});

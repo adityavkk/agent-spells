@@ -1,7 +1,7 @@
 # Letta Code tool schema snapshot
 
 Upstream: https://github.com/letta-ai/letta-code
-Pinned ref: cefab97384a5ad24cfd6c973c364d4194d39e800
+Pinned ref: 8534a0ec41f094064f70ce65ac1d5d232103307a
 License: Apache-2.0, see upstream repository for full license text.
 
 This extension vendors selected schema and description files only. Runtime implementations are local Pi wrappers.
@@ -9,7 +9,7 @@ This extension vendors selected schema and description files only. Runtime imple
 Refresh:
 
 ```bash
-bun pi/extensions/provider-tool-profiles/scripts/update-from-letta.ts cefab97384a5ad24cfd6c973c364d4194d39e800
+bun pi/extensions/provider-tool-profiles/scripts/update-from-letta.ts 8534a0ec41f094064f70ce65ac1d5d232103307a
 ```
 
 Copied files:
