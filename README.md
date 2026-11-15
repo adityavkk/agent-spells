@@ -16,8 +16,23 @@ Not a framework. Just a spellbook.
 - `pi/extensions/vim-modal-editor/`
   - Vim-style modal editing for Pi's prompt box
   - wraps existing custom editors like floating-composer
+- `pi/extensions/model-profiles/`
+  - named model profiles and roles
+  - preserves manual model choices across reload and resumed conversations
 
 More spells over time.
+
+## Pi model selection
+
+Choose a concrete model with `/model`. The model-profiles extension keeps that
+choice when you run `/reload` or resume the conversation. Use `/profile` to
+select a profile again.
+
+[![Watch Pi keep a manual model choice after reload](docs/videos/pi-manual-selection.png)](docs/videos/pi-manual-selection.mp4?raw=1)
+
+The recording shows the actual Pi 1.5.2 terminal with synthetic work and personal
+models. Pi has no network access, and no model request is submitted.
+See the [profile setup and validation](pi/extensions/model-profiles/README.md).
 
 ## Philosophy
 
