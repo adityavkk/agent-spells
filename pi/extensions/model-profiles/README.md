@@ -91,6 +91,11 @@ manual changes and other extensions' `setModel` calls the same event source.
 The extension excludes its own automatic changes, but treats other direct
 model changes as selections to preserve.
 
+[Watch the native Pi selection and reload demonstration](../../../docs/videos/pi-manual-selection.mp4?raw=1).
+The recording uses synthetic work and personal models, with Pi's network
+access denied and no model requests. It shows the normal `/model` picker and
+the selected model remaining active after `/reload`.
+
 The [selection validation](docs/manual-selection-validation.json) records seven
 failing baseline cases and all 70 model-profile tests passing after the fix.
 The same 17 selection cases cover reload, resume, cycling, launch flags, explicit

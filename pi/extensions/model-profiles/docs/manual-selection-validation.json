@@ -81,5 +81,29 @@
     "completed_phases": 1,
     "failure_stage": "resume_personal",
     "fixture": "No conversation entries. Pi restores saved models only when history exists. The corrected fixture adds one empty synthetic user message."
+  },
+  "native_tui": {
+    "passed": true,
+    "client": "Pi 1.5.2",
+    "scope": "Native model picker and reload only. Synthetic models; no inference or session-resume claim.",
+    "checks": {
+      "initial_profile": "profile_work",
+      "manual_selection": "raw_personal",
+      "after_reload": "raw_personal"
+    },
+    "network_policy": "deny_all",
+    "prompts": 0,
+    "cleanup": {
+      "pi_exited": true,
+      "browser_closed": true,
+      "ttyd_joined": true,
+      "tmux_closed": true
+    },
+    "video": "docs/videos/pi-manual-selection.mp4",
+    "video_sha256": "429498e0f36efeb69a3cebd28f37b564c9ff95263b7143d33986423390a90053",
+    "video_seconds": 19.266667,
+    "resolution": "1920x1080",
+    "fps": 30,
+    "initial_capture_attempt": "Browser assertion included blank rows below the terminal content. Corrected assertion ignores trailing blank rows; Pi source unchanged."
   }
 }
