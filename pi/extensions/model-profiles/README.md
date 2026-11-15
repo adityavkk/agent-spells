@@ -75,6 +75,35 @@ Precedence:
 5. current session model
 6. first available model
 
+Choosing a model outside the `profiles` provider with `/model` or model cycling
+pauses profile selection for that session. The choice survives `/reload` and
+resume. An explicit `--model` or `--provider` choice also survives a later
+resume without those flags. New sessions still use the configured profile.
+
+Use `/profile <profile>`, `/profile <role>`, or a model from the `profiles`
+provider to enable profile selection again. Starting Pi with `--profile` or
+`--role` also enables it. Reloading an existing session does not reapply its
+original launch flags over a later choice.
+
+Older sessions do not record whether a model change was manual. Select the
+desired model once after updating the extension to save that intent. Pi gives
+manual changes and other extensions' `setModel` calls the same event source.
+The extension excludes its own automatic changes, but treats other direct
+model changes as selections to preserve.
+
+The [selection validation](docs/manual-selection-validation.json) records seven
+failing baseline cases and all 70 model-profile tests passing after the fix.
+The same 17 selection cases cover reload, resume, cycling, launch flags, explicit
+profile changes, automatic fallback and older saved state. Reproduce them with
+`bun test pi/extensions/model-profiles`.
+
+An isolated native Pi 1.5.2 RPC check also selected a personal model and restored
+it after reopening the session. Network access was denied, and no prompt was
+submitted. The fixture contained one synthetic user message with empty content
+because Pi restores saved models only for sessions with conversation history.
+An initial attempt without that fixture failed at resume; it does not establish
+support for reopening empty sessions with their previous model.
+
 ## Config
 
 Example:
@@ -218,7 +247,7 @@ See `./docs/runtime-diagnostics.md`.
 ## Notes
 
 - built-in `/model` stays unchanged
-- manual `/model` changes show as `raw-override`
+- manual `/model` changes pause profile selection and hide its footer status
 - role resolution is auth-aware
 - ordered target lists are tried in order during preflight resolution
 - synthetic provider runtime fallback retries the next configured target on retryable failures

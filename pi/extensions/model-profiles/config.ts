@@ -105,10 +105,14 @@ function normalizeProfiles(value: unknown): Record<string, ModelProfileConfig> {
 
 export function normalizeModelProfilesState(input: unknown): ModelProfilesState {
 	if (!isRecord(input)) return {};
-	return {
+	const state: ModelProfilesState = {
 		activeProfile: normalizeString(input.activeProfile),
 		activeRole: normalizeString(input.activeRole),
 	};
+	if (input.selectionMode === "profile" || input.selectionMode === "raw") {
+		state.selectionMode = input.selectionMode;
+	}
+	return state;
 }
 
 export function normalizeModelProfilesConfig(input: unknown): ModelProfilesConfig {

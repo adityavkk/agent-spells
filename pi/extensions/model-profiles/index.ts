@@ -55,6 +55,7 @@ const THINKING_LEVELS = new Set<ModelProfilesThinkingLevel>(["off", "minimal", "
 export interface ModelProfilesExtensionDependencies {
 	createFallbackModelRegistry?: ModelRegistryFactory;
 	streamFn?: ModelProfilesProviderStreamFn;
+	loadConfig?: typeof loadModelProfilesConfig;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -96,13 +97,15 @@ function uniqueSorted(values: string[]): string[] {
 }
 
 export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: ModelProfilesExtensionDependencies = {}) {
-	let loadedConfig: LoadedModelProfilesConfig = loadModelProfilesConfig(process.cwd());
+	const loadConfig = dependencies.loadConfig ?? loadModelProfilesConfig;
+	let loadedConfig: LoadedModelProfilesConfig = loadConfig(process.cwd());
 	let activeState: ModelProfilesState = {};
 	let runtimeState: ModelProfilesRuntimeState = { selections: {} };
 	let lastResolved: ResolvedRoleResult | null = null;
 	let lastRuntimeDiagnostics: ModelProfilesRuntimeDiagnostics | null = null;
 	let unresolved = false;
 	let suppressProfileStatus = false;
+	let applyingProfileModel = false;
 	let inFlightAttemptModel: Model<any> | undefined;
 	let displayModel: Model<any> | undefined;
 	let latestCtx: ExtensionContext | undefined;
@@ -113,7 +116,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: M
 	let suppressProfileThinkingEventsUntil = 0;
 
 	function refreshConfig(cwd: string): void {
-		loadedConfig = loadModelProfilesConfig(cwd);
+		loadedConfig = loadConfig(cwd);
 	}
 
 	function getStreamModelRegistry(): ModelRegistryLike | undefined {
@@ -435,6 +438,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: M
 		setActiveState({
 			activeProfile: nextState.activeProfile ?? resolved?.profile,
 			activeRole: nextState.activeRole ?? resolved?.role,
+			selectionMode: "profile",
 		}, options.persist ?? true);
 		if (options.persist !== false) {
 			setRuntimeThinkingOverride(activeState.activeProfile, activeState.activeRole, undefined);
@@ -460,7 +464,13 @@ export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: M
 		suppressProfileThinkingEventsUntil = Date.now() + 250;
 		const changedModel = modelLabel(ctx.model) !== modelLabel(managedModel);
 		if (changedModel) {
-			const success = await pi.setModel(managedModel);
+			let success: boolean;
+			applyingProfileModel = true;
+			try {
+				success = await pi.setModel(managedModel);
+			} finally {
+				applyingProfileModel = false;
+			}
 			if (!success) {
 				updateStatus(ctx);
 				if (options.notify !== false) {
@@ -589,7 +599,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: M
 		type: "string",
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		latestCtx = ctx;
 		latestModelRegistry = ctx.modelRegistry;
 		refreshConfig(ctx.cwd);
@@ -600,6 +610,7 @@ export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: M
 		const syntheticSelection = parseSyntheticProfileModelId(ctx.model?.provider === MODEL_PROFILES_PROVIDER ? ctx.model.id : "");
 		if (syntheticSelection && (!activeState.activeProfile || !activeState.activeRole)) {
 			activeState = normalizeModelProfilesState({
+				...activeState,
 				activeProfile: syntheticSelection.profile,
 				activeRole: syntheticSelection.role,
 			});
@@ -610,18 +621,24 @@ export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: M
 			notifyConfigErrors(ctx);
 		}
 
-		const profileFlag = getFlagString(pi, "profile");
-		const roleFlag = getFlagString(pi, "role");
-		const explicitRawModelSelection = hasExplicitRawModelSelection(pi) && !syntheticSelection;
+		// Launch flags are not new intent when reloading or switching an existing session.
+		const useLaunchFlags = event.reason === "startup" || event.reason === undefined;
+		const profileFlag = useLaunchFlags ? getFlagString(pi, "profile") : undefined;
+		const roleFlag = useLaunchFlags ? getFlagString(pi, "role") : undefined;
+		const explicitRawModelSelection = useLaunchFlags && hasExplicitRawModelSelection(pi) && !syntheticSelection;
 		const hasProfileIntent = !!profileFlag || !!roleFlag || !!syntheticSelection;
-		suppressProfileStatus = explicitRawModelSelection && !hasProfileIntent;
+		if (explicitRawModelSelection && !hasProfileIntent && activeState.selectionMode !== "raw") {
+			setActiveState({ ...activeState, selectionMode: "raw" });
+		}
+		suppressProfileStatus = !hasProfileIntent && activeState.selectionMode === "raw";
 		const hasPersistedOrConfiguredProfile = !!activeState.activeProfile || !!activeState.activeRole || !!loadedConfig.mergedConfig.activeProfile;
-		const shouldResolve = hasProfileIntent || (!explicitRawModelSelection && hasPersistedOrConfiguredProfile);
+		const shouldResolve = hasProfileIntent || (!suppressProfileStatus && hasPersistedOrConfiguredProfile);
 		if (shouldResolve) {
+			const persistReactivation = hasProfileIntent && activeState.selectionMode === "raw";
 			await applySelection(ctx, {
 				profile: profileFlag ? { value: profileFlag, source: "flag" } : undefined,
 				role: roleFlag ? { value: roleFlag, source: "flag" } : undefined,
-			}, { notify: false, persist: false });
+			}, { notify: false, persist: persistReactivation });
 		} else {
 			lastResolved = null;
 			lastRuntimeDiagnostics = null;
@@ -632,16 +649,19 @@ export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: M
 	});
 
 	pi.on("model_select", async (event, ctx) => {
+		// Pi reports both /model and extension setModel calls as source="set".
+		if (applyingProfileModel) return;
 		latestCtx = ctx;
 		latestModelRegistry = ctx.modelRegistry;
 		inFlightAttemptModel = undefined;
 		const syntheticSelection = parseSyntheticProfileModelId(event.model.provider === MODEL_PROFILES_PROVIDER ? event.model.id : "");
 		if (syntheticSelection) {
 			suppressProfileStatus = false;
-			activeState = normalizeModelProfilesState({
+			setActiveState({
 				activeProfile: syntheticSelection.profile,
 				activeRole: syntheticSelection.role,
-			});
+				selectionMode: "profile",
+			}, event.source !== "restore");
 			lastResolved = await resolveModelRole({
 				modelRegistry: ctx.modelRegistry,
 				config: loadedConfig.mergedConfig,
@@ -653,6 +673,9 @@ export default function modelProfilesExtension(pi: ExtensionAPI, dependencies: M
 			lastRuntimeDiagnostics = getStoredRuntimeDiagnostics(activeState.activeProfile, activeState.activeRole);
 			unresolved = !lastResolved;
 		} else {
+			if (event.source === "set" || event.source === "cycle") {
+				setActiveState({ ...activeState, selectionMode: "raw" });
+			}
 			suppressProfileStatus = true;
 			lastResolved = null;
 			lastRuntimeDiagnostics = null;

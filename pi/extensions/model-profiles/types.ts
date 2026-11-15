@@ -46,6 +46,7 @@ export interface ModelProfilesConfig {
 export interface ModelProfilesState {
 	activeProfile?: ModelProfileName;
 	activeRole?: ModelRoleName;
+	selectionMode?: "profile" | "raw";
 }
 
 export interface ModelProfilesRuntimeAttempt {
