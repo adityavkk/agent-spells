@@ -1,0 +1,85 @@
+{
+  "checked_at_utc": "2026-11-15T05:17:49.965612+00:00",
+  "scope": "Selection persistence only; no provider inference or 429 diagnosis.",
+  "baseline": {
+    "command": "bun test pi/extensions/model-profiles/manual-selection.test.ts",
+    "network_denied": true,
+    "exit_code": 1,
+    "counts": {
+      "pass": 10,
+      "fail": 7
+    },
+    "source_hashes": {
+      "pi/extensions/model-profiles/manual-selection.test.ts": "24c49c59d54e738a66fb22e4a1e073c4cc0b10430a8df9a142111d711538c939",
+      "pi/extensions/model-profiles/index.ts": "d540d3094a60be6da53d9cc308d74d3824b76611624e60ff50d2a9e3bd55bc7a"
+    },
+    "sources_unchanged": true
+  },
+  "candidate": {
+    "command": "bun test pi/extensions/model-profiles",
+    "network_denied": true,
+    "exit_code": 0,
+    "counts": {
+      "pass": 70,
+      "fail": 0
+    },
+    "source_hashes": {
+      "pi/extensions/model-profiles/commands.test.ts": "f033006d13aa659d1a889791abfa78a1456dc4bebdc1ae6f4eedbb6955ae46c9",
+      "pi/extensions/model-profiles/commands.ts": "d01e9d793718033071527d69d3cc692ec6643119eb16ff4898363ce83b66dd44",
+      "pi/extensions/model-profiles/config.test.ts": "d29e15033a636406120a62be5aaae9631d3f88a8f73a75c62ddc8212413c493d",
+      "pi/extensions/model-profiles/config.ts": "c94eb9466277fc1def44a65975a36f5f9655863eadb09cd10df0e856b1dee200",
+      "pi/extensions/model-profiles/extension-resolver.test.ts": "7f62e99e59255306a23a8730dcc12872cacbcbc61c0aa23256185b4b99971738",
+      "pi/extensions/model-profiles/extension-resolver.ts": "dabdfe0e3e327d563b589557efa732ff658bb31d7930d0810d59076bebb3906b",
+      "pi/extensions/model-profiles/index.test.ts": "2ab8f1fe4c0c6d63068ff2fe0b2bcc73946a25be26d53bdf022a738c01008ffd",
+      "pi/extensions/model-profiles/index.ts": "cdf17cac8f2902651f35b4e28190f8abde39de931be28091d1b95a2cd67cc312",
+      "pi/extensions/model-profiles/manual-selection.test.ts": "24c49c59d54e738a66fb22e4a1e073c4cc0b10430a8df9a142111d711538c939",
+      "pi/extensions/model-profiles/provider.test.ts": "4497185e436261a4b7299f9e7f7c08f2ad4d584ea464eb60c0d5b416b9ca7ad7",
+      "pi/extensions/model-profiles/provider.ts": "d87f1994d63cc7392d297047281d66104b4e10f33afba20eee3a4b9facb4ca50",
+      "pi/extensions/model-profiles/registry.ts": "04f5a7df33ed03cda08ab3434ddb5554f83b226e6b64610f8f55e11600d90ca6",
+      "pi/extensions/model-profiles/resolve.test.ts": "0acb8db77343e820597a02fe6e964b928d4e18732d7676ecdd64793f68459ebd",
+      "pi/extensions/model-profiles/resolve.ts": "04c9f7e743dbe3e4b48f211a1f4864ed90cd02bf548d1bcb12b63bcb43eeed0f",
+      "pi/extensions/model-profiles/runtime.test.ts": "0a9a33e3b1028dec1b767a8f38c34f9181396f0f8d54e9abe178b4e575511e4f",
+      "pi/extensions/model-profiles/runtime.ts": "fc72dea4c9517975cbbf493140e6405aa8741bb2688df23052ff8b570d4ad926",
+      "pi/extensions/model-profiles/state.test.ts": "d0a2d2d8b39a128178d58e1905a0996cd4ecbf3654cc913e371120ceb325f08d",
+      "pi/extensions/model-profiles/state.ts": "c99cf35f172c64d712decc240f2c6ece4d6995e705207d16c7530a8464aac1e7",
+      "pi/extensions/model-profiles/types.ts": "58462570553de80e75075dccd0825b295be57358a914f8df1aa66c008cf6d6d5",
+      "pi/extensions/model-profiles/ui.ts": "da6184b4273170f58a14803a50a1ef7242546f9d51cc6e0c0dce42d069326b35"
+    },
+    "sources_unchanged": true
+  },
+  "native": {
+    "extension_sha256": "cdf17cac8f2902651f35b4e28190f8abde39de931be28091d1b95a2cd67cc312",
+    "home_preserved": true,
+    "native_version": "1.5.2",
+    "network_policy": "deny_all",
+    "no_message_resume_supported": false,
+    "passed": true,
+    "phases": [
+      {
+        "exit_code": 0,
+        "final": "raw_personal",
+        "initial": "profile_work",
+        "joined": true
+      },
+      {
+        "exit_code": 0,
+        "final": "raw_personal",
+        "initial": "raw_personal",
+        "joined": true
+      }
+    ],
+    "prompts": 0,
+    "setup": "synthetic_empty_message_resume_fixture",
+    "stage": "complete",
+    "temporary_data_removed": true,
+    "command_exit_code": 0,
+    "elapsed_seconds": 0.718,
+    "runner_sha256": "5d7d01efa234d266a3ae69a482413a81315d008dcf73cf0a781dc82a55d300c9"
+  },
+  "initial_native_attempt": {
+    "passed": false,
+    "completed_phases": 1,
+    "failure_stage": "resume_personal",
+    "fixture": "No conversation entries. Pi restores saved models only when history exists. The corrected fixture adds one empty synthetic user message."
+  }
+}
